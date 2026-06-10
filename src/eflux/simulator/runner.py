@@ -1,0 +1,386 @@
+"""Simulator runner: drives the matching engine + in-process built-in VPPs.
+
+External (SDK) VPPs use the same engine through the REST/WS API. Concurrent submitters
+share an asyncio.Lock to keep the (sync) matching engine race-free.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import random
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+from eflux.agents.base import AgentContext, BaseAgent, MarketSnapshot, OrderIntent
+from eflux.bridge.bus import EventBus
+from eflux.config import get_settings
+from eflux.market.clock import RollingClock
+from eflux.market.events import EventKind, TickEvent, TradeEvent
+from eflux.market.matching_engine import MatchingEngine
+from eflux.vpp.base import VPPParams, VPPState
+from eflux.vpp.der import Battery, FlexibleLoad, PV
+
+log = logging.getLogger(__name__)
+
+
+@dataclass
+class SimulatorVPP:
+    vpp_id: int
+    name: str
+    params: VPPParams
+    agent: BaseAgent
+    strategy: str
+    is_my_vpp: bool
+    llm_live: bool
+    llm_status: str
+    state: VPPState
+    pv: PV
+    battery: Battery
+    load: FlexibleLoad
+    rng: random.Random = field(default_factory=random.Random)
+    open_order_ids: list[int] = field(default_factory=list)
+    recent_trades: list[dict] = field(default_factory=list)
+
+
+class Simulator:
+    def __init__(self, bus: EventBus, sim_epoch: datetime | None = None) -> None:
+        settings = get_settings()
+        self.bus = bus
+        self.engine = MatchingEngine(publish_cb=bus.publish)
+        self.clock = RollingClock(
+            sim_epoch=sim_epoch or _default_sim_epoch(settings.site_timezone),
+            speed=settings.market_speed,
+            tick_sim_sec=settings.market_tick_sec,
+        )
+        self.vpps: dict[int, SimulatorVPP] = {}
+        self._next_vpp_id = -1  # internal VPPs use negative ids to avoid clashing with DB ids
+        self._lock = asyncio.Lock()
+        self._task: asyncio.Task | None = None
+        self._data_source_status: dict | None = None
+
+    def add_builtin_vpp(
+        self,
+        name: str,
+        params: VPPParams,
+        agent: BaseAgent,
+        *,
+        seed: int = 0,
+        strategy: str | None = None,
+        is_my_vpp: bool = False,
+        llm_live: bool = False,
+        llm_status: str = "",
+    ) -> SimulatorVPP:
+        vpp_id = self._next_vpp_id
+        self._next_vpp_id -= 1
+        vpp = SimulatorVPP(
+            vpp_id=vpp_id,
+            name=name,
+            params=params,
+            agent=agent,
+            strategy=strategy or agent.__class__.__name__,
+            is_my_vpp=is_my_vpp,
+            llm_live=llm_live,
+            llm_status=llm_status,
+            state=VPPState(sim_ts=self.clock.now_sim(), soc_kwh=params.battery_kwh * 0.5),
+            pv=PV(
+                kw_peak=params.pv_kw_peak,
+                noise_std=params.forecast_noise_std,
+                physical_model=self._build_pv_physical_model(params),
+            ),
+            battery=Battery(
+                capacity_kwh=params.battery_kwh,
+                max_power_kw=params.battery_kw_max,
+                eta_rt=params.battery_eta_rt,
+                soc_kwh=params.battery_kwh * 0.5,
+            ),
+            load=FlexibleLoad(base_kw=params.load_kw_base, elasticity=params.load_elasticity),
+            rng=random.Random(seed),
+        )
+        self.vpps[vpp_id] = vpp
+        log.info("Added built-in VPP id=%d name=%s", vpp_id, name)
+        return vpp
+
+    def my_managed_vpps(self) -> list[SimulatorVPP]:
+        return [vpp for vpp in self.vpps.values() if vpp.is_my_vpp]
+
+    def refresh_data_sources(self) -> None:
+        """Check which data source each built-in VPP is using at startup."""
+        checked_at = datetime.now(UTC)
+        sim_ts = self.clock.now_sim()
+        sources = [self._pv_source_for(vpp, sim_ts) for vpp in self.vpps.values()]
+        active_real = [s for s in sources if s["status"] == "real"]
+        fallback = [s for s in sources if s["status"] == "fallback"]
+
+        if active_real and not fallback:
+            summary = "Open-Meteo + pvlib"
+        elif active_real and fallback:
+            summary = "Mixed PV sources"
+        elif fallback:
+            summary = "Synthetic PV fallback"
+        else:
+            summary = "Synthetic profiles"
+
+        self._data_source_status = {
+            "checked_at": checked_at,
+            "sim_ts": sim_ts,
+            "summary": summary,
+            "sources": sources,
+        }
+
+    def data_source_status(self) -> dict:
+        if self._data_source_status is None:
+            self.refresh_data_sources()
+        return self._data_source_status or {}
+
+    def _pv_source_for(self, vpp: SimulatorVPP, sim_ts: datetime) -> dict[str, str]:
+        model = vpp.pv.physical_model
+        component = f"{vpp.name} PV"
+        if model is None:
+            return {
+                "component": component,
+                "status": "synthetic",
+                "source": "Diurnal sine stub",
+                "detail": "No PV latitude/longitude configured for this VPP.",
+            }
+
+        weather = getattr(model, "weather", None)
+        if weather is None or getattr(weather, "empty", False):
+            return {
+                "component": component,
+                "status": "fallback",
+                "source": "Diurnal sine stub",
+                "detail": "Open-Meteo weather was unavailable at startup.",
+            }
+
+        target = sim_ts.replace(minute=0, second=0, microsecond=0)
+        index = getattr(weather, "index", [])
+        if target in index:
+            return {
+                "component": component,
+                "status": "real",
+                "source": "Open-Meteo archive + pvlib",
+                "detail": f"Weather row matched current sim hour {target.isoformat()}.",
+            }
+
+        try:
+            coverage = f"{index.min().isoformat()} to {index.max().isoformat()}"
+        except Exception:
+            coverage = "unknown coverage"
+        return {
+            "component": component,
+            "status": "fallback",
+            "source": "Diurnal sine stub",
+            "detail": (
+                "Open-Meteo data loaded, but it does not cover current sim hour "
+                f"{target.isoformat()} (coverage: {coverage})."
+            ),
+        }
+
+    def _build_pv_physical_model(self, params: VPPParams):
+        """If params include lat/lon, build a PVPhysicalModel and pre-fetch weather.
+        Silently returns None if the 'data' extra isn't installed or no lat/lon set."""
+        if params.pv_lat is None or params.pv_lon is None:
+            return None
+        try:
+            from datetime import date, timedelta
+
+            from eflux.data.pv_model import PVPhysicalModel
+            from eflux.data.weather import fetch_hourly_sync
+        except ImportError as e:
+            log.warning("PV lat/lon set but 'data' extra missing (%s) — using stub model", e)
+            return None
+        model = PVPhysicalModel(
+            lat=params.pv_lat,
+            lon=params.pv_lon,
+            kw_peak=params.pv_kw_peak,
+            tilt=params.pv_tilt,
+            azimuth=params.pv_azimuth,
+        )
+        # Pre-fetch a 7-day historical window centered on yesterday so the simulator
+        # can replay it. Open-Meteo's archive lags real-time by ~5 days, so we look
+        # further back.
+        try:
+            today = date.today()
+            start = today - timedelta(days=14)
+            end = today - timedelta(days=7)
+            model.weather = fetch_hourly_sync(params.pv_lat, params.pv_lon, start, end)
+            log.info(
+                "PV physical model attached for VPP at (%.2f, %.2f), %d weather rows",
+                params.pv_lat, params.pv_lon, len(model.weather),
+            )
+        except Exception:
+            log.exception("Weather pre-fetch failed — PV will fall back to stub on missing rows")
+        return model
+
+    async def submit_external(
+        self,
+        *,
+        vpp_id: int,
+        side: str,
+        price: Decimal,
+        qty: Decimal,
+    ) -> dict:
+        """Entry point for SDK-submitted orders. Honors realtime-only constraint."""
+        if not self.clock.is_realtime:
+            raise PermissionError(
+                f"external orders rejected: market speed is {self.clock.speed}x (realtime required)"
+            )
+        async with self._lock:
+            now_sim = self.clock.now_sim()
+            now_wall = datetime.now(UTC)
+            result = self.engine.submit(
+                vpp_id=vpp_id,
+                side=side,
+                price=price,
+                qty=qty,
+                sim_ts=now_sim,
+                wall_ts=now_wall,
+            )
+            self._record_trades(result.trades)
+        return {
+            "order_id": result.order.order_id,
+            "remaining_qty": str(result.order.remaining_qty),
+            "trades": [t.model_dump(mode="json") for t in result.trades],
+        }
+
+    async def start(self) -> None:
+        if self._task is not None:
+            return
+        self._task = asyncio.create_task(self._run(), name="simulator-loop")
+
+    async def stop(self) -> None:
+        self.clock.stop()
+        if self._task is not None:
+            try:
+                await asyncio.wait_for(self._task, timeout=5.0)
+            except TimeoutError:
+                self._task.cancel()
+            self._task = None
+
+    async def _run(self) -> None:
+        log.info("Simulator loop started (speed=%sx, tick=%ss)", self.clock.speed, self.clock.tick_sim_sec)
+        tick_h = self.clock.tick_sim_sec / 3600.0
+        async for tick_no, sim_ts in self.clock.ticks():
+            async with self._lock:
+                snapshot = self.engine.snapshot(depth_levels=5)
+                market_snap = MarketSnapshot.from_engine(sim_ts, snapshot)
+                # Step each built-in VPP.
+                for vpp in self.vpps.values():
+                    self._tick_vpp(vpp, sim_ts, tick_h, market_snap)
+                # Publish a tick event with current market summary.
+                bb = self.engine.book.best_bid()
+                ba = self.engine.book.best_ask()
+                self.bus.publish(
+                    TickEvent(
+                        kind=EventKind.TICK,
+                        sim_ts=sim_ts,
+                        wall_ts=datetime.now(UTC),
+                        tick_no=tick_no,
+                        best_bid=bb.price if bb else None,
+                        best_ask=ba.price if ba else None,
+                        last_price=self.engine.last_price,
+                        bid_depth=bb.total_qty if bb else Decimal("0"),
+                        ask_depth=ba.total_qty if ba else Decimal("0"),
+                    )
+                )
+
+    def _tick_vpp(
+        self,
+        vpp: SimulatorVPP,
+        sim_ts: datetime,
+        tick_h: float,
+        market: MarketSnapshot,
+    ) -> None:
+        # Refresh DER state.
+        vpp.pv.kw_peak = vpp.params.pv_kw_peak  # keep params live-editable later
+        vpp.state.sim_ts = sim_ts
+        vpp.state.pv_kw = vpp.pv.output_kw(sim_ts, vpp.rng)
+        vpp.state.load_kw = vpp.load.draw_kw(sim_ts, vpp.rng)
+        vpp.state.update_net()
+
+        ctx = AgentContext(
+            vpp_id=vpp.vpp_id,
+            params=vpp.params,
+            state=vpp.state,
+            pv=vpp.pv,
+            battery=vpp.battery,
+            load=vpp.load,
+            market=market,
+            rng=vpp.rng,
+            tick_duration_h=tick_h,
+        )
+        intents = vpp.agent.decide(ctx)
+        for intent in intents:
+            self._submit_intent(vpp, intent, sim_ts)
+
+    def _submit_intent(self, vpp: SimulatorVPP, intent: OrderIntent, sim_ts: datetime) -> None:
+        try:
+            result = self.engine.submit(
+                vpp_id=vpp.vpp_id,
+                side=intent.side,
+                price=intent.price,
+                qty=intent.qty,
+                sim_ts=sim_ts,
+                wall_ts=datetime.now(UTC),
+            )
+            if result.order.remaining_qty > 0:
+                vpp.open_order_ids.append(result.order.order_id)
+            self._record_trades(result.trades)
+        except ValueError:
+            log.exception("VPP %s submitted an invalid order", vpp.vpp_id)
+
+    def _record_trades(self, trades: list[TradeEvent]) -> None:
+        for trade in trades:
+            self._apply_trade_to_vpp(trade, side="buy")
+            self._apply_trade_to_vpp(trade, side="sell")
+
+    def _apply_trade_to_vpp(self, trade: TradeEvent, *, side: str) -> None:
+        vpp_id = trade.buy_vpp_id if side == "buy" else trade.sell_vpp_id
+        vpp = self.vpps.get(vpp_id)
+        if vpp is None:
+            return
+
+        qty_f = float(trade.qty)
+        cash = Decimal(str(float(trade.price) * qty_f))
+        tick_h = _tick_h_from_ts()
+        counterparty = trade.sell_vpp_id if side == "buy" else trade.buy_vpp_id
+
+        if side == "buy":
+            vpp.state.pnl -= cash
+            vpp.state.cumulative_energy_bought_kwh += qty_f
+            vpp.battery.charge(power_kw=qty_f / max(1e-9, tick_h), duration_h=tick_h)
+        else:
+            vpp.state.pnl += cash
+            vpp.state.cumulative_energy_sold_kwh += qty_f
+            vpp.battery.discharge(power_kw=qty_f / max(1e-9, tick_h), duration_h=tick_h)
+
+        record = {
+            "trade_id": trade.trade_id,
+            "side": side,
+            "price": str(trade.price),
+            "qty": str(trade.qty),
+            "cash": str(cash),
+            "counterparty_vpp_id": counterparty,
+            "buy_vpp_id": trade.buy_vpp_id,
+            "sell_vpp_id": trade.sell_vpp_id,
+            "sim_ts": trade.sim_ts,
+            "wall_ts": trade.wall_ts,
+        }
+        vpp.recent_trades.insert(0, record)
+        vpp.recent_trades = vpp.recent_trades[:50]
+        record_trade = getattr(vpp.agent, "record_trade", None)
+        if callable(record_trade):
+            record_trade(record)
+
+
+def _tick_h_from_ts() -> float:
+    settings = get_settings()
+    return settings.market_tick_sec / 3600.0
+
+
+def _default_sim_epoch(site_timezone: str) -> datetime:
+    """Start demo DER profiles on local site time, not UTC wall-clock hour."""
+    return datetime.now(ZoneInfo(site_timezone)).replace(microsecond=0)

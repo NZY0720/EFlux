@@ -1,0 +1,81 @@
+"""Order submission/cancel — external (user-driven) orders flow through here."""
+
+from __future__ import annotations
+
+from decimal import Decimal
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, Field
+from sqlalchemy import select
+
+from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
+from eflux.db.models import VPP
+
+router = APIRouter(prefix="/orders", tags=["orders"])
+
+
+class OrderSubmit(BaseModel):
+    vpp_id: int
+    side: Literal["buy", "sell"]
+    price: Decimal = Field(gt=0)
+    qty: Decimal = Field(gt=0)
+
+
+class TradeOut(BaseModel):
+    trade_id: int
+    price: str
+    qty: str
+    buy_vpp_id: int
+    sell_vpp_id: int
+
+
+class OrderSubmitResponse(BaseModel):
+    order_id: int
+    remaining_qty: str
+    trades: list[dict]
+
+
+@router.post("", response_model=OrderSubmitResponse)
+async def submit_order(
+    payload: OrderSubmit,
+    session: DbSession,
+    user: CurrentUser,
+    sim: SimulatorDep,
+) -> OrderSubmitResponse:
+    # Verify user owns the VPP.
+    stmt = select(VPP).where(
+        VPP.id == payload.vpp_id, VPP.owner_id == user.id, VPP.is_active.is_(True)
+    )
+    vpp = (await session.execute(stmt)).scalar_one_or_none()
+    if vpp is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "VPP not found or not yours")
+
+    try:
+        result = await sim.submit_external(
+            vpp_id=vpp.id, side=payload.side, price=payload.price, qty=payload.qty
+        )
+    except PermissionError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    return OrderSubmitResponse(**result)
+
+
+class OrderCancel(BaseModel):
+    order_id: int
+
+
+@router.post("/cancel", status_code=status.HTTP_204_NO_CONTENT)
+async def cancel_order(
+    payload: OrderCancel,
+    user: CurrentUser,  # noqa: ARG001 — ensure authenticated
+    sim: SimulatorDep,
+) -> None:
+    from datetime import UTC, datetime
+
+    now_sim = sim.clock.now_sim()
+    now_wall = datetime.now(UTC)
+    async with sim._lock:  # noqa: SLF001 — internal lock, deliberate
+        ok = sim.engine.cancel(payload.order_id, sim_ts=now_sim, wall_ts=now_wall)
+    if not ok:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "order not found")
+    return None

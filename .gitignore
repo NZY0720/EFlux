@@ -1,0 +1,65 @@
+# Virtual environment (we use .env/ as venv dir — non-standard but per user choice)
+.env/
+.venv/
+
+# Secrets
+key.txt
+config.env
+*.pem
+
+# Local databases (dev SQLite)
+*.db
+*.db-journal
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# uv
+.uv-cache/
+
+# Data caches (large)
+data/cache/
+data/raw/
+*.parquet
+
+# Logs / runtime
+*.log
+logs/
+replay/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Frontend (later)
+node_modules/
+frontend/dist/
+frontend/.vite/
+*.tsbuildinfo
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Mac launcher runtime (pid/log from scripts/start-all.sh)
+.run/
+
+# PPO checkpoints (large binaries; re-trainable via `./tasks.sh train-ppo`)
+checkpoints/
