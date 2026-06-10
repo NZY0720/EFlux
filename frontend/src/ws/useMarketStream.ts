@@ -11,45 +11,44 @@ export type ConnectionState = "connecting" | "open" | "closed";
 
 interface Options {
   onEvent?: (e: MarketEvent) => void;
-  maxBuffer?: number;
 }
 
 /**
  * Connects to /ws/market with auto-reconnect (capped exponential backoff).
- * Buffers the last N events in state for components that want to render a tail.
+ * Delivers events via onEvent; buffering/dedup lives in MarketStreamProvider.
+ *
+ * The lifecycle flag and reconnect timer are local to each effect run: a
+ * previous version shared a `stoppedRef` across runs, so StrictMode's
+ * mount→unmount→mount cycle reset the flag and the first (dead) effect's
+ * onclose scheduled a zombie reconnect — leaving two live sockets that
+ * delivered every event twice.
  */
 export function useMarketStream(opts: Options = {}) {
-  const { onEvent, maxBuffer = 200 } = opts;
+  const { onEvent } = opts;
   const [state, setState] = useState<ConnectionState>("connecting");
-  const [recent, setRecent] = useState<MarketEvent[]>([]);
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectMsRef = useRef(500);
-  const stoppedRef = useRef(false);
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
 
   useEffect(() => {
-    stoppedRef.current = false;
+    let stopped = false;
+    let ws: WebSocket | null = null;
     let timeout: ReturnType<typeof setTimeout> | null = null;
+    let reconnectMs = 500;
 
     const connect = () => {
+      if (stopped) return;
       setState("connecting");
-      const ws = new WebSocket(WS_URL);
-      wsRef.current = ws;
+      ws = new WebSocket(WS_URL);
 
       ws.onopen = () => {
         setState("open");
-        reconnectMsRef.current = 500;
+        reconnectMs = 500;
       };
 
       ws.onmessage = (msg) => {
         try {
           const e = JSON.parse(msg.data) as MarketEvent;
           onEventRef.current?.(e);
-          setRecent((prev) => {
-            const next = [e, ...prev];
-            return next.length > maxBuffer ? next.slice(0, maxBuffer) : next;
-          });
         } catch {
           // ignore malformed payload
         }
@@ -57,24 +56,23 @@ export function useMarketStream(opts: Options = {}) {
 
       ws.onclose = () => {
         setState("closed");
-        if (stoppedRef.current) return;
-        const wait = Math.min(reconnectMsRef.current, 8000);
-        timeout = setTimeout(connect, wait);
-        reconnectMsRef.current = Math.min(reconnectMsRef.current * 2, 8000);
+        if (stopped) return;
+        timeout = setTimeout(connect, reconnectMs);
+        reconnectMs = Math.min(reconnectMs * 2, 8000);
       };
 
       ws.onerror = () => {
-        ws.close();
+        ws?.close();
       };
     };
 
     connect();
     return () => {
-      stoppedRef.current = true;
+      stopped = true;
       if (timeout) clearTimeout(timeout);
-      wsRef.current?.close();
+      ws?.close();
     };
-  }, [maxBuffer]);
+  }, []);
 
-  return { state, recent };
+  return { state };
 }

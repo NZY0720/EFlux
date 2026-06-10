@@ -6,6 +6,7 @@ import type {
   MarketSnapshot,
   OrderSubmitResponse,
   SessionInfo,
+  TradeEvent,
   VPP,
 } from "./types";
 
@@ -89,6 +90,11 @@ export async function submitOrder(payload: {
 
 export async function fetchSnapshot(depth = 10): Promise<MarketSnapshot> {
   const { data } = await api.get<MarketSnapshot>("/market/snapshot", { params: { depth } });
+  return data;
+}
+
+export async function fetchRecentTrades(limit = 200): Promise<TradeEvent[]> {
+  const { data } = await api.get<TradeEvent[]>("/market/trades", { params: { limit } });
   return data;
 }
 

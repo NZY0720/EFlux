@@ -8,6 +8,7 @@ from fastapi import APIRouter
 from pydantic import BaseModel
 
 from eflux.api.deps import SimulatorDep
+from eflux.market.events import TradeEvent
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -36,6 +37,14 @@ class MarketSnapshot(BaseModel):
     asks: list[tuple[str, str]]
     num_builtin_vpps: int
     data_source: DataSourceStatus
+
+
+@router.get("/trades", response_model=list[TradeEvent])
+def recent_trades(sim: SimulatorDep, limit: int = 200) -> list[TradeEvent]:
+    """Most recent trades, oldest first — lets clients backfill chart/tape on load."""
+    limit = max(1, min(limit, 500))
+    log = list(sim.trade_log)
+    return log[-limit:]
 
 
 @router.get("/snapshot", response_model=MarketSnapshot)

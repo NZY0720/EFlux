@@ -1,42 +1,14 @@
-import { useEffect, useState } from "react";
-
 import DataSourceBanner from "../components/DataSourceBanner";
 import KpiBar from "../components/KpiBar";
 import OrderBookDepth from "../components/OrderBookDepth";
 import PriceChart from "../components/PriceChart";
 import TradeTape from "../components/TradeTape";
-import { fetchSnapshot } from "../api/client";
-import type { MarketSnapshot } from "../api/types";
-import { useMarketStream } from "../ws/useMarketStream";
+import { useMarket } from "../state/marketStream";
 
 export default function MarketOverview() {
-  const { recent, state } = useMarketStream({ maxBuffer: 500 });
-  const [snapshot, setSnapshot] = useState<MarketSnapshot | null>(null);
-
-  // Pull a snapshot periodically (REST) for order book depth — WS pushes per-tick summary
-  // but not full depth. Cheap and good enough at 1Hz.
-  useEffect(() => {
-    let cancelled = false;
-    const tick = async () => {
-      try {
-        const s = await fetchSnapshot(10);
-        if (!cancelled) setSnapshot(s);
-      } catch {
-        /* swallow — connection issues handled by indicator */
-      }
-    };
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => {
-      cancelled = true;
-      clearInterval(id);
-    };
-  }, []);
-
-  // Re-export state for NavBar via window event (small cross-cut to avoid prop drilling).
-  useEffect(() => {
-    window.dispatchEvent(new CustomEvent("eflux:ws-state", { detail: state }));
-  }, [state]);
+  // Stream + snapshot live in MarketStreamProvider (App level), so navigating
+  // away and back keeps the accumulated chart/tape history.
+  const { recent, snapshot } = useMarket();
 
   return (
     <div className="p-6 space-y-6">

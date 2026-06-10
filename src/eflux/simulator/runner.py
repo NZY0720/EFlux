@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -49,7 +50,10 @@ class Simulator:
     def __init__(self, bus: EventBus, sim_epoch: datetime | None = None) -> None:
         settings = get_settings()
         self.bus = bus
-        self.engine = MatchingEngine(publish_cb=bus.publish)
+        # Rolling log of recent trades so late-joining clients (page loads,
+        # WS reconnects) can backfill instead of starting from a blank chart.
+        self.trade_log: deque[TradeEvent] = deque(maxlen=500)
+        self.engine = MatchingEngine(publish_cb=self._publish_event)
         self.clock = RollingClock(
             sim_epoch=sim_epoch or _default_sim_epoch(settings.site_timezone),
             speed=settings.market_speed,
@@ -60,6 +64,11 @@ class Simulator:
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._data_source_status: dict | None = None
+
+    def _publish_event(self, event) -> None:
+        if isinstance(event, TradeEvent):
+            self.trade_log.append(event)
+        self.bus.publish(event)
 
     def add_builtin_vpp(
         self,

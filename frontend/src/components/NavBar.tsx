@@ -1,14 +1,11 @@
 import { Link, useLocation } from "react-router-dom";
 
 import { useAuth } from "../state/auth";
-import type { ConnectionState } from "../ws/useMarketStream";
+import { useMarket } from "../state/marketStream";
 
-interface Props {
-  wsState?: ConnectionState;
-}
-
-export default function NavBar({ wsState }: Props) {
+export default function NavBar() {
   const { email, logout } = useAuth();
+  const { state: wsState } = useMarket();
   const loc = useLocation();
 
   const link = (to: string, label: string) => {
@@ -34,12 +31,10 @@ export default function NavBar({ wsState }: Props) {
         {link("/vpps", "My VPPs")}
       </div>
       <div className="flex items-center gap-4 text-sm text-slate-400">
-        {wsState !== undefined && (
-          <span className="flex items-center gap-1">
-            <span className={`inline-block h-2 w-2 rounded-full ${wsColor}`}></span>
-            <span>{wsState}</span>
-          </span>
-        )}
+        <span className="flex items-center gap-1">
+          <span className={`inline-block h-2 w-2 rounded-full ${wsColor}`}></span>
+          <span>{wsState}</span>
+        </span>
         {email ? (
           <>
             <span>{email}</span>
