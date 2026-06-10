@@ -8,6 +8,7 @@ import {
   submitOrder,
 } from "../api/client";
 import type { ManagedVPP, ManagedVPPPerformance, VPP } from "../api/types";
+import { useMarket } from "../state/marketStream";
 
 export default function MyVPPs() {
   const [vpps, setVpps] = useState<VPP[]>([]);
@@ -87,8 +88,9 @@ export default function MyVPPs() {
         params.pv_tilt = pvTilt;
         params.pv_azimuth = pvAzimuth;
       }
-      await createVPP(newName.trim(), params);
+      const created = await createVPP(newName.trim(), params);
       setNewName("");
+      setOrderVpp(created.id); // pre-select the new VPP in the order form
       await reload();
     } catch (err) {
       setError((err as Error).message);
@@ -102,6 +104,7 @@ export default function MyVPPs() {
     if (orderVpp === null) return;
     setBusy(true);
     setError(null);
+    setLastOrder(null); // clear stale feedback from the previous order
     try {
       const r = await submitOrder({ vpp_id: orderVpp, side, price, qty });
       setLastOrder(`order ${r.order_id} — ${r.trades.length} fill(s), remaining=${r.remaining_qty}`);
@@ -123,12 +126,18 @@ export default function MyVPPs() {
               <button
                 type="button"
                 onClick={() => toggleManaged(v.id)}
-                className="w-full text-left"
+                className="w-full cursor-pointer text-left hover:bg-sky-900/20"
               >
               <div className="flex items-baseline justify-between gap-3">
                 <div>
-                  <span className="text-white font-medium">{v.name}</span>
-                  <span className="ml-2 text-xs text-slate-500">#{v.id}</span>
+                  <span className="text-slate-500">{selectedManaged === v.id ? "▾" : "▸"}</span>
+                  <span className="ml-1 text-white font-medium">{v.name}</span>
+                  <span className="ml-2 rounded bg-sky-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-sky-300">
+                    built-in
+                  </span>
+                  <span className="ml-2 text-[11px] text-slate-500">
+                    {selectedManaged === v.id ? "" : "click for performance & reflections"}
+                  </span>
                 </div>
                 <LLMBadge state={v.llm_health_state} />
               </div>
@@ -195,7 +204,7 @@ export default function MyVPPs() {
           <button
             type="button"
             onClick={() => setAdvancedOpen(!advancedOpen)}
-            className="text-xs text-sky-400 hover:text-sky-300"
+            className="block text-xs text-sky-400 hover:text-sky-300"
           >
             {advancedOpen ? "Hide" : "Show"} advanced (real PV physics)
           </button>
@@ -352,6 +361,7 @@ function LLMBadge({ state }: { state: string }) {
 }
 
 function ManagedPerformancePanel({ data }: { data?: ManagedVPPPerformance }) {
+  const { nameOf } = useMarket();
   const pnl = Number(data?.pnl ?? 0);
   const pnlClass = pnl >= 0 ? "text-emerald-300" : "text-rose-300";
 
@@ -392,7 +402,7 @@ function ManagedPerformancePanel({ data }: { data?: ManagedVPPPerformance }) {
                     <td className="px-2 py-1.5 text-right text-slate-200 tabular-nums">{Number(t.price).toFixed(2)}</td>
                     <td className="px-2 py-1.5 text-right text-slate-200 tabular-nums">{Number(t.qty).toFixed(4)}</td>
                     <td className="px-2 py-1.5 text-right text-slate-200 tabular-nums">{Number(t.cash).toFixed(4)}</td>
-                    <td className="px-2 py-1.5 text-right text-slate-400 tabular-nums">{t.counterparty_vpp_id}</td>
+                    <td className="px-2 py-1.5 text-right text-slate-400">{nameOf(t.counterparty_vpp_id)}</td>
                   </tr>
                 ))}
                 {data.recent_trades.length === 0 && (

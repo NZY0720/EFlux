@@ -5,6 +5,7 @@ import type {
   ManagedVPP,
   MarketSnapshot,
   OrderSubmitResponse,
+  Participant,
   SessionInfo,
   TradeEvent,
   VPP,
@@ -33,6 +34,27 @@ api.interceptors.request.use((config) => {
     (config.headers as Record<string, string>).Authorization = `Bearer ${t}`;
   }
   return config;
+});
+
+// Surface FastAPI error details ("detail": string | validation array) as the
+// Error message, so the UI shows "qty: Input should be greater than 0" instead
+// of axios' opaque "Request failed with status code 422".
+api.interceptors.response.use(undefined, (error) => {
+  const detail = error?.response?.data?.detail;
+  let msg: string | undefined;
+  if (typeof detail === "string") {
+    msg = detail;
+  } else if (Array.isArray(detail)) {
+    msg = detail
+      .map((d: { loc?: unknown[]; msg?: string }) => {
+        const loc = Array.isArray(d.loc) ? d.loc.filter((p) => p !== "body").join(".") : "";
+        return loc ? `${loc}: ${d.msg}` : (d.msg ?? "");
+      })
+      .filter(Boolean)
+      .join("; ");
+  }
+  if (msg && error instanceof Error) error.message = msg;
+  return Promise.reject(error);
 });
 
 // --- Auth ---
@@ -95,6 +117,11 @@ export async function fetchSnapshot(depth = 10): Promise<MarketSnapshot> {
 
 export async function fetchRecentTrades(limit = 200): Promise<TradeEvent[]> {
   const { data } = await api.get<TradeEvent[]>("/market/trades", { params: { limit } });
+  return data;
+}
+
+export async function fetchParticipants(): Promise<Participant[]> {
+  const { data } = await api.get<Participant[]>("/market/participants");
   return data;
 }
 

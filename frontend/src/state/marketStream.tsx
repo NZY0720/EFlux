@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
-import { fetchRecentTrades, fetchSnapshot } from "../api/client";
+import { fetchParticipants, fetchRecentTrades, fetchSnapshot } from "../api/client";
 import type { MarketEvent, MarketSnapshot } from "../api/types";
 import { useMarketStream } from "../ws/useMarketStream";
 import type { ConnectionState } from "../ws/useMarketStream";
@@ -15,9 +15,16 @@ interface MarketStreamValue {
   recent: MarketEvent[];
   /** Order-book snapshot, polled at 1Hz (WS pushes per-tick summary but not depth). */
   snapshot: MarketSnapshot | null;
+  /** Human-readable VPP name for a trade-tape party (falls back to "VPP <id>"). */
+  nameOf: (vppId: number) => string;
 }
 
-const Ctx = createContext<MarketStreamValue>({ state: "connecting", recent: [], snapshot: null });
+const Ctx = createContext<MarketStreamValue>({
+  state: "connecting",
+  recent: [],
+  snapshot: null,
+  nameOf: (id) => `VPP ${id}`,
+});
 
 function keyOf(e: MarketEvent): string {
   switch (e.kind) {
@@ -94,7 +101,29 @@ export function MarketStreamProvider({ children }: { children: React.ReactNode }
     };
   }, []);
 
-  return <Ctx.Provider value={{ state, recent, snapshot }}>{children}</Ctx.Provider>;
+  // VPP id → name directory for labeling trade parties. Refreshed once a
+  // minute to pick up newly created external VPPs.
+  const [names, setNames] = useState<Record<number, string>>({});
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const parts = await fetchParticipants();
+        if (!cancelled) setNames(Object.fromEntries(parts.map((p) => [p.id, p.name])));
+      } catch {
+        /* names fall back to raw ids */
+      }
+    };
+    load();
+    const id = setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
+  const nameOf = useCallback((vppId: number) => names[vppId] ?? `VPP ${vppId}`, [names]);
+
+  return <Ctx.Provider value={{ state, recent, snapshot, nameOf }}>{children}</Ctx.Provider>;
 }
 
 export function useMarket(): MarketStreamValue {

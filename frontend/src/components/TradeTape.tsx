@@ -1,4 +1,5 @@
 import type { MarketEvent, TradeEvent } from "../api/types";
+import { useMarket } from "../state/marketStream";
 
 interface Props {
   events: MarketEvent[];
@@ -10,6 +11,7 @@ function isTrade(e: MarketEvent): e is TradeEvent {
 }
 
 export default function TradeTape({ events, limit = 25 }: Props) {
+  const { nameOf } = useMarket();
   const trades = events.filter(isTrade).slice(0, limit);
 
   return (
@@ -34,8 +36,8 @@ export default function TradeTape({ events, limit = 25 }: Props) {
                 </td>
                 <td className="px-3 py-1.5 text-right text-amber-300 tabular-nums">{Number(t.price).toFixed(2)}</td>
                 <td className="px-3 py-1.5 text-right text-slate-200 tabular-nums">{Number(t.qty).toFixed(3)}</td>
-                <td className="px-3 py-1.5 text-emerald-300">VPP {t.buy_vpp_id}</td>
-                <td className="px-3 py-1.5 text-rose-300">VPP {t.sell_vpp_id}</td>
+                <td className="px-3 py-1.5 text-emerald-300">{nameOf(t.buy_vpp_id)}</td>
+                <td className="px-3 py-1.5 text-rose-300">{nameOf(t.sell_vpp_id)}</td>
               </tr>
             );
           })}

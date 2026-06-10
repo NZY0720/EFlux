@@ -88,6 +88,13 @@ export interface ManagedVPPPerformance {
   llm_health: LLMHealth | null;
 }
 
+export interface Participant {
+  id: number;
+  name: string;
+  kind: "builtin" | "external" | string;
+  strategy: string | null;
+}
+
 export interface SessionInfo {
   session_token: string;
   user_id: number;
