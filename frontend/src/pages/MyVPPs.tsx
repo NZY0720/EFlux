@@ -130,9 +130,7 @@ export default function MyVPPs() {
                   <span className="text-white font-medium">{v.name}</span>
                   <span className="ml-2 text-xs text-slate-500">#{v.id}</span>
                 </div>
-                <span className={`shrink-0 text-xs ${v.llm_live ? "text-emerald-300" : "text-amber-300"}`}>
-                  {v.llm_live ? "LLM live" : "LLM fallback"}
-                </span>
+                <LLMBadge state={v.llm_health_state} />
               </div>
               <div className="mt-1 text-xs text-slate-400">
                 PV {v.params.pv_kw_peak}kW · Batt {v.params.battery_kwh}kWh · Load {v.params.load_kw_base}kW
@@ -335,6 +333,24 @@ export default function MyVPPs() {
   );
 }
 
+function LLMBadge({ state }: { state: string }) {
+  const styles: Record<string, string> = {
+    live: "text-emerald-300",
+    degraded: "text-amber-300",
+    offline: "text-slate-500",
+  };
+  const labels: Record<string, string> = {
+    live: "LLM live",
+    degraded: "LLM degraded",
+    offline: "LLM offline",
+  };
+  return (
+    <span className={`shrink-0 text-xs ${styles[state] ?? "text-slate-400"}`}>
+      {labels[state] ?? state}
+    </span>
+  );
+}
+
 function ManagedPerformancePanel({ data }: { data?: ManagedVPPPerformance }) {
   const pnl = Number(data?.pnl ?? 0);
   const pnlClass = pnl >= 0 ? "text-emerald-300" : "text-rose-300";
@@ -351,6 +367,7 @@ function ManagedPerformancePanel({ data }: { data?: ManagedVPPPerformance }) {
             <Metric label="Bought" value={data.cumulative_energy_bought_kwh.toFixed(4)} />
             <Metric label="Sold" value={data.cumulative_energy_sold_kwh.toFixed(4)} />
           </div>
+          <ReflectionTimeline data={data} />
           <div className="overflow-hidden rounded border border-slate-800">
             <table className="w-full text-xs">
               <thead className="bg-slate-950/80 text-slate-400">
@@ -399,6 +416,56 @@ function Metric({ label, value, valueClass = "text-white" }: { label: string; va
     <div className="rounded border border-slate-800 bg-slate-950/50 px-2 py-2">
       <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
       <div className={`mt-1 text-sm font-semibold tabular-nums ${valueClass}`}>{value}</div>
+    </div>
+  );
+}
+
+function ReflectionTimeline({ data }: { data: ManagedVPPPerformance }) {
+  const { reflections, llm_health: health } = data;
+  if (health === null && reflections.length === 0) return null;
+
+  return (
+    <div>
+      <div className="mb-1 flex items-baseline justify-between">
+        <h4 className="text-[11px] uppercase tracking-wide text-slate-500">Reflection timeline</h4>
+        {health && (
+          <span className="text-[11px] text-slate-500">
+            {health.ok_count} ok / {health.fail_count} failed
+            {health.last_ok_ts &&
+              ` · last ok ${new Date(health.last_ok_ts).toLocaleTimeString("en-GB", { hour12: false })}`}
+          </span>
+        )}
+      </div>
+      <div className="max-h-56 space-y-1.5 overflow-auto rounded border border-slate-800 bg-slate-950/40 p-2">
+        {reflections.length === 0 && (
+          <p className="px-1 py-2 text-center text-xs text-slate-500">
+            No reflections yet — the agent consults the LLM every ~minute.
+          </p>
+        )}
+        {reflections.map((r) => (
+          <div key={r.ts} className="rounded border border-slate-800/80 bg-slate-900/40 px-2 py-1.5">
+            <div className="flex items-center gap-2 text-[11px]">
+              <span className="text-slate-400 tabular-nums">
+                {new Date(r.ts).toLocaleTimeString("en-GB", { hour12: false })}
+              </span>
+              {r.ok ? (
+                <>
+                  <span className="text-emerald-300">ok</span>
+                  <span className="text-sky-300 tabular-nums">
+                    price {r.price_adjust >= 0 ? "+" : ""}
+                    {(r.price_adjust * 100).toFixed(1)}% · qty ×{r.qty_scale.toFixed(2)}
+                  </span>
+                </>
+              ) : (
+                <span className="text-rose-300">failed</span>
+              )}
+            </div>
+            <p className="mt-0.5 text-xs text-slate-300">
+              {r.ok ? r.rationale || "(no rationale)" : r.error}
+            </p>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

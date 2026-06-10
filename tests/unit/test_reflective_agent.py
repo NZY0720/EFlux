@@ -130,6 +130,16 @@ def test_reflective_lifecycle_with_fake_llm():
         assert intents[0].price == Decimal("52.5000")
         assert intents[0].qty == Decimal("2.0000")
         assert len(fake.calls) == 1
+        # Audit trail recorded the successful reflection.
+        assert agent.ok_count == 1
+        assert agent.fail_count == 0
+        assert agent.last_ok_ts is not None
+        entry = agent.reflection_log[-1]
+        assert entry["ok"] is True
+        assert entry["price_adjust"] == 0.05
+        assert entry["qty_scale"] == 0.8
+        assert entry["rationale"] == "tightened"
+        assert entry["error"] is None
 
     asyncio.run(run())
 
@@ -152,5 +162,40 @@ def test_reflective_falls_back_when_llm_errors():
         # Hints unchanged (zeros) — behaviour stays = inner.
         intents = agent.decide(_ctx(pv_kw=0.5, load_kw=3.0))
         assert intents[0].price == Decimal("50.0000")
+        # Failure is recorded in the audit trail with the error message.
+        assert agent.fail_count >= 1
+        assert agent.ok_count == 0
+        entry = agent.reflection_log[-1]
+        assert entry["ok"] is False
+        assert "RuntimeError: boom" in entry["error"]
 
     asyncio.run(run())
+
+
+def test_build_user_message_serializes_runner_trade_records():
+    """Regression: runner trade records carry datetime/Decimal values; the prompt
+    builder must not blow up on them (it did, once the LLM VPP actually traded)."""
+    from eflux.agents.reflective.prompt import build_user_message
+
+    msg = build_user_message(
+        recent_pnl=[0.1, -0.2],
+        recent_trades=[
+            {
+                "trade_id": 1,
+                "side": "buy",
+                "price": Decimal("20.0000"),
+                "qty": Decimal("0.0100"),
+                "cash": Decimal("0.2"),
+                "counterparty_vpp_id": -3,
+                "buy_vpp_id": -11,
+                "sell_vpp_id": -3,
+                "sim_ts": datetime.now(UTC),
+                "wall_ts": datetime.now(UTC),
+            }
+        ],
+        soc_frac=0.5,
+        best_bid=20.0,
+        best_ask=21.0,
+        last_price=20.5,
+    )
+    assert '"trade_id": 1' in msg

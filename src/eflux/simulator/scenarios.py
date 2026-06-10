@@ -98,7 +98,12 @@ def load_my_llm_vpp(sim: Simulator) -> None:
             model=settings.llm_model,
         )
         if ok:
-            client = LLMClient(base_url=settings.llm_base_url, api_key=api_key, model=settings.llm_model)
+            client = LLMClient(
+                base_url=settings.llm_base_url,
+                api_key=api_key,
+                model=settings.llm_model,
+                timeout_sec=settings.llm_timeout_sec,
+            )
             strategy = f"ReflectiveAgent ({settings.llm_provider}:{settings.llm_model})"
             llm_status = f"live LLM reflection via {settings.llm_base_url}"
         else:

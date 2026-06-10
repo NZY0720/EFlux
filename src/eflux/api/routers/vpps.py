@@ -39,6 +39,9 @@ class ManagedVPPOut(BaseModel):
     strategy: str
     llm_live: bool
     llm_status: str
+    # "live" | "degraded" | "offline" — computed from the agent's recent
+    # reflection outcomes so the UI badge reflects reality, not startup state.
+    llm_health_state: str
 
 
 class ManagedTradeOut(BaseModel):
@@ -54,6 +57,22 @@ class ManagedTradeOut(BaseModel):
     wall_ts: datetime
 
 
+class ReflectionEntryOut(BaseModel):
+    ts: datetime
+    ok: bool
+    price_adjust: float
+    qty_scale: float
+    rationale: str
+    error: str | None
+
+
+class LLMHealthOut(BaseModel):
+    ok_count: int
+    fail_count: int
+    last_ok_ts: datetime | None
+    state: str  # "live" | "degraded" | "offline"
+
+
 class ManagedVPPPerformanceOut(BaseModel):
     id: int
     name: str
@@ -63,6 +82,9 @@ class ManagedVPPPerformanceOut(BaseModel):
     soc_kwh: float
     soc_frac: float
     recent_trades: list[ManagedTradeOut]
+    # LLM reflection audit trail, newest first. Empty for non-reflective agents.
+    reflections: list[ReflectionEntryOut]
+    llm_health: LLMHealthOut | None
 
 
 @router.get("", response_model=list[VPPOut])
@@ -82,6 +104,36 @@ async def list_my_vpps(session: DbSession, user: CurrentUser) -> list[VPPOut]:
     ]
 
 
+def _llm_health(vpp) -> tuple[str, LLMHealthOut | None]:
+    """Derive the runtime LLM health from the agent's reflection counters.
+
+    offline  — no live LLM client configured
+    live     — at least one reflection succeeded and the most recent attempt did
+    degraded — client configured but reflections are failing (or none succeeded yet)
+    """
+    agent = vpp.agent
+    log_entries = list(getattr(agent, "reflection_log", []))
+    ok_count = getattr(agent, "ok_count", 0)
+    fail_count = getattr(agent, "fail_count", 0)
+    last_ok_ts = getattr(agent, "last_ok_ts", None)
+
+    if not vpp.llm_live:
+        state = "offline"
+    elif log_entries and log_entries[-1]["ok"]:
+        state = "live"
+    elif ok_count == 0 and fail_count == 0:
+        state = "live"  # configured, no attempt yet — give it the benefit of the doubt
+    else:
+        state = "degraded"
+
+    health = None
+    if vpp.llm_live or ok_count or fail_count:
+        health = LLMHealthOut(
+            ok_count=ok_count, fail_count=fail_count, last_ok_ts=last_ok_ts, state=state
+        )
+    return state, health
+
+
 @router.get("/managed", response_model=list[ManagedVPPOut])
 async def list_my_managed_vpps(
     user: CurrentUser,  # noqa: ARG001 — route belongs to the authenticated My VPPs view
@@ -89,6 +141,10 @@ async def list_my_managed_vpps(
 ) -> list[ManagedVPPOut]:
     out: list[ManagedVPPOut] = []
     for vpp in sim.my_managed_vpps():
+        state, health = _llm_health(vpp)
+        status = vpp.llm_status
+        if health is not None and (health.ok_count or health.fail_count):
+            status = f"{status} — {health.ok_count} ok / {health.fail_count} failed"
         out.append(
             ManagedVPPOut(
                 id=vpp.vpp_id,
@@ -99,7 +155,8 @@ async def list_my_managed_vpps(
                 agent_kind=vpp.agent.__class__.__name__,
                 strategy=vpp.strategy,
                 llm_live=vpp.llm_live,
-                llm_status=vpp.llm_status,
+                llm_status=status,
+                llm_health_state=state,
             )
         )
     return out
@@ -114,6 +171,11 @@ async def get_my_managed_vpp_performance(
     vpp = next((v for v in sim.my_managed_vpps() if v.vpp_id == vpp_id), None)
     if vpp is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "managed VPP not found")
+    _, health = _llm_health(vpp)
+    reflections = [
+        ReflectionEntryOut(**entry)
+        for entry in reversed(list(getattr(vpp.agent, "reflection_log", [])))
+    ]
     return ManagedVPPPerformanceOut(
         id=vpp.vpp_id,
         name=vpp.name,
@@ -123,6 +185,8 @@ async def get_my_managed_vpp_performance(
         soc_kwh=vpp.battery.soc_kwh,
         soc_frac=vpp.battery.soc_frac,
         recent_trades=[ManagedTradeOut(**t) for t in vpp.recent_trades[:25]],
+        reflections=reflections,
+        llm_health=health,
     )
 
 

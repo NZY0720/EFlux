@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from eflux.agents.base import AgentContext, BaseAgent, OrderIntent
@@ -35,6 +37,14 @@ class ReflectiveAgent(BaseAgent):
     _recent_trades: list[dict] = field(default_factory=list)
     _reflection_in_flight: bool = False
     _last_pnl: Decimal = field(default_factory=lambda: Decimal("0"))
+
+    # Reflection audit trail — every LLM round-trip (success or failure) lands
+    # here so the API/UI can show what the agent was thinking and how healthy
+    # the LLM link is. Entries: {ts, ok, price_adjust, qty_scale, rationale, error}.
+    reflection_log: deque = field(default_factory=lambda: deque(maxlen=50))
+    ok_count: int = 0
+    fail_count: int = 0
+    last_ok_ts: datetime | None = None
 
     def decide(self, ctx: AgentContext) -> list[OrderIntent]:
         # Track PnL delta vs last tick.
@@ -100,14 +110,41 @@ class ReflectiveAgent(BaseAgent):
                     {"role": "user", "content": user_msg},
                 ]
             )
+            if not content.strip():
+                # Reasoning models return empty content when the token budget
+                # is spent thinking — record as a failure, keep previous hints.
+                raise RuntimeError("empty LLM response (completion budget exhausted?)")
             self._hints = parse_hints(content)
+            self.ok_count += 1
+            self.last_ok_ts = datetime.now(UTC)
+            self.reflection_log.append(
+                {
+                    "ts": self.last_ok_ts,
+                    "ok": True,
+                    "price_adjust": self._hints.price_adjust,
+                    "qty_scale": self._hints.qty_scale,
+                    "rationale": self._hints.rationale,
+                    "error": None,
+                }
+            )
             log.info(
                 "Reflective hint updated: price_adjust=%.3f qty_scale=%.3f (%s)",
                 self._hints.price_adjust,
                 self._hints.qty_scale,
                 self._hints.rationale[:80],
             )
-        except Exception:
+        except Exception as e:
+            self.fail_count += 1
+            self.reflection_log.append(
+                {
+                    "ts": datetime.now(UTC),
+                    "ok": False,
+                    "price_adjust": self._hints.price_adjust,
+                    "qty_scale": self._hints.qty_scale,
+                    "rationale": "",
+                    "error": f"{type(e).__name__}: {e}"[:200],
+                }
+            )
             log.exception("Reflection LLM call failed — keeping previous hints")
         finally:
             self._reflection_in_flight = False

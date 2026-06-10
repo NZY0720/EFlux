@@ -35,6 +35,11 @@ class LLMClient:
             "model": self._model,
             "messages": messages,
             "temperature": temperature,
+            # Reflection hints are a tiny JSON blob, but reasoning models spend
+            # most of the budget thinking before emitting content — too small a
+            # cap yields an empty completion. 4096 bounds runaway responses
+            # while leaving room to reason.
+            "max_tokens": 4096,
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",

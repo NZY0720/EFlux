@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     llm_key_file: str = "key.txt"
     llm_base_url: str = ""
     llm_model: str = ""
+    # Reasoning models (mimo-v2.5-pro) regularly take >30s per completion; the
+    # old 30s default made most reflections die with ReadTimeout.
+    llm_timeout_sec: float = 120.0
     # Reflective LLM agent (Phase 6). Off by default so no key/base_url is needed
     # for default dev runs.
     reflective_enabled: bool = False

@@ -43,6 +43,23 @@ export interface ManagedVPP {
   strategy: string;
   llm_live: boolean;
   llm_status: string;
+  llm_health_state: "live" | "degraded" | "offline" | string;
+}
+
+export interface ReflectionEntry {
+  ts: string;
+  ok: boolean;
+  price_adjust: number;
+  qty_scale: number;
+  rationale: string;
+  error: string | null;
+}
+
+export interface LLMHealth {
+  ok_count: number;
+  fail_count: number;
+  last_ok_ts: string | null;
+  state: "live" | "degraded" | "offline" | string;
 }
 
 export interface ManagedTrade {
@@ -67,6 +84,8 @@ export interface ManagedVPPPerformance {
   soc_kwh: number;
   soc_frac: number;
   recent_trades: ManagedTrade[];
+  reflections: ReflectionEntry[];
+  llm_health: LLMHealth | null;
 }
 
 export interface SessionInfo {

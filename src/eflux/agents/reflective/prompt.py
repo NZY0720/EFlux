@@ -72,6 +72,8 @@ def build_user_message(
             "last_price": None if last_price is None else round(float(last_price), 4),
         },
         ensure_ascii=False,
+        # Trade records carry datetime/Decimal values straight from the runner.
+        default=str,
     )
 
 
