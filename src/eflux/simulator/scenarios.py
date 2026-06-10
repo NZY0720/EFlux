@@ -42,16 +42,22 @@ def load_default_scenario(sim: Simulator) -> None:
     else:
         solar_params = VPPParams(pv_kw_peak=8.0, battery_kwh=15.0, battery_kw_max=4.0, load_kw_base=1.2)
 
+    # Truthful sellers ask markup_floor * price_ref for PV surplus. With the
+    # param default (0.0) that floors at 0.0001 — whenever the bid side of the
+    # book is momentarily empty, the ask rests there and gets picked off for
+    # free. A 0.4 floor (= 20 with price_ref 50) keeps asks competitive against
+    # ZI quotes (uniform 25–75) without giving energy away.
+    truthful_floor = 0.4
     presets: list[tuple[str, VPPParams, BaseAgent]] = [
         ("ordinary-zi-solar-01", solar_params, ZIAgent()),
-        ("ordinary-truthful-batt-02", VPPParams(pv_kw_peak=4.0, battery_kwh=30.0, battery_kw_max=8.0, load_kw_base=2.0), TruthfulAgent()),
+        ("ordinary-truthful-batt-02", VPPParams(pv_kw_peak=4.0, battery_kwh=30.0, battery_kw_max=8.0, load_kw_base=2.0, markup_floor=truthful_floor), TruthfulAgent()),
         ("ordinary-zi-load-03", VPPParams(pv_kw_peak=0.5, battery_kwh=5.0, battery_kw_max=2.0, load_kw_base=5.0), ZIAgent()),
         ("ordinary-zi-rooftop-04", VPPParams(pv_kw_peak=6.0, battery_kwh=12.0, battery_kw_max=3.0, load_kw_base=1.5), ZIAgent()),
-        ("ordinary-truthful-flex-05", VPPParams(pv_kw_peak=3.0, battery_kwh=18.0, battery_kw_max=5.0, load_kw_base=3.0), TruthfulAgent()),
+        ("ordinary-truthful-flex-05", VPPParams(pv_kw_peak=3.0, battery_kwh=18.0, battery_kw_max=5.0, load_kw_base=3.0, markup_floor=truthful_floor), TruthfulAgent()),
         ("ordinary-zi-battery-06", VPPParams(pv_kw_peak=2.0, battery_kwh=28.0, battery_kw_max=8.0, load_kw_base=2.5), ZIAgent()),
-        ("ordinary-truthful-solar-07", VPPParams(pv_kw_peak=7.0, battery_kwh=8.0, battery_kw_max=3.0, load_kw_base=1.0), TruthfulAgent()),
+        ("ordinary-truthful-solar-07", VPPParams(pv_kw_peak=7.0, battery_kwh=8.0, battery_kw_max=3.0, load_kw_base=1.0, markup_floor=truthful_floor), TruthfulAgent()),
         ("ordinary-zi-commercial-load-08", VPPParams(pv_kw_peak=1.0, battery_kwh=10.0, battery_kw_max=4.0, load_kw_base=6.0), ZIAgent()),
-        ("ordinary-truthful-mixed-09", VPPParams(pv_kw_peak=5.0, battery_kwh=20.0, battery_kw_max=6.0, load_kw_base=2.8), TruthfulAgent()),
+        ("ordinary-truthful-mixed-09", VPPParams(pv_kw_peak=5.0, battery_kwh=20.0, battery_kw_max=6.0, load_kw_base=2.8, markup_floor=truthful_floor), TruthfulAgent()),
         ("ordinary-zi-evening-load-10", VPPParams(pv_kw_peak=1.5, battery_kwh=6.0, battery_kw_max=2.5, load_kw_base=4.5), ZIAgent()),
     ]
     for i, (name, params, agent) in enumerate(presets):
@@ -124,7 +130,7 @@ def load_my_llm_vpp(sim: Simulator) -> None:
     )
     sim.add_builtin_vpp(
         name="my-llm-vpp",
-        params=VPPParams(pv_kw_peak=5.0, battery_kwh=15.0, battery_kw_max=4.0, load_kw_base=2.5),
+        params=VPPParams(pv_kw_peak=5.0, battery_kwh=15.0, battery_kw_max=4.0, load_kw_base=2.5, markup_floor=0.4),
         agent=agent,
         seed=77,
         strategy=strategy,

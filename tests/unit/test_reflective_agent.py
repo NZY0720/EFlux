@@ -24,6 +24,9 @@ def _ctx(*, pv_kw: float = 5.0, load_kw: float = 1.0) -> AgentContext:
     params = VPPParams()
     state = VPPState(sim_ts=datetime.now(UTC), soc_kwh=5.0, pv_kw=pv_kw, load_kw=load_kw)
     state.update_net()
+    # Agents quote from the accumulated untraded balance (maintained by the
+    # runner). With tick_duration_h=1.0 one tick's accumulation equals net_kw.
+    state.pending_net_kwh = state.net_kw * 1.0
     market = MarketSnapshot(
         sim_ts=state.sim_ts,
         best_bid=Decimal("48"),

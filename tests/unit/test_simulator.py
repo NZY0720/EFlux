@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from eflux.agents.base import OrderIntent
+from eflux.agents.base import MarketSnapshot, OrderIntent
+from eflux.agents.truthful import TruthfulAgent
 from eflux.bridge.bus import InMemoryBus
 from eflux.agents.zi import ZIAgent
 from eflux.config import get_settings
@@ -47,3 +48,35 @@ def test_internal_trade_updates_both_vpp_performance():
     assert buyer.state.pnl == Decimal("-40.0")
     assert seller.recent_trades[0]["side"] == "sell"
     assert buyer.recent_trades[0]["side"] == "buy"
+
+
+def test_truthful_vpp_trades_within_seconds_via_accumulator():
+    """Regression for the dimension bug: with a 1-second tick, per-tick net energy
+    (~1e-3 kWh) never cleared min_qty, so Truthful (and the LLM-wrapped Truthful)
+    agents never traded. The runner's pending_net_kwh accumulator fixes that —
+    a deficit VPP must place a buy and fill within a realistic number of ticks."""
+    sim = Simulator(bus=InMemoryBus())
+    deficit = sim.add_builtin_vpp(
+        "deficit-truthful",
+        VPPParams(pv_kw_peak=0.0, load_kw_base=5.0),
+        TruthfulAgent(),
+    )
+    counter = sim.add_builtin_vpp("counter-seller", VPPParams(), ZIAgent())
+    sim_ts = sim.clock.now_sim()
+    # Resting ask the truthful buy (at price_ref=50) can cross.
+    sim._submit_intent(  # noqa: SLF001
+        counter, OrderIntent(side="sell", price=Decimal("40"), qty=Decimal("5")), sim_ts
+    )
+
+    tick_h = 1.0 / 3600.0  # 1-second ticks, as in the live simulator
+    market = MarketSnapshot.from_engine(sim_ts, sim.engine.snapshot())
+    for _ in range(60):
+        sim._tick_vpp(deficit, sim_ts, tick_h, market)  # noqa: SLF001
+        if deficit.recent_trades:
+            break
+
+    assert deficit.recent_trades, "deficit VPP should trade within 60 one-second ticks"
+    assert deficit.recent_trades[0]["side"] == "buy"
+    # The accumulator was debited by the quoted qty — it must not keep growing
+    # unboundedly negative after the order went out.
+    assert abs(deficit.state.pending_net_kwh) < 0.02

@@ -16,6 +16,9 @@ def _make_ctx(*, pv_kw: float, load_kw: float, soc_kwh: float = 5.0) -> AgentCon
     params = VPPParams()
     state = VPPState(sim_ts=datetime.now(UTC), soc_kwh=soc_kwh, pv_kw=pv_kw, load_kw=load_kw)
     state.update_net()
+    # Agents quote from the accumulated untraded balance (maintained by the
+    # runner). With tick_duration_h=1.0 one tick's accumulation equals net_kw.
+    state.pending_net_kwh = state.net_kw * 1.0
     market = MarketSnapshot(
         sim_ts=state.sim_ts,
         best_bid=Decimal("48"),
@@ -63,14 +66,34 @@ def test_zi_price_within_rational_range():
             assert Decimal("25.0") <= intents[0].price <= Decimal("75.0"), intents[0].price
 
 
-def test_zi_min_qty_acts_as_floor_not_threshold():
-    # The current implementation uses max(real, min_qty) — so a high min_qty
-    # *forces* an order at exactly min_qty (it doesn't suppress it). Lock in
-    # that behavior; change this if/when ZI is reworked.
+def test_zi_min_qty_acts_as_threshold():
+    # min_qty is a quoting threshold: below it the agent stays quiet and lets
+    # the runner keep accumulating (it must NOT pad the order up to min_qty,
+    # which would conjure energy out of nothing).
     agent = ZIAgent(min_qty=Decimal("1000"))
     intents = agent.decide(_make_ctx(pv_kw=1.0, load_kw=0.5))
-    assert len(intents) == 1
-    assert intents[0].qty == Decimal("1000.0000")
+    assert intents == []
+
+
+def test_zi_quotes_accumulated_balance_not_per_tick_sliver():
+    # A 1-second tick credits ~1e-3 kWh per tick; the agent should quote once
+    # the accumulated balance clears min_qty, sized to the balance.
+    agent = ZIAgent()
+    ctx = _make_ctx(pv_kw=0.0, load_kw=2.5)
+    tick_h = 1.0 / 3600.0
+    ctx.tick_duration_h = tick_h
+    ctx.state.pending_net_kwh = 0.0
+    fired_at = None
+    for tick in range(1, 31):
+        ctx.state.pending_net_kwh += ctx.state.net_kw * tick_h
+        intents = agent.decide(ctx)
+        if intents:
+            fired_at = tick
+            break
+    assert fired_at is not None, "ZI should quote within 30 one-second ticks at 2.5 kW deficit"
+    assert intents[0].side == "buy"
+    # qty reflects the accumulated deficit (plus small battery headroom term).
+    assert intents[0].qty >= Decimal("0.01")
 
 
 def test_zi_returns_empty_when_perfectly_balanced():

@@ -23,20 +23,24 @@ class ZIAgent(BaseAgent):
     min_qty: Decimal = Decimal("0.01")
 
     def decide(self, ctx: AgentContext) -> list[OrderIntent]:
-        # Determine direction from net position over the tick.
-        net_kwh = (ctx.state.pv_kw - ctx.state.load_kw) * ctx.tick_duration_h
+        # Determine direction from the accumulated untraded balance (the runner
+        # credits per-tick net energy into pending_net_kwh; quoting per-tick
+        # slivers would never clear min_qty with a 1s tick).
+        net_kwh = ctx.state.pending_net_kwh
         # Add a small battery contribution proportional to SOC headroom.
         batt_room = ctx.battery.capacity_kwh - ctx.battery.soc_kwh
         batt_kwh = ctx.battery.max_power_kw * ctx.tick_duration_h
 
         if net_kwh > 0:
-            qty = max(net_kwh + 0.5 * batt_kwh * ctx.battery.soc_frac, float(self.min_qty))
+            qty = net_kwh + 0.5 * batt_kwh * ctx.battery.soc_frac
             side = "sell"
         elif net_kwh < 0:
-            qty = max(-net_kwh + 0.5 * batt_kwh * (batt_room / ctx.battery.capacity_kwh), float(self.min_qty))
+            qty = -net_kwh + 0.5 * batt_kwh * (batt_room / ctx.battery.capacity_kwh)
             side = "buy"
         else:
             return []
+        if qty < float(self.min_qty):
+            return []  # keep accumulating until the order is worth placing
 
         # Uniform random price in rational range.
         ref = float(self.price_ref)

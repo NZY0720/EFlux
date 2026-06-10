@@ -300,6 +300,13 @@ class Simulator:
         vpp.state.pv_kw = vpp.pv.output_kw(sim_ts, vpp.rng)
         vpp.state.load_kw = vpp.load.draw_kw(sim_ts, vpp.rng)
         vpp.state.update_net()
+        # Credit this tick's net energy to the untraded balance. Clamped to the
+        # battery capacity on either side: if orders rest unfilled for a long
+        # stretch, the physical buffer is what bounds how much energy can pile up.
+        cap = max(vpp.params.battery_kwh, 1.0)
+        vpp.state.pending_net_kwh = min(
+            cap, max(-cap, vpp.state.pending_net_kwh + vpp.state.net_kw * tick_h)
+        )
 
         ctx = AgentContext(
             vpp_id=vpp.vpp_id,
@@ -326,6 +333,10 @@ class Simulator:
                 sim_ts=sim_ts,
                 wall_ts=datetime.now(UTC),
             )
+            # Debit the untraded balance for the quoted quantity — the agent has
+            # now "spoken for" that energy, whether or not the order fills.
+            signed = -float(intent.qty) if intent.side == "sell" else float(intent.qty)
+            vpp.state.pending_net_kwh += signed
             if result.order.remaining_qty > 0:
                 vpp.open_order_ids.append(result.order.order_id)
             self._record_trades(result.trades)

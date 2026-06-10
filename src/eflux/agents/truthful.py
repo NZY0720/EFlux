@@ -35,7 +35,10 @@ class TruthfulAgent(BaseAgent):
     min_qty: Decimal = Decimal("0.01")
 
     def decide(self, ctx: AgentContext) -> list[OrderIntent]:
-        net_kwh = (ctx.state.pv_kw - ctx.state.load_kw) * ctx.tick_duration_h
+        # Quote from the accumulated untraded balance, not this tick's sliver of
+        # energy: with a 1s tick the per-tick net is ~1e-3 kWh and would never
+        # clear min_qty. The runner maintains pending_net_kwh across ticks.
+        net_kwh = ctx.state.pending_net_kwh
         if abs(net_kwh) < float(self.min_qty):
             return []
 
@@ -50,10 +53,10 @@ class TruthfulAgent(BaseAgent):
 
         if net_kwh > 0:
             side = "sell"
-            # If PV alone covers the surplus, marginal cost ≈ 0 → quote floor.
-            # If we'd also discharge battery, marginal cost = battery_sell_price.
-            pv_surplus = ctx.state.pv_kw * ctx.tick_duration_h
-            if net_kwh <= pv_surplus:
+            # Surplus sourced from PV (load fully covered) has marginal cost ≈ 0 →
+            # quote floor. Surplus beyond what PV currently produces would come out
+            # of the battery → quote the battery delivery cost.
+            if ctx.state.net_kw <= ctx.state.pv_kw:
                 # Pure PV export — quote the floor (markup_floor * price_ref).
                 price_f = max(float(ctx.params.markup_floor) * float(self.price_ref), 0.0001)
             else:
