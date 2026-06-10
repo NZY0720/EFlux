@@ -179,7 +179,7 @@ class Simulator:
             return {
                 "component": component,
                 "status": "real",
-                "source": "Open-Meteo archive + pvlib",
+                "source": "Open-Meteo + pvlib",
                 "detail": f"Weather row matched current sim hour {target.isoformat()}.",
             }
 

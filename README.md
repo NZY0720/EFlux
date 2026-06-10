@@ -1,17 +1,27 @@
 # EFlux — Agent-based VPP Electricity Trading Platform
 
-VPP agents trade in a continuous double auction electricity market. Heterogeneous DER endowments (PV + battery + flexible load), online strategy learning (PPO + LLM reflection — later phases).
+VPP agents trade in a continuous double auction electricity market. Heterogeneous DER endowments (PV + battery + flexible load), online strategy learning (PPO + LLM reflection).
 
 ## Status
 
-Backend bootstrap.
+Fully working demo: backend + frontend + all four agent tiers. The default
+scenario runs 10 ordinary VPPs (ZI + Truthful mix) plus one LLM-managed VPP
+whose reflection timeline (hints + rationale per LLM round-trip) is visible on
+the *My VPPs* page. Market state (orders, trades, PnL) lives **in memory** —
+restarting the backend resets the market; the DB only persists users and VPP
+definitions.
+
+Agent order sizing: with a 1-second tick, per-tick net energy is tiny, so each
+VPP accumulates its untraded energy balance (`pending_net_kwh`) across ticks
+and quotes once the balance clears `min_qty` — roughly one order every 10–30s
+per agent.
 
 ## Stack
 
 - **Backend**: Python 3.12 + FastAPI + SQLAlchemy 2 (async) + Postgres + Redis Streams
 - **Market**: CDA limit order book, rolling clock with adjustable speed (1x/10x/100x)
-- **Agents**: ZI baseline → Truthful → PPO (Ray RLlib, later) → Reflective (LLM, later)
-- **Frontend**: React + Vite + ECharts (later)
+- **Agents**: ZI baseline → Truthful → PPO (Ray RLlib) → Reflective (LLM hints over Truthful)
+- **Frontend**: React + Vite + ECharts
 - **Package mgmt**: `uv`
 
 ## Local Dev (macOS)
@@ -83,14 +93,28 @@ Schema lives in `alembic/versions/`. The dev path runs `Base.metadata.create_all
 To exercise the migration-only path (production-style), set `EFLUX_AUTO_CREATE_SCHEMA=false` in `config.env` — lifespan will then refuse to create tables and you must run `./tasks.sh migrate` first.
 
 ### 8. Default scenario
-On startup, 3 built-in ZI VPPs are loaded — solar-heavy, battery-heavy, load-heavy.
-They trade against each other continuously. Connect your own VPPs via `POST /vpps` then `POST /orders`.
+On startup, 11 built-in VPPs are loaded: 10 ordinary (mixed ZI + Truthful with
+varied PV/battery/load endowments) plus `my-llm-vpp`, a ReflectiveAgent that
+wraps Truthful with periodic LLM strategy hints. They trade against each other
+continuously. Connect your own VPPs via `POST /vpps` then `POST /orders`.
+
+Useful market endpoints (all public, no auth):
+- `GET /market/snapshot?depth=N` — order book depth + KPIs + data-source status
+- `GET /market/trades?limit=N` — recent trade history (used by the UI to backfill charts)
+- `GET /market/participants` — VPP id → name/strategy directory (trade-tape labels)
+
+The *My VPPs* page surfaces the LLM agent end-to-end: click the `my-llm-vpp`
+card for PnL/SOC/trades plus the **reflection timeline** — each LLM round-trip
+with its price/qty hints, the model's rationale, and failures (the badge shows
+live / degraded / offline health). `GET /vpps/managed/{id}/performance` returns
+the same data as JSON.
 
 ### Important notes
 - venv is at `.env/`, NOT `.venv/`. uv defaults to `.venv/` — always export `UV_PROJECT_ENVIRONMENT=.env` first (the shell scripts already do this).
 - Env vars file is `config.env` (not `.env`) to avoid clashing with the venv dir.
-- `key.txt` holds the MiMo LLM key (gitignored). Not used until Phase 6.
+- `key.txt` holds the MiMo LLM key (gitignored). With `EFLUX_REFLECTIVE_ENABLED=true` + base URL + model configured, the LLM VPP reflects every `EFLUX_REFLECTIVE_INTERVAL_TICKS` ticks; `EFLUX_LLM_TIMEOUT_SEC` (default 120) bounds each call.
 - Speed lock: external (user-submitted) orders only allowed at `market_speed=1.0`. Fast modes are for training/replay.
+- Market state is in-memory by design — restart wipes orders/trades/PnL.
 
 ## Project Layout
 
@@ -138,7 +162,16 @@ By default `vpp.PV.output_kw()` is a diurnal-sine stub. Install the `data` extra
 uv sync --extra data    # adds pvlib + pandas
 ./tasks.sh dev          # default solar VPP auto-uses HKU rooftop (22.28, 114.13)
 ```
-Backend log should print `Fetching weather for lat=22.28 lon=114.13 …` on startup and cache parquet files under `data/cache/weather/`. Disable explicitly with `EFLUX_PV_PHYSICAL=false`. User-created VPPs (via the UI or `POST /vpps`) can opt in by passing `pv_lat` + `pv_lon` + (optional) `pv_tilt`, `pv_azimuth` in the params dict — the *MyVPPs* page has an "advanced" toggle that exposes these fields.
+The simulator fetches a [today−2, today+2] window from Open-Meteo's **forecast**
+endpoint (the archive lags real-time and can never cover "now"), so the current
+sim hour is always inside the data. Backend log prints `Fetching weather … via
+https://api.open-meteo.com/v1/forecast` on startup; past days are parquet-cached
+under `data/cache/weather/` (today/future days are not — the forecast moves).
+The Market page banner shows live data-source status, re-checked every 60s.
+Disable explicitly with `EFLUX_PV_PHYSICAL=false`. User-created VPPs (via the UI
+or `POST /vpps`) can opt in by passing `pv_lat` + `pv_lon` + (optional)
+`pv_tilt`, `pv_azimuth` in the params dict — the *MyVPPs* page has an
+"advanced" toggle that exposes these fields.
 
 ### Switching to Redis Streams (event bus)
 By default events flow through `InMemoryBus` (in-process fan-out). For multi-process / replay / durable streams use Redis:
