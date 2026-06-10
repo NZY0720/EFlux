@@ -79,7 +79,7 @@ def test_battery_intents_do_not_debit_pending_balance():
     vpp.state.pending_net_kwh = -0.5
     sim._submit_intent(  # noqa: SLF001
         vpp,
-        OrderIntent(side="sell", price=Decimal("52"), qty=Decimal("0.05"), from_battery=True),
+        OrderIntent(side="sell", price=Decimal("52"), qty=Decimal("0.05"), dispatched=True),
         sim.clock.now_sim(),
     )
     assert vpp.state.pending_net_kwh == -0.5

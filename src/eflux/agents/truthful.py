@@ -58,11 +58,11 @@ class TruthfulAgent(BaseAgent):
         if abs(net_kwh) >= float(self.min_qty):
             if net_kwh > 0:
                 side = "sell"
-                # Surplus sourced from PV (load fully covered) has marginal cost ≈ 0 →
-                # quote floor. Surplus beyond what PV currently produces would come out
-                # of the battery → quote the battery delivery cost.
-                if ctx.state.net_kw <= ctx.state.pv_kw:
-                    # Pure PV export — quote the floor (markup_floor * price_ref).
+                # Surplus sourced from renewables (PV + wind, load fully covered)
+                # has marginal cost ≈ 0 → quote floor. Surplus beyond current
+                # renewable output would come from the battery → delivery cost.
+                if ctx.state.net_kw <= ctx.state.pv_kw + ctx.state.wind_kw:
+                    # Pure renewable export — quote the floor (markup_floor * price_ref).
                     price_f = max(float(ctx.params.markup_floor) * float(self.price_ref), 0.0001)
                 else:
                     price_f = battery_sell_price
@@ -104,7 +104,7 @@ class TruthfulAgent(BaseAgent):
                         side=batt_side,
                         price=Decimal(str(batt_price)).quantize(Decimal("0.0001")),
                         qty=Decimal(str(batt_qty)).quantize(Decimal("0.0001")),
-                        from_battery=True,
+                        dispatched=True,
                     )
                 )
 

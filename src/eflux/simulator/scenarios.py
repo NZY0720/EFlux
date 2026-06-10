@@ -1,19 +1,35 @@
-"""Built-in scenarios for dev/demo. Phase 4 will replace with a YAML loader."""
+"""Built-in scenario loading — roster comes from a YAML file (scenarios/default.yaml).
+
+Each entry maps to one built-in VPP: a name, an agent kind (zi | truthful | gas)
+and a VPPParams dict. The LLM-managed my-llm-vpp is always appended in code
+because it needs the LLM client wiring from settings.
+"""
 
 from __future__ import annotations
 
 import logging
 
 import os
+from pathlib import Path
+
 import httpx
+import yaml
 
 from eflux.agents.base import BaseAgent
+from eflux.agents.gas import GasGeneratorAgent
 from eflux.agents.truthful import TruthfulAgent
 from eflux.agents.zi import ZIAgent
+from eflux.config import PROJECT_ROOT, get_settings
 from eflux.simulator.runner import Simulator
 from eflux.vpp.base import VPPParams
 
 log = logging.getLogger(__name__)
+
+AGENT_FACTORIES: dict[str, type[BaseAgent]] = {
+    "zi": ZIAgent,
+    "truthful": TruthfulAgent,
+    "gas": GasGeneratorAgent,
+}
 
 
 def _real_pv_available() -> bool:
@@ -28,50 +44,58 @@ def _real_pv_available() -> bool:
 
 
 def load_default_scenario(sim: Simulator) -> None:
-    """10 ordinary built-in VPPs plus one user-visible LLM-managed VPP.
+    """Load the YAML roster, then append the user-visible LLM-managed VPP."""
+    settings = get_settings()
+    path = Path(settings.scenario_file)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    entries = data.get("vpps") or []
+    if not entries:
+        raise ValueError(f"Scenario file {path} contains no 'vpps' entries")
 
-    The solar VPP defaults to HKU rooftop coords if pvlib is installed, so the simulator
-    drives PV from real Open-Meteo data instead of the diurnal stub.
-    """
-    use_real_pv = _real_pv_available()
-    if use_real_pv:
-        solar_params = VPPParams(
-            pv_kw_peak=8.0, battery_kwh=15.0, battery_kw_max=4.0, load_kw_base=1.2,
-            pv_lat=22.28, pv_lon=114.13, pv_tilt=22.0, pv_azimuth=180.0,
+    use_real_weather = _real_pv_available()
+    counts: dict[str, int] = {}
+    for i, entry in enumerate(entries):
+        name = entry["name"]
+        agent_kind = str(entry.get("agent", "zi")).lower()
+        factory = AGENT_FACTORIES.get(agent_kind)
+        if factory is None:
+            raise ValueError(f"Scenario entry {name!r}: unknown agent kind {agent_kind!r}")
+        params_dict = dict(entry.get("params") or {})
+        if not use_real_weather:
+            # Strip site coords → no Open-Meteo fetch, stub PV + wind models.
+            params_dict.pop("pv_lat", None)
+            params_dict.pop("pv_lon", None)
+        params = VPPParams.from_dict(params_dict)
+        sim.add_builtin_vpp(
+            name=name,
+            params=params,
+            agent=factory(),
+            seed=int(entry.get("seed", 42 + i)),
         )
-    else:
-        solar_params = VPPParams(pv_kw_peak=8.0, battery_kwh=15.0, battery_kw_max=4.0, load_kw_base=1.2)
+        counts[agent_kind] = counts.get(agent_kind, 0) + 1
 
-    # Truthful sellers ask markup_floor * price_ref for PV surplus. With the
-    # param default (0.0) that floors at 0.0001 — whenever the bid side of the
-    # book is momentarily empty, the ask rests there and gets picked off for
-    # free. A 0.4 floor (= 20 with price_ref 50) keeps asks competitive against
-    # ZI quotes (uniform 25–75) without giving energy away.
-    truthful_floor = 0.4
-    presets: list[tuple[str, VPPParams, BaseAgent]] = [
-        ("ordinary-zi-solar-01", solar_params, ZIAgent()),
-        ("ordinary-truthful-batt-02", VPPParams(pv_kw_peak=4.0, battery_kwh=30.0, battery_kw_max=8.0, load_kw_base=2.0, markup_floor=truthful_floor), TruthfulAgent()),
-        ("ordinary-zi-load-03", VPPParams(pv_kw_peak=0.5, battery_kwh=5.0, battery_kw_max=2.0, load_kw_base=5.0), ZIAgent()),
-        ("ordinary-zi-rooftop-04", VPPParams(pv_kw_peak=6.0, battery_kwh=12.0, battery_kw_max=3.0, load_kw_base=1.5), ZIAgent()),
-        ("ordinary-truthful-flex-05", VPPParams(pv_kw_peak=3.0, battery_kwh=18.0, battery_kw_max=5.0, load_kw_base=3.0, markup_floor=truthful_floor), TruthfulAgent()),
-        ("ordinary-zi-battery-06", VPPParams(pv_kw_peak=2.0, battery_kwh=28.0, battery_kw_max=8.0, load_kw_base=2.5), ZIAgent()),
-        ("ordinary-truthful-solar-07", VPPParams(pv_kw_peak=7.0, battery_kwh=8.0, battery_kw_max=3.0, load_kw_base=1.0, markup_floor=truthful_floor), TruthfulAgent()),
-        ("ordinary-zi-commercial-load-08", VPPParams(pv_kw_peak=1.0, battery_kwh=10.0, battery_kw_max=4.0, load_kw_base=6.0), ZIAgent()),
-        ("ordinary-truthful-mixed-09", VPPParams(pv_kw_peak=5.0, battery_kwh=20.0, battery_kw_max=6.0, load_kw_base=2.8, markup_floor=truthful_floor), TruthfulAgent()),
-        ("ordinary-zi-evening-load-10", VPPParams(pv_kw_peak=1.5, battery_kwh=6.0, battery_kw_max=2.5, load_kw_base=4.5), ZIAgent()),
-    ]
-    for i, (name, params, agent) in enumerate(presets):
-        sim.add_builtin_vpp(name=name, params=params, agent=agent, seed=42 + i)
-    log.info("Default scenario: %d ordinary VPPs loaded (mixed ZI + Truthful, real_pv=%s)", len(presets), use_real_pv)
+    log.info(
+        "Scenario %s: %d VPPs loaded (%s, real_weather=%s)",
+        path.name,
+        len(entries),
+        ", ".join(f"{k}={v}" for k, v in sorted(counts.items())),
+        use_real_weather,
+    )
 
     load_my_llm_vpp(sim)
 
-    # Optional: if a PPO checkpoint is configured, add a 4th VPP driven by it.
+    # Optional: if a PPO checkpoint is configured, add one more VPP driven by it.
     ckpt = os.environ.get("EFLUX_PPO_CHECKPOINT")
     if ckpt:
         load_ppo_scenario(sim, ckpt)
 
-    log.info("Default scenario ready: %d ordinary agents + %d LLM agent", len(presets), len(sim.my_managed_vpps()))
+    log.info(
+        "Default scenario ready: %d ordinary agents + %d LLM agent",
+        len(entries),
+        len(sim.my_managed_vpps()),
+    )
 
 
 def load_my_llm_vpp(sim: Simulator) -> None:

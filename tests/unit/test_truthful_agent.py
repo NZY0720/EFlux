@@ -97,7 +97,7 @@ def test_battery_band_sells_stored_energy_at_night():
 
     battery_intents = []
     for _ in range(agent.battery_quote_every_n_ticks + 1):
-        battery_intents = [i for i in agent.decide(ctx) if i.from_battery]
+        battery_intents = [i for i in agent.decide(ctx) if i.dispatched]
         if battery_intents:
             break
     assert battery_intents, "expected a battery sell quote within the cooldown window"
@@ -115,7 +115,7 @@ def test_battery_band_buys_back_when_depleted():
 
     battery_intents = []
     for _ in range(agent.battery_quote_every_n_ticks + 1):
-        battery_intents = [i for i in agent.decide(ctx) if i.from_battery]
+        battery_intents = [i for i in agent.decide(ctx) if i.dispatched]
         if battery_intents:
             break
     assert battery_intents, "expected a battery recharge bid"

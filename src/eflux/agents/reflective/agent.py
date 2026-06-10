@@ -80,7 +80,7 @@ class ReflectiveAgent(BaseAgent):
             if adj_price <= 0 or adj_qty <= 0:
                 continue
             adjusted.append(
-                OrderIntent(side=it.side, price=adj_price, qty=adj_qty, from_battery=it.from_battery)
+                OrderIntent(side=it.side, price=adj_price, qty=adj_qty, dispatched=it.dispatched)
             )
         return adjusted
 

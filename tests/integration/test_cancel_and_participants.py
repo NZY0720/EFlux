@@ -75,11 +75,13 @@ async def test_participants_directory_lists_builtin_and_external(client):
     parts = r.json()
     by_id = {p["id"]: p for p in parts}
 
-    # All 11 builtin VPPs present with names + strategies.
+    # All 30 builtin VPPs present with names + strategies.
     builtin = [p for p in parts if p["kind"] == "builtin"]
-    assert len(builtin) == 11
-    assert by_id[-11]["name"] == "my-llm-vpp"
-    assert by_id[-11]["strategy"]
+    assert len(builtin) == 30
+    llm = next(p for p in builtin if p["name"] == "my-llm-vpp")
+    assert llm["strategy"]
+    assert any(p["name"].startswith("wind-") for p in builtin)
+    assert any(p["name"].startswith("gas-") for p in builtin)
 
     # The freshly created external VPP appears too.
     assert by_id[vpp_id]["name"] == "carol-vpp"

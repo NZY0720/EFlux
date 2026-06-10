@@ -23,6 +23,7 @@ dependencies = [
     "python-multipart>=0.0.20",
     "click>=8.1",
     "rich>=13.9",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

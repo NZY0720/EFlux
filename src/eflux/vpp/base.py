@@ -20,12 +20,22 @@ class VPPParams:
     battery_eta_rt: float = 0.9  # round-trip efficiency
     load_kw_base: float = 1.5
     load_elasticity: float = 0.2  # fractional flex around base
+    # Daily load shape: residential | industrial | commercial | flat.
+    load_profile: str = "residential"
+    # Wind turbine (0 = no wind). Stub base speed unless site coords attach
+    # real Open-Meteo wind data (see pv_lat/pv_lon — they are site coords).
+    wind_kw_rated: float = 0.0
+    wind_mean_speed: float = 7.0  # m/s, stub base
+    # Dispatchable gas generation (0 = none). The GasGeneratorAgent offers this
+    # capacity at its marginal cost; energy comes from fuel, not the balance.
+    gas_kw_max: float = 0.0
+    gas_cost_per_kwh: float = 60.0
     risk_aversion: float = 0.5  # 0 = risk neutral, 1 = very averse
     forecast_noise_std: float = 0.1
     markup_floor: float = 0.0  # min markup over marginal cost (sell side)
     markup_ceiling: float = 1.0  # max markdown below marginal value (buy side)
-    # Optional PV physical-model geometry (set to use Open-Meteo + pvlib instead
-    # of the stub diurnal sine). None on either lat/lon disables the physical model.
+    # Optional site coordinates: enable the Open-Meteo weather fetch that feeds
+    # both the pvlib PV model and real wind speeds. None on either disables it.
     pv_lat: float | None = None
     pv_lon: float | None = None
     pv_tilt: float = 30.0       # degrees from horizontal
@@ -46,6 +56,7 @@ class VPPState:
     sim_ts: datetime
     soc_kwh: float = 5.0  # current SOC
     pv_kw: float = 0.0  # instantaneous PV output (kW)
+    wind_kw: float = 0.0  # instantaneous wind output (kW)
     load_kw: float = 0.0  # instantaneous load (kW)
     net_kw: float = 0.0  # positive = surplus (sell pressure), negative = deficit (buy pressure)
     # Untraded energy balance accumulated across ticks (kWh). Positive = surplus
@@ -59,4 +70,4 @@ class VPPState:
     cumulative_energy_bought_kwh: float = 0.0
 
     def update_net(self) -> None:
-        self.net_kw = self.pv_kw - self.load_kw
+        self.net_kw = self.pv_kw + self.wind_kw - self.load_kw

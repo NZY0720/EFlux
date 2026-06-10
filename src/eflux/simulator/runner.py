@@ -22,7 +22,7 @@ from eflux.market.clock import RollingClock
 from eflux.market.events import EventKind, TickEvent, TradeEvent
 from eflux.market.matching_engine import MatchingEngine
 from eflux.vpp.base import VPPParams, VPPState
-from eflux.vpp.der import Battery, FlexibleLoad, PV
+from eflux.vpp.der import PV, Battery, FlexibleLoad, WindTurbine
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +41,7 @@ class SimulatorVPP:
     pv: PV
     battery: Battery
     load: FlexibleLoad
+    wind: WindTurbine | None = None
     rng: random.Random = field(default_factory=random.Random)
     open_order_ids: list[int] = field(default_factory=list)
     recent_trades: list[dict] = field(default_factory=list)
@@ -60,6 +61,9 @@ class Simulator:
             tick_sim_sec=settings.market_tick_sec,
         )
         self.vpps: dict[int, SimulatorVPP] = {}
+        # Site-weather memo: several VPPs share coords (e.g. the HKU rooftop),
+        # and today/future forecast days are deliberately not disk-cached.
+        self._site_weather_cache: dict[tuple[float, float], object] = {}
         self._next_vpp_id = -1  # internal VPPs use negative ids to avoid clashing with DB ids
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
@@ -84,6 +88,15 @@ class Simulator:
     ) -> SimulatorVPP:
         vpp_id = self._next_vpp_id
         self._next_vpp_id -= 1
+        # One site-weather fetch feeds both the pvlib PV model and real wind speeds.
+        site_weather = self._fetch_site_weather(params)
+        wind = None
+        if params.wind_kw_rated > 0:
+            wind = WindTurbine(
+                rated_kw=params.wind_kw_rated,
+                mean_wind=params.wind_mean_speed,
+            )
+            wind.weather = site_weather
         vpp = SimulatorVPP(
             vpp_id=vpp_id,
             name=name,
@@ -97,7 +110,7 @@ class Simulator:
             pv=PV(
                 kw_peak=params.pv_kw_peak,
                 noise_std=params.forecast_noise_std,
-                physical_model=self._build_pv_physical_model(params),
+                physical_model=self._build_pv_physical_model(params, site_weather),
             ),
             battery=Battery(
                 capacity_kwh=params.battery_kwh,
@@ -105,7 +118,12 @@ class Simulator:
                 eta_rt=params.battery_eta_rt,
                 soc_kwh=params.battery_kwh * 0.5,
             ),
-            load=FlexibleLoad(base_kw=params.load_kw_base, elasticity=params.load_elasticity),
+            load=FlexibleLoad(
+                base_kw=params.load_kw_base,
+                elasticity=params.load_elasticity,
+                profile=params.load_profile,
+            ),
+            wind=wind,
             rng=random.Random(seed),
         )
         self.vpps[vpp_id] = vpp
@@ -123,7 +141,14 @@ class Simulator:
         """Check which data source each built-in VPP is currently using."""
         checked_at = datetime.now(UTC)
         sim_ts = self.clock.now_sim()
-        sources = [self._pv_source_for(vpp, sim_ts) for vpp in self.vpps.values()]
+        sources: list[dict[str, str]] = []
+        for vpp in self.vpps.values():
+            # Only report components a VPP actually has — with 30 VPPs the
+            # banner would otherwise drown in "no PV configured" noise.
+            if vpp.params.pv_kw_peak > 0:
+                sources.append(self._pv_source_for(vpp, sim_ts))
+            if vpp.wind is not None:
+                sources.append(self._wind_source_for(vpp, sim_ts))
         active_real = [s for s in sources if s["status"] == "real"]
         fallback = [s for s in sources if s["status"] == "fallback"]
 
@@ -197,18 +222,82 @@ class Simulator:
             ),
         }
 
-    def _build_pv_physical_model(self, params: VPPParams):
-        """If params include lat/lon, build a PVPhysicalModel and pre-fetch weather.
-        Silently returns None if the 'data' extra isn't installed or no lat/lon set."""
+    def _fetch_site_weather(self, params: VPPParams):
+        """Open-Meteo hourly weather for the VPP's site coords, or None.
+
+        The live simulator runs at (roughly) wall-clock time, so the window
+        must cover *now*: recent past for context plus a couple of forecast
+        days ahead. weather.py picks the forecast endpoint for ranges touching
+        today (the archive lags real-time and can't). The same DataFrame
+        drives the pvlib PV model and real wind speeds (wind_speed column).
+        """
         if params.pv_lat is None or params.pv_lon is None:
             return None
+        key = (round(params.pv_lat, 4), round(params.pv_lon, 4))
+        if key in self._site_weather_cache:
+            return self._site_weather_cache[key]
         try:
             from datetime import date, timedelta
 
-            from eflux.data.pv_model import PVPhysicalModel
             from eflux.data.weather import fetch_hourly_sync
         except ImportError as e:
-            log.warning("PV lat/lon set but 'data' extra missing (%s) — using stub model", e)
+            log.warning("Site coords set but 'data' extra missing (%s) — using stub models", e)
+            return None
+        try:
+            today = date.today()
+            weather = fetch_hourly_sync(
+                params.pv_lat, params.pv_lon, today - timedelta(days=2), today + timedelta(days=2)
+            )
+            log.info(
+                "Site weather attached for (%.2f, %.2f), %d rows",
+                params.pv_lat, params.pv_lon, len(weather),
+            )
+            self._site_weather_cache[key] = weather
+            return weather
+        except Exception:
+            log.exception("Weather pre-fetch failed — DER models fall back to stubs")
+            return None
+
+    def _wind_source_for(self, vpp: SimulatorVPP, sim_ts: datetime) -> dict[str, str]:
+        component = f"{vpp.name} wind"
+        weather = vpp.wind.weather if vpp.wind is not None else None
+        if weather is None or getattr(weather, "empty", False):
+            return {
+                "component": component,
+                "status": "synthetic",
+                "source": "AR(1) gust stub",
+                "detail": f"Stub wind around {vpp.params.wind_mean_speed:.1f} m/s (no site weather).",
+            }
+        target = sim_ts.replace(minute=0, second=0, microsecond=0)
+        if target in getattr(weather, "index", []):
+            return {
+                "component": component,
+                "status": "real",
+                "source": "Open-Meteo wind",
+                "detail": f"Wind speed row matched current sim hour {target.isoformat()}.",
+            }
+        try:
+            index = weather.index
+            coverage = f"{index.min().isoformat()} to {index.max().isoformat()}"
+        except Exception:
+            coverage = "unknown coverage"
+        return {
+            "component": component,
+            "status": "fallback",
+            "source": "AR(1) gust stub",
+            "detail": (
+                f"Site weather loaded but does not cover current sim hour "
+                f"{target.isoformat()} (coverage: {coverage})."
+            ),
+        }
+
+    def _build_pv_physical_model(self, params: VPPParams, site_weather):
+        """pvlib model fed by the site weather; None when not applicable."""
+        if site_weather is None or params.pv_kw_peak <= 0:
+            return None
+        try:
+            from eflux.data.pv_model import PVPhysicalModel
+        except ImportError:
             return None
         model = PVPhysicalModel(
             lat=params.pv_lat,
@@ -217,21 +306,7 @@ class Simulator:
             tilt=params.pv_tilt,
             azimuth=params.pv_azimuth,
         )
-        # The live simulator runs at (roughly) wall-clock time, so the weather
-        # window must cover *now*: recent past for context plus a couple of
-        # forecast days ahead. weather.py picks the forecast endpoint for
-        # ranges touching today (the archive lags real-time and can't).
-        try:
-            today = date.today()
-            start = today - timedelta(days=2)
-            end = today + timedelta(days=2)
-            model.weather = fetch_hourly_sync(params.pv_lat, params.pv_lon, start, end)
-            log.info(
-                "PV physical model attached for VPP at (%.2f, %.2f), %d weather rows",
-                params.pv_lat, params.pv_lon, len(model.weather),
-            )
-        except Exception:
-            log.exception("Weather pre-fetch failed — PV will fall back to stub on missing rows")
+        model.weather = site_weather
         return model
 
     async def submit_external(
@@ -317,6 +392,7 @@ class Simulator:
         vpp.pv.kw_peak = vpp.params.pv_kw_peak  # keep params live-editable later
         vpp.state.sim_ts = sim_ts
         vpp.state.pv_kw = vpp.pv.output_kw(sim_ts, vpp.rng)
+        vpp.state.wind_kw = vpp.wind.output_kw(sim_ts, vpp.rng) if vpp.wind else 0.0
         vpp.state.load_kw = vpp.load.draw_kw(sim_ts, vpp.rng)
         vpp.state.update_net()
         # Credit this tick's net energy to the untraded balance. Clamped to the
@@ -356,7 +432,7 @@ class Simulator:
             # now "spoken for" that energy, whether or not the order fills.
             # Battery-band quotes settle through the battery, not the PV-load
             # imbalance, so they leave the accumulator alone.
-            if not intent.from_battery:
+            if not intent.dispatched:
                 signed = -float(intent.qty) if intent.side == "sell" else float(intent.qty)
                 vpp.state.pending_net_kwh += signed
             if result.order.remaining_qty > 0:

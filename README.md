@@ -5,11 +5,14 @@ VPP agents trade in a continuous double auction electricity market. Heterogeneou
 ## Status
 
 Fully working demo: backend + frontend + all four agent tiers. The default
-scenario runs 10 ordinary VPPs (ZI + Truthful mix) plus one LLM-managed VPP
-whose reflection timeline (hints + rationale per LLM round-trip) is visible on
-the *My VPPs* page. Market state (orders, trades, PnL) lives **in memory** —
-restarting the backend resets the market; the DB only persists users and VPP
-definitions.
+scenario ([scenarios/default.yaml](scenarios/default.yaml)) runs 30 built-in
+VPPs — rooftop-solar households, wind farms (two on real Open-Meteo wind
+speed), factories with industrial shift loads, commercial buildings, a
+datacenter, and four gas generators that top the merit order — plus the
+LLM-managed VPP whose reflection timeline (hints + rationale per LLM
+round-trip) is visible on the *My VPPs* page. Market state (orders, trades,
+PnL) lives **in memory** — restarting the backend resets the market; the DB
+only persists users and VPP definitions.
 
 Agent order sizing: with a 1-second tick, per-tick net energy is tiny, so each
 VPP accumulates its untraded energy balance (`pending_net_kwh`) across ticks
@@ -93,10 +96,15 @@ Schema lives in `alembic/versions/`. The dev path runs `Base.metadata.create_all
 To exercise the migration-only path (production-style), set `EFLUX_AUTO_CREATE_SCHEMA=false` in `config.env` — lifespan will then refuse to create tables and you must run `./tasks.sh migrate` first.
 
 ### 8. Default scenario
-On startup, 11 built-in VPPs are loaded: 10 ordinary (mixed ZI + Truthful with
-varied PV/battery/load endowments) plus `my-llm-vpp`, a ReflectiveAgent that
-wraps Truthful with periodic LLM strategy hints. They trade against each other
-continuously. Connect your own VPPs via `POST /vpps` then `POST /orders`.
+On startup, 30 built-in VPPs are loaded from `scenarios/default.yaml`
+(override with `EFLUX_SCENARIO_FILE`): 10 residential/rooftop-solar VPPs,
+6 wind farms (coastal ones on real Open-Meteo wind speed), 6 factories with
+industrial shift loads, 3 commercial buildings, 4 gas generators (dispatchable
+supply at marginal cost 55–72, the market's soft price cap), plus
+`my-llm-vpp`, a ReflectiveAgent that wraps Truthful with periodic LLM strategy
+hints. Agents: `zi | truthful | gas` per YAML entry. They trade against each
+other continuously — merit order is renewables (~floor) → battery band (~52.7)
+→ gas. Connect your own VPPs via `POST /vpps` then `POST /orders`.
 
 Useful market endpoints (all public, no auth):
 - `GET /market/snapshot?depth=N` — order book depth + KPIs + data-source status
@@ -125,6 +133,8 @@ conf_1/
   key.txt              # LLM API key (gitignored)
   pyproject.toml
   tasks.sh             # dev task runner (dev/run/smoke/ws/fe-dev/start/stop/...)
+  scenarios/
+    default.yaml       # built-in VPP roster (30 VPPs: solar/wind/factory/commercial/gas)
   scripts/
     start-all.sh       # backend + frontend in background + open browser
     stop-all.sh        # kill backend + frontend

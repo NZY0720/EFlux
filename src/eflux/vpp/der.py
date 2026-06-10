@@ -1,8 +1,12 @@
-"""Distributed Energy Resources: PV, Battery, Flexible Load.
+"""Distributed Energy Resources: PV, Wind, Battery, Flexible Load.
 
 PV supports two backends:
   - default `physical_model=None`: deterministic diurnal sine + noise (stub).
   - `physical_model=PVPhysicalModel(...)`: real irradiance via Open-Meteo + pvlib.
+
+WindTurbine likewise: an AR(1) gust model around a mean speed by default, or
+around the real hourly wind speed when an Open-Meteo weather DataFrame is
+attached (the PV weather fetch already carries wind_speed_10m).
 
 FlexibleLoad and Battery remain analytic — ResStock integration is future work.
 """
@@ -45,6 +49,47 @@ class PV:
             sun = 0.0
         noisy = sun * (1.0 + rng.gauss(0.0, self.noise_std))
         return max(0.0, self.kw_peak * noisy)
+
+
+@dataclass
+class WindTurbine:
+    rated_kw: float
+    cut_in: float = 3.0       # m/s — below this the rotor doesn't turn
+    rated_speed: float = 12.0  # m/s — at/above this output is rated_kw
+    cut_out: float = 25.0     # m/s — storm shutdown
+    mean_wind: float = 7.0    # m/s — stub base speed when no weather attached
+    # Optional Open-Meteo weather DataFrame (UTC hourly, "wind_speed" column).
+    weather = None  # type: ignore[var-annotated]  # pd.DataFrame | None
+    _v: float | None = field(default=None, repr=False)  # AR(1) speed state
+
+    def output_kw(self, sim_ts: datetime, rng: random.Random) -> float:
+        """AC output in kW: hourly base speed (real or mean) + AR(1) gusts → power curve."""
+        base = self.mean_wind
+        if self.weather is not None and not getattr(self.weather, "empty", True):
+            try:
+                from eflux.data.weather import at_time
+
+                row = at_time(self.weather, sim_ts)
+                if row is not None:
+                    v = float(row["wind_speed"])
+                    if v == v:  # NaN guard
+                        base = v
+            except Exception:
+                pass  # fall back to the stub base — never crash a tick
+        if self._v is None:
+            self._v = base
+        # Slow mean reversion toward the hourly base + per-tick gust noise.
+        self._v = 0.97 * self._v + 0.03 * base + rng.gauss(0.0, 0.15)
+        self._v = max(0.0, self._v)
+        return self._power_curve(self._v)
+
+    def _power_curve(self, v: float) -> float:
+        if v < self.cut_in or v >= self.cut_out:
+            return 0.0
+        if v >= self.rated_speed:
+            return self.rated_kw
+        frac = (v - self.cut_in) / (self.rated_speed - self.cut_in)
+        return self.rated_kw * frac**3
 
 
 @dataclass
@@ -91,13 +136,31 @@ class FlexibleLoad:
     base_kw: float
     elasticity: float = 0.2  # ±fraction around base
     noise_std: float = 0.05
+    # Daily shape: "residential" (morning+evening peaks), "industrial"
+    # (workday shift, weekend slowdown), "commercial" (business hours),
+    # "flat" (24/7 — datacenters, cold storage, plant auxiliaries).
+    profile: str = "residential"
 
     def draw_kw(self, sim_ts: datetime, rng: random.Random) -> float:
-        """Stub: daily profile peaking morning + evening. To be replaced by ResStock data."""
+        """Stub daily profiles. To be replaced by ResStock data."""
         hour = sim_ts.hour + sim_ts.minute / 60.0
-        # Two peaks: 7-9 morning, 18-22 evening.
-        morning = math.exp(-0.5 * ((hour - 8) / 1.5) ** 2)
-        evening = math.exp(-0.5 * ((hour - 20) / 2.0) ** 2)
-        profile = 0.4 + 0.4 * (morning + evening)
+        if self.profile == "industrial":
+            if 8 <= hour <= 18:
+                shape = 1.0  # main shift
+            elif 6 <= hour < 8 or 18 < hour <= 20:
+                shape = 0.6  # ramp-up / wind-down
+            else:
+                shape = 0.35  # night crew + standby systems
+            if sim_ts.weekday() >= 5:
+                shape *= 0.45  # weekend slowdown
+        elif self.profile == "commercial":
+            shape = 1.0 if 9 <= hour <= 21 else 0.25
+        elif self.profile == "flat":
+            shape = 1.0
+        else:  # residential
+            # Two peaks: 7-9 morning, 18-22 evening.
+            morning = math.exp(-0.5 * ((hour - 8) / 1.5) ** 2)
+            evening = math.exp(-0.5 * ((hour - 20) / 2.0) ** 2)
+            shape = 0.4 + 0.4 * (morning + evening)
         noise = rng.gauss(0.0, self.noise_std)
-        return max(0.0, self.base_kw * (profile + noise))
+        return max(0.0, self.base_kw * (shape + noise))

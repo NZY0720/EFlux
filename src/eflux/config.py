@@ -39,6 +39,8 @@ class Settings(BaseSettings):
     market_speed: float = 1.0
     market_tick_sec: float = 1.0
     site_timezone: str = "Asia/Hong_Kong"
+    # Built-in VPP roster (relative paths resolve against the project root).
+    scenario_file: str = "scenarios/default.yaml"
 
     magic_link_ttl_min: int = 15
     session_ttl_day: int = 30
