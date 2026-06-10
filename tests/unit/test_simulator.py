@@ -35,6 +35,42 @@ def test_data_source_status_reports_startup_check_for_builtin_vpps():
     assert status["sources"][0]["status"] == "synthetic"
 
 
+def test_data_source_reports_real_when_weather_covers_sim_hour():
+    sim = Simulator(bus=InMemoryBus())
+    vpp = sim.add_builtin_vpp("solar", VPPParams(), ZIAgent())
+
+    class FakeWeather:
+        empty = False
+
+        def __init__(self, index):
+            self.index = index
+
+    class FakeModel:
+        def __init__(self, weather):
+            self.weather = weather
+
+    target = sim.clock.now_sim().replace(minute=0, second=0, microsecond=0)
+    vpp.pv.physical_model = FakeModel(FakeWeather([target]))
+
+    sim.refresh_data_sources()
+    status = sim.data_source_status()
+    assert status["sources"][0]["status"] == "real"
+    assert status["summary"] == "Open-Meteo + pvlib"
+
+
+def test_data_source_status_recheck_after_ttl():
+    from datetime import UTC, datetime, timedelta
+
+    sim = Simulator(bus=InMemoryBus())
+    sim.add_builtin_vpp("stub", VPPParams(), ZIAgent())
+    sim.refresh_data_sources()
+    # Age the check past the TTL; the next status read must re-check.
+    stale = datetime.now(UTC) - timedelta(seconds=sim.DATA_SOURCE_TTL_SEC + 1)
+    sim._data_source_status["checked_at"] = stale  # noqa: SLF001
+    status = sim.data_source_status()
+    assert status["checked_at"] > stale
+
+
 def test_internal_trade_updates_both_vpp_performance():
     sim = Simulator(bus=InMemoryBus())
     seller = sim.add_builtin_vpp("seller", VPPParams(), ZIAgent())

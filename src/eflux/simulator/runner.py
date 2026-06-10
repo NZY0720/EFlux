@@ -115,8 +115,12 @@ class Simulator:
     def my_managed_vpps(self) -> list[SimulatorVPP]:
         return [vpp for vpp in self.vpps.values() if vpp.is_my_vpp]
 
+    # How long a data-source check stays fresh before data_source_status()
+    # re-inspects weather coverage (cheap, purely in-memory).
+    DATA_SOURCE_TTL_SEC = 60.0
+
     def refresh_data_sources(self) -> None:
-        """Check which data source each built-in VPP is using at startup."""
+        """Check which data source each built-in VPP is currently using."""
         checked_at = datetime.now(UTC)
         sim_ts = self.clock.now_sim()
         sources = [self._pv_source_for(vpp, sim_ts) for vpp in self.vpps.values()]
@@ -140,7 +144,12 @@ class Simulator:
         }
 
     def data_source_status(self) -> dict:
-        if self._data_source_status is None:
+        """Current status, re-checked when stale — the sim clock keeps moving, so
+        'does the weather cover the current sim hour' is a moving target."""
+        current = self._data_source_status
+        if current is None or (
+            datetime.now(UTC) - current["checked_at"]
+        ).total_seconds() > self.DATA_SOURCE_TTL_SEC:
             self.refresh_data_sources()
         return self._data_source_status or {}
 
@@ -208,13 +217,14 @@ class Simulator:
             tilt=params.pv_tilt,
             azimuth=params.pv_azimuth,
         )
-        # Pre-fetch a 7-day historical window centered on yesterday so the simulator
-        # can replay it. Open-Meteo's archive lags real-time by ~5 days, so we look
-        # further back.
+        # The live simulator runs at (roughly) wall-clock time, so the weather
+        # window must cover *now*: recent past for context plus a couple of
+        # forecast days ahead. weather.py picks the forecast endpoint for
+        # ranges touching today (the archive lags real-time and can't).
         try:
             today = date.today()
-            start = today - timedelta(days=14)
-            end = today - timedelta(days=7)
+            start = today - timedelta(days=2)
+            end = today + timedelta(days=2)
             model.weather = fetch_hourly_sync(params.pv_lat, params.pv_lon, start, end)
             log.info(
                 "PV physical model attached for VPP at (%.2f, %.2f), %d weather rows",

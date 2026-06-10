@@ -1,10 +1,14 @@
-"""Open-Meteo client — pulls historical hourly irradiance / temperature for a site.
+"""Open-Meteo client — pulls hourly irradiance / temperature for a site.
 
-We use the archive endpoint (`archive-api.open-meteo.com`) because the live
-simulator's sim time is arbitrary — historical data covers all the periods we'd
-want to replay. Open-Meteo is free, no API key.
+Two endpoints, selected automatically per request:
+- archive (`archive-api.open-meteo.com`) for fully historical ranges. The
+  archive lags real-time by a few days, so it can never cover "now".
+- forecast (`api.open-meteo.com/v1/forecast`) whenever the requested range
+  touches today or the future — it serves recent past + 16 days ahead, which
+  is what the live simulator (sim time ≈ wall time) actually needs.
 
-Caches per (lat, lon, date) as parquet on disk so a re-run is instant.
+Open-Meteo is free, no API key. Past days are cached per (lat, lon, date) as
+parquet on disk; today/future days are never cached (the forecast still moves).
 """
 
 from __future__ import annotations
@@ -17,9 +21,16 @@ import httpx
 
 log = logging.getLogger(__name__)
 
-BASE_URL = "https://archive-api.open-meteo.com/v1/archive"
+ARCHIVE_URL = "https://archive-api.open-meteo.com/v1/archive"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 HOURLY_FIELDS = ["shortwave_radiation", "direct_normal_irradiance", "diffuse_radiation",
                  "temperature_2m", "wind_speed_10m"]
+
+
+def _endpoint_for(end: date) -> str:
+    """Archive can only serve fully-historical ranges; anything touching today
+    or the future must come from the forecast endpoint."""
+    return FORECAST_URL if end >= date.today() else ARCHIVE_URL
 
 
 def _cache_path(cache_dir: Path, lat: float, lon: float, day: date) -> Path:
@@ -59,9 +70,10 @@ async def fetch_hourly(
         "hourly": ",".join(HOURLY_FIELDS),
         "timezone": "UTC",
     }
+    endpoint = _endpoint_for(end)
     async with httpx.AsyncClient(timeout=timeout_sec) as client:
-        log.info("Fetching weather for lat=%.2f lon=%.2f %s..%s", lat, lon, start, end)
-        resp = await client.get(BASE_URL, params=params)
+        log.info("Fetching weather for lat=%.2f lon=%.2f %s..%s via %s", lat, lon, start, end, endpoint)
+        resp = await client.get(endpoint, params=params)
         resp.raise_for_status()
         data = resp.json()
 
@@ -77,9 +89,12 @@ async def fetch_hourly(
         },
         index=ts,
     )
-    # Cache by day so future single-day lookups are fast.
+    # Cache fully-past days so future single-day lookups are fast. Today and
+    # future days come from a moving forecast — never cache those.
     if not df.empty:
         for d, group in df.groupby(df.index.date):  # type: ignore[union-attr]
+            if d >= date.today():
+                continue
             try:
                 group.to_parquet(_cache_path(cache_dir, lat, lon, d))
             except Exception:
@@ -117,9 +132,10 @@ def fetch_hourly_sync(
         "hourly": ",".join(HOURLY_FIELDS),
         "timezone": "UTC",
     }
+    endpoint = _endpoint_for(end)
     with httpx.Client(timeout=timeout_sec) as client:
-        log.info("Fetching weather for lat=%.2f lon=%.2f %s..%s", lat, lon, start, end)
-        resp = client.get(BASE_URL, params=params)
+        log.info("Fetching weather for lat=%.2f lon=%.2f %s..%s via %s", lat, lon, start, end, endpoint)
+        resp = client.get(endpoint, params=params)
         resp.raise_for_status()
         data = resp.json()
 
@@ -135,8 +151,11 @@ def fetch_hourly_sync(
         },
         index=ts,
     )
+    # Cache fully-past days only (see fetch_hourly).
     if not df.empty:
         for d, group in df.groupby(df.index.date):  # type: ignore[union-attr]
+            if d >= date.today():
+                continue
             try:
                 group.to_parquet(_cache_path(cache_dir, lat, lon, d))
             except Exception:
