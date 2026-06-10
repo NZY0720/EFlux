@@ -71,6 +71,20 @@ def test_data_source_status_recheck_after_ttl():
     assert status["checked_at"] > stale
 
 
+def test_battery_intents_do_not_debit_pending_balance():
+    """Battery-band quotes settle through the battery, not the PV-load
+    imbalance — submitting one must leave pending_net_kwh untouched."""
+    sim = Simulator(bus=InMemoryBus())
+    vpp = sim.add_builtin_vpp("batt", VPPParams(), ZIAgent())
+    vpp.state.pending_net_kwh = -0.5
+    sim._submit_intent(  # noqa: SLF001
+        vpp,
+        OrderIntent(side="sell", price=Decimal("52"), qty=Decimal("0.05"), from_battery=True),
+        sim.clock.now_sim(),
+    )
+    assert vpp.state.pending_net_kwh == -0.5
+
+
 def test_internal_trade_updates_both_vpp_performance():
     sim = Simulator(bus=InMemoryBus())
     seller = sim.add_builtin_vpp("seller", VPPParams(), ZIAgent())

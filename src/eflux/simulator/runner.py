@@ -354,8 +354,11 @@ class Simulator:
             )
             # Debit the untraded balance for the quoted quantity — the agent has
             # now "spoken for" that energy, whether or not the order fills.
-            signed = -float(intent.qty) if intent.side == "sell" else float(intent.qty)
-            vpp.state.pending_net_kwh += signed
+            # Battery-band quotes settle through the battery, not the PV-load
+            # imbalance, so they leave the accumulator alone.
+            if not intent.from_battery:
+                signed = -float(intent.qty) if intent.side == "sell" else float(intent.qty)
+                vpp.state.pending_net_kwh += signed
             if result.order.remaining_qty > 0:
                 vpp.open_order_ids.append(result.order.order_id)
             self._record_trades(result.trades)

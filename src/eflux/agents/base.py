@@ -22,6 +22,10 @@ class OrderIntent:
     side: str  # "buy" or "sell"
     price: Decimal
     qty: Decimal
+    # True for battery-band arbitrage quotes: that energy moves through the
+    # battery (settled on fill), not the PV-load imbalance — the runner must
+    # not debit pending_net_kwh for it.
+    from_battery: bool = False
 
 
 @dataclass

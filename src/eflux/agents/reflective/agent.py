@@ -79,7 +79,9 @@ class ReflectiveAgent(BaseAgent):
             adj_qty = (Decimal(str(self._hints.qty_scale)) * it.qty).quantize(Decimal("0.0001"))
             if adj_price <= 0 or adj_qty <= 0:
                 continue
-            adjusted.append(OrderIntent(side=it.side, price=adj_price, qty=adj_qty))
+            adjusted.append(
+                OrderIntent(side=it.side, price=adj_price, qty=adj_qty, from_battery=it.from_battery)
+            )
         return adjusted
 
     def _apply_price_hint(self, intent: OrderIntent) -> Decimal:

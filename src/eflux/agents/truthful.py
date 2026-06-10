@@ -33,47 +33,79 @@ from eflux.agents.base import AgentContext, BaseAgent, OrderIntent
 class TruthfulAgent(BaseAgent):
     price_ref: Decimal = Decimal("50.0")
     min_qty: Decimal = Decimal("0.01")
+    # Battery arbitrage band. Above soc_high the agent offers stored energy at
+    # its delivery cost; below soc_low it bids to recharge at its storage
+    # value. Without this, nighttime (PV=0) leaves every VPP in deficit — a
+    # market with only buyers and zero trades. The band straddles the 50%
+    # boot SOC so a fresh market has supply from the first minute.
+    soc_high: float = 0.45
+    soc_low: float = 0.25
+    battery_quote_every_n_ticks: int = 30
+    _ticks_since_battery_quote: int = 0
 
     def decide(self, ctx: AgentContext) -> list[OrderIntent]:
-        # Quote from the accumulated untraded balance, not this tick's sliver of
-        # energy: with a 1s tick the per-tick net is ~1e-3 kWh and would never
-        # clear min_qty. The runner maintains pending_net_kwh across ticks.
-        net_kwh = ctx.state.pending_net_kwh
-        if abs(net_kwh) < float(self.min_qty):
-            return []
-
         eta = max(0.01, ctx.battery.eta_rt)
         sqrt_eta = math.sqrt(eta)
         battery_sell_price = float(self.price_ref) / sqrt_eta  # cost to deliver from battery
         battery_buy_price = float(self.price_ref) * sqrt_eta  # value of storing to battery
 
-        side: str
-        price_f: float
-        qty_f: float
+        intents: list[OrderIntent] = []
 
-        if net_kwh > 0:
-            side = "sell"
-            # Surplus sourced from PV (load fully covered) has marginal cost ≈ 0 →
-            # quote floor. Surplus beyond what PV currently produces would come out
-            # of the battery → quote the battery delivery cost.
-            if ctx.state.net_kw <= ctx.state.pv_kw:
-                # Pure PV export — quote the floor (markup_floor * price_ref).
-                price_f = max(float(ctx.params.markup_floor) * float(self.price_ref), 0.0001)
+        # 1) Quote the accumulated untraded balance, not this tick's sliver of
+        # energy: with a 1s tick the per-tick net is ~1e-3 kWh and would never
+        # clear min_qty. The runner maintains pending_net_kwh across ticks.
+        net_kwh = ctx.state.pending_net_kwh
+        if abs(net_kwh) >= float(self.min_qty):
+            if net_kwh > 0:
+                side = "sell"
+                # Surplus sourced from PV (load fully covered) has marginal cost ≈ 0 →
+                # quote floor. Surplus beyond what PV currently produces would come out
+                # of the battery → quote the battery delivery cost.
+                if ctx.state.net_kw <= ctx.state.pv_kw:
+                    # Pure PV export — quote the floor (markup_floor * price_ref).
+                    price_f = max(float(ctx.params.markup_floor) * float(self.price_ref), 0.0001)
+                else:
+                    price_f = battery_sell_price
+                qty_f = net_kwh
             else:
-                price_f = battery_sell_price
-            qty_f = net_kwh
-        else:
-            side = "buy"
-            # Deficit: pay up to price_ref to cover load directly. If battery has room,
-            # we'd also be willing to pay battery_buy_price for storage, which is
-            # strictly lower than price_ref — so for a single quote, use price_ref.
-            price_f = float(self.price_ref)
-            # Optional shave for risk-averse agents (they bid below price_ref).
-            price_f *= 1.0 - float(ctx.params.markup_ceiling) * (1.0 - float(ctx.params.risk_aversion)) * 0.0
-            qty_f = -net_kwh
+                side = "buy"
+                # Deficit: pay up to price_ref to cover load directly. If battery has room,
+                # we'd also be willing to pay battery_buy_price for storage, which is
+                # strictly lower than price_ref — so for a single quote, use price_ref.
+                price_f = float(self.price_ref)
+                qty_f = -net_kwh
 
-        price = Decimal(str(price_f)).quantize(Decimal("0.0001"))
-        qty = Decimal(str(qty_f)).quantize(Decimal("0.0001"))
-        if price <= 0 or qty < self.min_qty:
-            return []
-        return [OrderIntent(side=side, price=price, qty=qty)]
+            price = Decimal(str(price_f)).quantize(Decimal("0.0001"))
+            qty = Decimal(str(qty_f)).quantize(Decimal("0.0001"))
+            if price > 0 and qty >= self.min_qty:
+                intents.append(OrderIntent(side=side, price=price, qty=qty))
+
+        # 2) Battery-band arbitrage quote (throttled). Sized to what the battery
+        # could physically deliver over the cooldown window, capped by the SOC
+        # distance to the band edge so it self-limits as fills move the SOC.
+        self._ticks_since_battery_quote += 1
+        if self._ticks_since_battery_quote >= self.battery_quote_every_n_ticks:
+            block = ctx.battery.max_power_kw * ctx.tick_duration_h * self.battery_quote_every_n_ticks
+            soc = ctx.battery.soc_frac
+            cap = ctx.battery.capacity_kwh
+            batt_side: str | None = None
+            if soc > self.soc_high:
+                batt_side = "sell"
+                batt_qty = min(block, (soc - self.soc_high) * cap)
+                batt_price = battery_sell_price
+            elif soc < self.soc_low:
+                batt_side = "buy"
+                batt_qty = min(block, (self.soc_low - soc) * cap)
+                batt_price = battery_buy_price
+            if batt_side is not None and batt_qty >= float(self.min_qty):
+                self._ticks_since_battery_quote = 0
+                intents.append(
+                    OrderIntent(
+                        side=batt_side,
+                        price=Decimal(str(batt_price)).quantize(Decimal("0.0001")),
+                        qty=Decimal(str(batt_qty)).quantize(Decimal("0.0001")),
+                        from_battery=True,
+                    )
+                )
+
+        return intents

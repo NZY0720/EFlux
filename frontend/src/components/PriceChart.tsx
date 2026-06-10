@@ -1,5 +1,5 @@
 import ReactECharts from "echarts-for-react";
-import { useEffect, useRef, useState } from "react";
+import { useMemo } from "react";
 
 import type { MarketEvent } from "../api/types";
 
@@ -17,46 +17,36 @@ interface Props {
 /**
  * Streaming price line. Pulls last_price from tick events and trade prices.
  * Keeps the trailing `windowMs` of data.
+ *
+ * Points are derived purely from the (already deduped) provider buffer on
+ * every render — no incremental state. An earlier version accumulated points
+ * in component state keyed by a seen-set ref; under StrictMode's double
+ * effect invocation the second run saw a stale empty closure plus a fully
+ * populated seen-set and overwrote the rebuilt history with a single seed
+ * point, which wiped the chart on every route remount.
  */
 export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPrice }: Props) {
-  const [points, setPoints] = useState<PricePoint[]>([]);
-  const seenRef = useRef(new Set<string>());
-
-  useEffect(() => {
-    let updated = false;
-    const next = points.slice();
-
-    // Seed with initial price if we have nothing yet.
-    if (next.length === 0 && initialPrice !== null && initialPrice !== undefined) {
-      next.push({ ts: Date.now(), price: initialPrice });
-      updated = true;
-    }
-
+  const points = useMemo(() => {
+    const pts: PricePoint[] = [];
     for (const e of events) {
       let price: number | null = null;
-      const key = `${e.kind}-${(e as { trade_id?: number }).trade_id ?? (e as { tick_no?: number }).tick_no ?? e.wall_ts}`;
-      if (seenRef.current.has(key)) continue;
-      seenRef.current.add(key);
-
       if (e.kind === "trade") {
-        price = Number((e as { price: string }).price);
+        price = Number(e.price);
       } else if (e.kind === "tick") {
-        const lp = (e as { last_price: string | null }).last_price;
-        if (lp !== null && lp !== undefined) price = Number(lp);
+        if (e.last_price !== null && e.last_price !== undefined) price = Number(e.last_price);
       }
       if (price !== null && Number.isFinite(price)) {
-        next.push({ ts: new Date(e.wall_ts).getTime(), price });
-        updated = true;
+        pts.push({ ts: new Date(e.wall_ts).getTime(), price });
       }
     }
-
-    if (updated) {
-      const cutoff = Date.now() - windowMs;
-      const trimmed = next.filter((p) => p.ts >= cutoff);
-      setPoints(trimmed);
+    pts.sort((a, b) => a.ts - b.ts);
+    const cutoff = Date.now() - windowMs;
+    const trimmed = pts.filter((p) => p.ts >= cutoff);
+    if (trimmed.length === 0 && initialPrice !== null && initialPrice !== undefined) {
+      trimmed.push({ ts: Date.now(), price: initialPrice });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [events]);
+    return trimmed;
+  }, [events, windowMs, initialPrice]);
 
   const option = {
     backgroundColor: "transparent",

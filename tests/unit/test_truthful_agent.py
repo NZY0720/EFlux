@@ -85,3 +85,41 @@ def test_floor_zero_clamped_to_minimum_positive():
     intents = agent.decide(_make_ctx(pv_kw=5.0, load_kw=1.0, markup_floor=0.0))
     assert len(intents) == 1
     assert intents[0].price > 0
+
+
+def test_battery_band_sells_stored_energy_at_night():
+    """Nighttime liquidity regression: with PV=0 every VPP is a buyer and the
+    market dries up. A battery above soc_high must offer stored energy at its
+    delivery cost (price_ref / sqrt(eta)) after the quote cooldown."""
+    agent = TruthfulAgent(price_ref=Decimal("50.0"))
+    ctx = _make_ctx(pv_kw=0.0, load_kw=2.0)  # deficit, SOC 5/10 = 0.5 > soc_high
+    ctx.state.pending_net_kwh = 0.0  # nothing accumulated → no load-driven order yet
+
+    battery_intents = []
+    for _ in range(agent.battery_quote_every_n_ticks + 1):
+        battery_intents = [i for i in agent.decide(ctx) if i.from_battery]
+        if battery_intents:
+            break
+    assert battery_intents, "expected a battery sell quote within the cooldown window"
+    sell = battery_intents[0]
+    assert sell.side == "sell"
+    # delivery cost = 50 / sqrt(0.9) ≈ 52.7
+    assert Decimal("52") < sell.price < Decimal("53")
+    assert sell.qty >= agent.min_qty
+
+
+def test_battery_band_buys_back_when_depleted():
+    agent = TruthfulAgent(price_ref=Decimal("50.0"))
+    ctx = _make_ctx(pv_kw=0.0, load_kw=0.0, soc_kwh=1.0)  # SOC 0.1 < soc_low 0.25
+    ctx.state.pending_net_kwh = 0.0
+
+    battery_intents = []
+    for _ in range(agent.battery_quote_every_n_ticks + 1):
+        battery_intents = [i for i in agent.decide(ctx) if i.from_battery]
+        if battery_intents:
+            break
+    assert battery_intents, "expected a battery recharge bid"
+    buy = battery_intents[0]
+    assert buy.side == "buy"
+    # storage value = 50 * sqrt(0.9) ≈ 47.4
+    assert Decimal("47") < buy.price < Decimal("48")
