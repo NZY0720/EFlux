@@ -6,11 +6,20 @@ from datetime import datetime
 
 from fastapi import APIRouter
 from pydantic import BaseModel
+from sqlalchemy import select
 
-from eflux.api.deps import SimulatorDep
+from eflux.api.deps import DbSession, SimulatorDep
+from eflux.db.models import VPP
 from eflux.market.events import TradeEvent
 
 router = APIRouter(prefix="/market", tags=["market"])
+
+
+class ParticipantOut(BaseModel):
+    id: int
+    name: str
+    kind: str  # "builtin" | "external"
+    strategy: str | None = None
 
 
 class DataSourceEntry(BaseModel):
@@ -37,6 +46,19 @@ class MarketSnapshot(BaseModel):
     asks: list[tuple[str, str]]
     num_builtin_vpps: int
     data_source: DataSourceStatus
+
+
+@router.get("/participants", response_model=list[ParticipantOut])
+async def participants(sim: SimulatorDep, session: DbSession) -> list[ParticipantOut]:
+    """id → name directory for everyone who can appear in the trade tape, so the
+    UI can label parties instead of showing raw (negative) internal ids."""
+    out = [
+        ParticipantOut(id=vpp.vpp_id, name=vpp.name, kind="builtin", strategy=vpp.strategy)
+        for vpp in sim.vpps.values()
+    ]
+    rows = (await session.execute(select(VPP).where(VPP.is_active.is_(True)))).scalars().all()
+    out.extend(ParticipantOut(id=v.id, name=v.name, kind="external") for v in rows)
+    return out
 
 
 @router.get("/trades", response_model=list[TradeEvent])

@@ -81,6 +81,20 @@ class OrderBook:
         level.add(order)
         self._order_index[order.order_id] = (order.side, key)
 
+    def get(self, order_id: int) -> LimitOrder | None:
+        """Look up a resting order without removing it (e.g. ownership checks)."""
+        loc = self._order_index.get(order_id)
+        if loc is None:
+            return None
+        side, key = loc
+        level = self._book(side).get(key)
+        if level is None:
+            return None
+        for o in level.orders:
+            if o.order_id == order_id:
+                return o
+        return None
+
     def cancel(self, order_id: int) -> LimitOrder | None:
         loc = self._order_index.pop(order_id, None)
         if loc is None:

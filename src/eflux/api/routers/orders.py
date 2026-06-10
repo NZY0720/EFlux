@@ -67,10 +67,22 @@ class OrderCancel(BaseModel):
 @router.post("/cancel", status_code=status.HTTP_204_NO_CONTENT)
 async def cancel_order(
     payload: OrderCancel,
-    user: CurrentUser,  # noqa: ARG001 — ensure authenticated
+    session: DbSession,
+    user: CurrentUser,
     sim: SimulatorDep,
 ) -> None:
     from datetime import UTC, datetime
+
+    # Only the owner may cancel: resolve the resting order's VPP and check it
+    # belongs to this user. Built-in VPPs use negative ids and are never
+    # user-cancellable. 404 either way — don't leak which orders exist.
+    order = sim.engine.book.get(payload.order_id)
+    if order is None or order.vpp_id < 0:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "order not found")
+    stmt = select(VPP).where(VPP.id == order.vpp_id, VPP.owner_id == user.id)
+    vpp = (await session.execute(stmt)).scalar_one_or_none()
+    if vpp is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "order not found")
 
     now_sim = sim.clock.now_sim()
     now_wall = datetime.now(UTC)
