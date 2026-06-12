@@ -1,50 +1,59 @@
-# EFlux default scenario — 29 built-in VPPs. The LLM-managed my-llm-vpp is
-# added in code (it needs the LLM client wiring), bringing the total to 30.
+# EFlux default scenario — every built-in VPP, validated entry-by-entry as an
+# AgentSpec (src/eflux/simulator/agent_spec.py; JSON Schema: eflux agent-spec-schema).
 #
 # Fields per entry:
-#   name   — shown in the trade tape / participants directory
-#   agent  — zi | truthful | gas
-#   seed   — optional RNG seed (defaults to 42 + index)
-#   params — VPPParams fields; unknown keys are ignored.
-#            pv_lat/pv_lon are SITE coords: they enable real Open-Meteo data
-#            for both PV (pvlib) and wind (wind_speed_10m). Stripped when
-#            EFLUX_PV_PHYSICAL=false or the 'data' extras are missing.
+#   name         — shown in the trade tape / participants directory
+#   agent        — zi | truthful | gas | reflective (LLM-steered)
+#   seed         — optional RNG seed (defaults to 42 + index)
+#   params       — VPPParams fields; unknown keys are ignored.
+#                  pv_lat/pv_lon are SITE coords: they enable real Open-Meteo data
+#                  for both PV (pvlib) and wind (wind_speed_10m). Stripped when
+#                  EFLUX_PV_PHYSICAL=false or the 'data' extras are missing.
+#   agent_params — strategy-class kwargs (for reflective: the inner TruthfulAgent),
+#                  e.g. { demand_beta: 0.5 } for price-responsive bids.
+#   persona      — reflective only: { name, prompt } strategy brief appended to
+#                  the LLM system prompt. Reflection offsets are loader-assigned.
 #
 # Price landscape (price_ref = 50):
 #   renewables surplus  ~ markup_floor * 50 (20 for truthful sellers)
 #   battery band        ~ 52.7 sell / 47.4 buy
 #   gas marginal cost   ~ 55-72 (soft price cap, merit order top)
+#   urgent demand bids  ~ up to 75 (demand_beta: bids rise with deficit, so
+#                         scarcity hours actually clear the gas ladder)
 
 vpps:
   # --- residential / rooftop solar mix (originals) ------------------------
   - name: ordinary-zi-solar-01
     agent: zi
-    params: { pv_kw_peak: 8.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 1.2,
+    params: { pv_kw_peak: 10.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 1.2,
               pv_lat: 22.28, pv_lon: 114.13, pv_tilt: 22.0, pv_azimuth: 180.0 }
   - name: ordinary-truthful-batt-02
     agent: truthful
-    params: { pv_kw_peak: 4.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 2.0, markup_floor: 0.4 }
+    params: { pv_kw_peak: 6.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 2.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
   - name: ordinary-zi-load-03
     agent: zi
     params: { pv_kw_peak: 0.5, battery_kwh: 5.0, battery_kw_max: 2.0, load_kw_base: 5.0 }
   - name: ordinary-zi-rooftop-04
     agent: zi
-    params: { pv_kw_peak: 6.0, battery_kwh: 12.0, battery_kw_max: 3.0, load_kw_base: 1.5 }
+    params: { pv_kw_peak: 8.0, battery_kwh: 12.0, battery_kw_max: 3.0, load_kw_base: 1.5 }
   - name: ordinary-truthful-flex-05
     agent: truthful
-    params: { pv_kw_peak: 3.0, battery_kwh: 18.0, battery_kw_max: 5.0, load_kw_base: 3.0, markup_floor: 0.4 }
+    params: { pv_kw_peak: 4.0, battery_kwh: 18.0, battery_kw_max: 5.0, load_kw_base: 3.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
   - name: ordinary-zi-battery-06
     agent: zi
     params: { pv_kw_peak: 2.0, battery_kwh: 28.0, battery_kw_max: 8.0, load_kw_base: 2.5 }
   - name: ordinary-truthful-solar-07
     agent: truthful
-    params: { pv_kw_peak: 7.0, battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 1.0, markup_floor: 0.4 }
+    params: { pv_kw_peak: 9.0, battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 1.0, markup_floor: 0.4 }
   - name: ordinary-zi-commercial-load-08
     agent: zi
     params: { pv_kw_peak: 1.0, battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 6.0 }
   - name: ordinary-truthful-mixed-09
     agent: truthful
-    params: { pv_kw_peak: 5.0, battery_kwh: 20.0, battery_kw_max: 6.0, load_kw_base: 2.8, markup_floor: 0.4 }
+    params: { pv_kw_peak: 6.0, battery_kwh: 20.0, battery_kw_max: 6.0, load_kw_base: 2.8, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
   - name: ordinary-zi-evening-load-10
     agent: zi
     params: { pv_kw_peak: 1.5, battery_kwh: 6.0, battery_kw_max: 2.5, load_kw_base: 4.5 }
@@ -54,27 +63,29 @@ vpps:
   # the AR(1) gust stub around wind_mean_speed.
   - name: wind-coastal-11
     agent: truthful
-    params: { pv_kw_peak: 0.0, wind_kw_rated: 12.0, battery_kwh: 10.0, battery_kw_max: 4.0,
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 12.0, wind_mean_speed: 9.0,
+              battery_kwh: 10.0, battery_kw_max: 4.0,
               load_kw_base: 0.4, markup_floor: 0.4, pv_lat: 22.28, pv_lon: 114.13 }
   - name: wind-coastal-12
     agent: zi
-    params: { pv_kw_peak: 0.0, wind_kw_rated: 8.0, battery_kwh: 5.0, battery_kw_max: 2.0,
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 8.0, wind_mean_speed: 8.5,
+              battery_kwh: 5.0, battery_kw_max: 2.0,
               load_kw_base: 0.3, pv_lat: 22.20, pv_lon: 114.02 }
   - name: wind-hilltop-13
     agent: truthful
-    params: { pv_kw_peak: 0.0, wind_kw_rated: 10.0, wind_mean_speed: 8.5,
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 10.0, wind_mean_speed: 9.0,
               battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 0.3, markup_floor: 0.4 }
   - name: wind-small-14
     agent: zi
-    params: { pv_kw_peak: 0.0, wind_kw_rated: 5.0, wind_mean_speed: 6.5,
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 5.0, wind_mean_speed: 8.0,
               battery_kwh: 6.0, battery_kw_max: 2.0, load_kw_base: 0.2 }
   - name: wind-urban-15
     agent: zi
-    params: { pv_kw_peak: 0.0, wind_kw_rated: 3.0, wind_mean_speed: 5.0,
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 3.0, wind_mean_speed: 7.0,
               battery_kwh: 4.0, battery_kw_max: 1.5, load_kw_base: 0.3 }
   - name: wind-offshore-16
     agent: truthful
-    params: { pv_kw_peak: 0.0, wind_kw_rated: 15.0, wind_mean_speed: 9.0,
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 15.0, wind_mean_speed: 9.5,
               battery_kwh: 12.0, battery_kw_max: 5.0, load_kw_base: 0.5, markup_floor: 0.4 }
 
   # --- factories (industrial shift loads) ----------------------------------
@@ -82,6 +93,7 @@ vpps:
     agent: truthful
     params: { pv_kw_peak: 3.0, battery_kwh: 20.0, battery_kw_max: 6.0,
               load_kw_base: 12.0, load_profile: industrial, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
   - name: factory-textile-18
     agent: zi
     params: { pv_kw_peak: 1.0, battery_kwh: 6.0, battery_kw_max: 3.0,
@@ -90,6 +102,7 @@ vpps:
     agent: truthful
     params: { pv_kw_peak: 2.0, battery_kwh: 30.0, battery_kw_max: 8.0,
               load_kw_base: 10.0, load_profile: industrial, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
   - name: factory-metalworks-20
     agent: zi
     params: { pv_kw_peak: 0.0, battery_kwh: 10.0, battery_kw_max: 5.0,
@@ -102,6 +115,7 @@ vpps:
     agent: truthful
     params: { pv_kw_peak: 0.0, battery_kwh: 12.0, battery_kw_max: 4.0,
               load_kw_base: 9.0, load_profile: flat, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
 
   # --- commercial buildings -------------------------------------------------
   - name: mall-harbour-23
@@ -112,25 +126,82 @@ vpps:
     agent: truthful
     params: { pv_kw_peak: 2.5, battery_kwh: 5.0, battery_kw_max: 2.0,
               load_kw_base: 6.0, load_profile: commercial, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
   - name: datacenter-25
     agent: truthful
     params: { pv_kw_peak: 0.0, battery_kwh: 15.0, battery_kw_max: 6.0,
               load_kw_base: 8.0, load_profile: flat, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+
+  # --- LLM-managed (reflective) ----------------------------------------------
+  # All share one LLM connection (reflections staggered + serialized by the
+  # loader); offline fallback = plain inner TruthfulAgent. Each agent learns
+  # from its own hint→outcome memory (data/agent_memory/<name>.jsonl), the
+  # market trade tape, and the other LLM agents' published reflections.
+  - name: my-llm-vpp
+    agent: reflective
+    seed: 77
+    params: { pv_kw_peak: 5.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 2.5,
+              markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+
+  - name: llm-arb-aggressive
+    agent: reflective
+    seed: 78
+    params: { pv_kw_peak: 2.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 0.5,
+              markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+    persona:
+      name: aggressive-arbitrageur
+      prompt: >-
+        You are an aggressive spread-capture arbitrageur. Your edge is a large
+        battery (30 kWh / 8 kW): buy cheap midday solar, sell into evening
+        scarcity. Tolerate risk — prefer larger qty_scale and bolder
+        price_adjust when the gap between recent buy prices and the best ask
+        is wide. Watch your LLM peers and undercut their asks when they get greedy.
+
+  - name: llm-wind-conservative
+    agent: reflective
+    seed: 79
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 10.0, wind_mean_speed: 9.0,
+              battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 0.4, markup_floor: 0.4 }
+    persona:
+      name: conservative-wind-farmer
+      prompt: >-
+        You manage a wind farm and protect revenue. Never sell below marginal
+        cost; prefer steady fills over occasional big wins. Keep qty_scale near
+        1.0 and use small negative price_adjust only when your asks sit
+        unfilled while peers are trading.
+
+  - name: llm-demand-buyer
+    agent: reflective
+    seed: 80
+    params: { pv_kw_peak: 0.0, battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 6.0,
+              load_profile: commercial, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+    persona:
+      name: cost-minimizing-buyer
+      prompt: >-
+        You procure power for a commercial building (6 kW, business hours).
+        Minimize cost: charge the battery when prices dip toward the midday
+        solar floor, avoid buying at evening gas-peak prices. Negative
+        price_adjust saves money but risks unserved deficit — balance fill
+        rate against price.
 
   # --- gas generation (dispatchable, merit-order top) ------------------------
   - name: gas-base-26
     agent: gas
     params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
-              gas_kw_max: 30.0, gas_cost_per_kwh: 55.0 }
+              gas_kw_max: 20.0, gas_cost_per_kwh: 55.0 }
   - name: gas-chp-27
     agent: gas
     params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
-              gas_kw_max: 25.0, gas_cost_per_kwh: 58.0 }
+              gas_kw_max: 15.0, gas_cost_per_kwh: 58.0 }
   - name: gas-peaker-28
     agent: gas
     params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
-              gas_kw_max: 40.0, gas_cost_per_kwh: 68.0 }
+              gas_kw_max: 15.0, gas_cost_per_kwh: 68.0 }
   - name: gas-backup-29
     agent: gas
     params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
-              gas_kw_max: 15.0, gas_cost_per_kwh: 72.0 }
+              gas_kw_max: 10.0, gas_cost_per_kwh: 72.0 }

@@ -41,6 +41,13 @@ class TruthfulAgent(BaseAgent):
     soc_high: float = 0.45
     soc_low: float = 0.25
     battery_quote_every_n_ticks: int = 30
+    # Price-responsive demand: bid price rises with the deficit fraction
+    # (deficit relative to battery capacity), up to price_ref * price_cap_mult.
+    # 0.0 = legacy flat bidding at price_ref. With demand_beta=0.5 an urgent
+    # (full-capacity) deficit bids 75 — crossing the entire gas merit order
+    # (55-72) so peaking units actually clear at scarcity hours.
+    demand_beta: float = 0.0
+    price_cap_mult: float = 1.5
     _ticks_since_battery_quote: int = 0
 
     def decide(self, ctx: AgentContext) -> list[OrderIntent]:
@@ -72,7 +79,18 @@ class TruthfulAgent(BaseAgent):
                 # Deficit: pay up to price_ref to cover load directly. If battery has room,
                 # we'd also be willing to pay battery_buy_price for storage, which is
                 # strictly lower than price_ref — so for a single quote, use price_ref.
-                price_f = float(self.price_ref)
+                # With demand_beta > 0 willingness-to-pay rises as the deficit
+                # deepens, so scarcity is priced instead of waiting unserved.
+                # The deficit must include resting unfilled bids: the runner
+                # debits pending at submit, so pending alone is only the
+                # post-debit sliver (~min_qty) — the real unmet deficit sits in
+                # the book until fills or TTL expiry. Without this term the bid
+                # never leaves price_ref and gas (55-72) never clears.
+                unserved_kwh = max(0.0, -(net_kwh + ctx.open_orders_net_kwh))
+                deficit_frac = min(1.0, unserved_kwh / max(ctx.params.battery_kwh, 1.0))
+                price_f = float(self.price_ref) * min(
+                    self.price_cap_mult, 1.0 + self.demand_beta * deficit_frac
+                )
                 qty_f = -net_kwh
 
             price = Decimal(str(price_f)).quantize(Decimal("0.0001"))

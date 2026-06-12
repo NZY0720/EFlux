@@ -76,6 +76,10 @@ ignore = ["E501"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
+# Direct src import: macOS re-hides .env/* (UF_HIDDEN), and Python 3.12's
+# site.py skips hidden .pth files — so the editable install can vanish for
+# bare `pytest` runs. tasks.sh unhides the venv; this covers everything else.
+pythonpath = ["src"]
 filterwarnings = [
     # Pydantic v2 / SQLAlchemy 2 / asyncio emit a handful of DeprecationWarnings
     # we don't own. Promote real warnings from our own code by removing this line

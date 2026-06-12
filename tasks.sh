@@ -83,10 +83,11 @@ EOF
     session_token=$(printf '%s' "$session_json" | extract "['session_token']")
     user_id=$(printf '%s' "$session_json" | extract "['user_id']")
 
+    # Unique name per run — VPP names collide (409) across runs on the same dev DB.
     vpp_json=$(curl -fsS -X POST "$base/vpps" \
       -H "Authorization: Bearer $session_token" \
       -H 'Content-Type: application/json' \
-      -d '{"name":"smoke-vpp","params":{}}')
+      -d "{\"name\":\"smoke-vpp-$(date +%s)\",\"params\":{}}")
     vpp_id=$(printf '%s' "$vpp_json" | extract "['id']")
     echo "user_id=$user_id vpp_id=$vpp_id"
 

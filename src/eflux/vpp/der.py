@@ -13,6 +13,7 @@ FlexibleLoad and Battery remain analytic — ResStock integration is future work
 
 from __future__ import annotations
 
+import logging
 import math
 import random
 from dataclasses import dataclass, field
@@ -22,12 +23,15 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from eflux.data.pv_model import PVPhysicalModel
 
+log = logging.getLogger(__name__)
+
 
 @dataclass
 class PV:
     kw_peak: float
     noise_std: float = 0.1
     physical_model: "PVPhysicalModel | None" = field(default=None, repr=False)
+    _fallback_warned: bool = field(default=False, repr=False)
 
     def output_kw(self, sim_ts: datetime, rng: random.Random) -> float:
         """Return AC output in kW. Uses pvlib physics if a model is attached, else stub."""
@@ -39,9 +43,16 @@ class PV:
                     if target not in getattr(weather, "index", []):
                         raise KeyError(target)
                     return self.physical_model.output_kw(sim_ts)
-            except Exception:
-                # Don't crash the simulator tick on bad data.
-                pass
+                raise ValueError("physical model has no weather attached")
+            except Exception as e:
+                # Don't crash the simulator tick on bad data — but say which
+                # model degraded, once, so silent fallbacks are visible in logs.
+                if not self._fallback_warned:
+                    self._fallback_warned = True
+                    log.warning(
+                        "PV physical model (%.1f kWp) fell back to the sine stub: %s: %s",
+                        self.kw_peak, type(e).__name__, e,
+                    )
         hour = sim_ts.hour + sim_ts.minute / 60.0
         if 6 <= hour <= 18:
             sun = math.sin(math.pi * (hour - 6) / 12)

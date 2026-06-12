@@ -1,0 +1,165 @@
+"""Unit tests for the AgentSpec participant schema."""
+
+from __future__ import annotations
+
+import pytest
+from pydantic import ValidationError
+
+from eflux.simulator.agent_spec import (
+    AgentSpec,
+    agent_spec_json_schema,
+    validate_vpp_params,
+)
+from eflux.vpp.base import VPPParams
+
+
+def test_minimal_spec_defaults_to_zi():
+    spec = AgentSpec.model_validate({"name": "vpp-1"})
+    assert spec.agent == "zi"
+    assert spec.params == {}
+    assert spec.agent_params == {}
+    assert spec.persona is None
+
+
+def test_unknown_agent_kind_rejected():
+    with pytest.raises(ValidationError, match="agent"):
+        AgentSpec.model_validate({"name": "vpp-1", "agent": "quantum"})
+
+
+def test_unknown_top_level_key_rejected():
+    # extra="forbid" — a YAML typo like 'parms' must fail loudly, not load silently.
+    with pytest.raises(ValidationError, match="parms"):
+        AgentSpec.model_validate({"name": "vpp-1", "parms": {"pv_kw_peak": 3.0}})
+
+
+def test_persona_only_valid_for_reflective():
+    persona = {"name": "arb", "prompt": "Trade the spread aggressively."}
+    with pytest.raises(ValidationError, match="persona"):
+        AgentSpec.model_validate({"name": "vpp-1", "agent": "zi", "persona": persona})
+    spec = AgentSpec.model_validate(
+        {"name": "vpp-1", "agent": "reflective", "persona": persona}
+    )
+    assert spec.persona is not None and spec.persona.name == "arb"
+
+
+def test_bad_params_type_rejected_at_spec_parse():
+    with pytest.raises(ValidationError):
+        AgentSpec.model_validate({"name": "vpp-1", "params": {"pv_kw_peak": "lots"}})
+
+
+def test_validate_vpp_params_round_trip_matches_from_dict():
+    sparse = {"pv_kw_peak": 8.0, "battery_kwh": 15.0, "load_profile": "industrial"}
+    assert validate_vpp_params(sparse) == VPPParams.from_dict(sparse).to_dict()
+
+
+def test_validate_vpp_params_rejects_unknown_keys():
+    # A typo like 'batery_kwh' must fail loudly — silently falling back to the
+    # default battery would skew every capacity-derived calculation.
+    with pytest.raises(ValueError, match="frobnicate"):
+        validate_vpp_params({"pv_kw_peak": 2.0, "frobnicate": True})
+
+
+def test_spec_params_typo_rejected_at_parse():
+    with pytest.raises(ValidationError, match="batery_kwh"):
+        AgentSpec.model_validate({"name": "vpp-1", "params": {"batery_kwh": 500}})
+
+
+def test_roster_params_are_coerced_not_raw(monkeypatch, tmp_path):
+    """YAML string numerics ("12") must reach VPPParams as floats — the raw
+    from_dict path stored them verbatim and crashed mid-run on first use."""
+    from eflux.bridge.bus import InMemoryBus
+    from eflux.config import get_settings
+    from eflux.simulator.runner import Simulator
+    from eflux.simulator.scenarios import load_default_scenario
+
+    scenario = tmp_path / "scenario.yaml"
+    scenario.write_text(
+        """
+vpps:
+  - name: quoted-numbers
+    agent: zi
+    params: { battery_kwh: "12", pv_kw_peak: "3.5" }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EFLUX_SCENARIO_FILE", str(scenario))
+    monkeypatch.setenv("EFLUX_PV_PHYSICAL", "false")
+    monkeypatch.setenv("EFLUX_REFLECTIVE_ENABLED", "false")
+    get_settings.cache_clear()
+    try:
+        sim = Simulator(bus=InMemoryBus())
+        load_default_scenario(sim)
+    finally:
+        get_settings.cache_clear()
+
+    vpp = next(v for v in sim.vpps.values() if v.name == "quoted-numbers")
+    assert vpp.params.battery_kwh == 12.0 and isinstance(vpp.params.battery_kwh, float)
+    assert vpp.params.pv_kw_peak == 3.5 and isinstance(vpp.params.pv_kw_peak, float)
+
+
+def test_agent_params_reach_agent_constructor(monkeypatch, tmp_path):
+    from eflux.bridge.bus import InMemoryBus
+    from eflux.config import get_settings
+    from eflux.simulator.runner import Simulator
+    from eflux.simulator.scenarios import load_default_scenario
+
+    scenario = tmp_path / "scenario.yaml"
+    scenario.write_text(
+        """
+vpps:
+  - name: gas-custom
+    agent: gas
+    agent_params: { quote_every_n_ticks: 7 }
+    params: { gas_kw_max: 10.0 }
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EFLUX_SCENARIO_FILE", str(scenario))
+    monkeypatch.setenv("EFLUX_PV_PHYSICAL", "false")
+    monkeypatch.setenv("EFLUX_REFLECTIVE_ENABLED", "false")
+    get_settings.cache_clear()
+    try:
+        sim = Simulator(bus=InMemoryBus())
+        load_default_scenario(sim)
+    finally:
+        get_settings.cache_clear()
+
+    gas = next(v for v in sim.vpps.values() if v.name == "gas-custom")
+    assert gas.agent.quote_every_n_ticks == 7
+
+
+def test_duplicate_names_rejected(monkeypatch, tmp_path):
+    from eflux.bridge.bus import InMemoryBus
+    from eflux.config import get_settings
+    from eflux.simulator.runner import Simulator
+    from eflux.simulator.scenarios import load_default_scenario
+
+    scenario = tmp_path / "scenario.yaml"
+    scenario.write_text(
+        """
+vpps:
+  - name: twin
+    agent: zi
+  - name: twin
+    agent: zi
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("EFLUX_SCENARIO_FILE", str(scenario))
+    monkeypatch.setenv("EFLUX_PV_PHYSICAL", "false")
+    get_settings.cache_clear()
+    try:
+        with pytest.raises(ValueError, match="duplicate"):
+            sim = Simulator(bus=InMemoryBus())
+            load_default_scenario(sim)
+    finally:
+        get_settings.cache_clear()
+
+
+def test_json_schema_export_contains_contract_fields():
+    schema = agent_spec_json_schema()
+    assert "agent" in schema["properties"]
+    assert "persona" in schema["properties"]
+    # params is expanded to the full VPPParams field schema.
+    assert "pv_kw_peak" in schema["properties"]["params"]["properties"]
+    assert "gas_cost_per_kwh" in schema["properties"]["params"]["properties"]

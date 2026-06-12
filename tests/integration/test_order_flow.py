@@ -53,6 +53,23 @@ async def test_full_order_flow(client):
 
 
 @pytest.mark.asyncio
+async def test_order_bounds_rejected_with_readable_errors(client):
+    headers = await _logged_in_headers(client)
+    r = await client.post("/vpps", headers=headers, json={"name": "bounds-vpp", "params": {}})
+    vpp_id = r.json()["id"]
+
+    cases = [
+        {"side": "buy", "price": "80", "qty": "0.001"},  # below 0.01 kWh floor
+        {"side": "buy", "price": "80", "qty": "5000"},  # above 1000 kWh cap
+        {"side": "sell", "price": "99999", "qty": "1"},  # above 1000 $/kWh cap
+        {"side": "buy", "price": "0", "qty": "1"},  # non-positive price
+    ]
+    for case in cases:
+        r = await client.post("/orders", headers=headers, json={"vpp_id": vpp_id, **case})
+        assert r.status_code == 422, f"{case} → {r.status_code}: {r.text}"
+
+
+@pytest.mark.asyncio
 async def test_order_for_someone_elses_vpp_is_404(client):
     headers_a = await _logged_in_headers(client)
     # Create VPP as user A

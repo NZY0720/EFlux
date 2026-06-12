@@ -1,25 +1,29 @@
 """Built-in scenario loading — roster comes from a YAML file (scenarios/default.yaml).
 
-Each entry maps to one built-in VPP: a name, an agent kind (zi | truthful | gas)
-and a VPPParams dict. The LLM-managed my-llm-vpp is always appended in code
-because it needs the LLM client wiring from settings.
+Every entry is validated as an AgentSpec (see simulator/agent_spec.py — the same
+schema external participants integrate against). Strategy kinds: zi | truthful |
+gas | reflective. Reflective (LLM-steered) entries share one SharedLLM connection
+and get evenly staggered reflection offsets so the single slow endpoint is never
+hit concurrently.
 """
 
 from __future__ import annotations
 
 import logging
-
 import os
 from pathlib import Path
 
-import httpx
 import yaml
 
 from eflux.agents.base import BaseAgent
 from eflux.agents.gas import GasGeneratorAgent
+from eflux.agents.reflective import ReflectiveAgent
+from eflux.agents.reflective.memory import AgentMemory, slug
+from eflux.agents.reflective.pool import SharedLLM
 from eflux.agents.truthful import TruthfulAgent
 from eflux.agents.zi import ZIAgent
 from eflux.config import PROJECT_ROOT, get_settings
+from eflux.simulator.agent_spec import AgentSpec, validate_vpp_params
 from eflux.simulator.runner import Simulator
 from eflux.vpp.base import VPPParams
 
@@ -44,7 +48,7 @@ def _real_pv_available() -> bool:
 
 
 def load_default_scenario(sim: Simulator) -> None:
-    """Load the YAML roster, then append the user-visible LLM-managed VPP."""
+    """Load and validate the YAML roster; wire reflective entries to the shared LLM."""
     settings = get_settings()
     path = Path(settings.scenario_file)
     if not path.is_absolute():
@@ -54,37 +58,52 @@ def load_default_scenario(sim: Simulator) -> None:
     if not entries:
         raise ValueError(f"Scenario file {path} contains no 'vpps' entries")
 
+    specs = [AgentSpec.model_validate(entry) for entry in entries]
+    seen: set[str] = set()
+    for spec in specs:
+        if spec.name in seen:
+            raise ValueError(f"Scenario file {path}: duplicate VPP name {spec.name!r}")
+        seen.add(spec.name)
+
     use_real_weather = _real_pv_available()
+    reflective_specs = [s for s in specs if s.agent == "reflective"]
+    shared = SharedLLM.from_settings(settings) if reflective_specs else None
+
     counts: dict[str, int] = {}
-    for i, entry in enumerate(entries):
-        name = entry["name"]
-        agent_kind = str(entry.get("agent", "zi")).lower()
-        factory = AGENT_FACTORIES.get(agent_kind)
-        if factory is None:
-            raise ValueError(f"Scenario entry {name!r}: unknown agent kind {agent_kind!r}")
-        params_dict = dict(entry.get("params") or {})
-        if not use_real_weather:
-            # Strip site coords → no Open-Meteo fetch, stub PV + wind models.
-            params_dict.pop("pv_lat", None)
-            params_dict.pop("pv_lon", None)
-        params = VPPParams.from_dict(params_dict)
-        sim.add_builtin_vpp(
-            name=name,
-            params=params,
-            agent=factory(),
-            seed=int(entry.get("seed", 42 + i)),
-        )
-        counts[agent_kind] = counts.get(agent_kind, 0) + 1
+    reflective_index = 0
+    for i, spec in enumerate(specs):
+        if spec.agent == "reflective":
+            _add_reflective_vpp(
+                sim,
+                spec,
+                shared=shared,  # type: ignore[arg-type]  # set when reflective_specs is non-empty
+                use_real_weather=use_real_weather,
+                default_seed=42 + i,
+                offset_index=reflective_index,
+                n_reflective=len(reflective_specs),
+            )
+            reflective_index += 1
+        else:
+            factory = AGENT_FACTORIES[spec.agent]
+            sim.add_builtin_vpp(
+                name=spec.name,
+                params=_build_params(spec, use_real_weather),
+                agent=factory(**spec.agent_params),
+                seed=spec.seed if spec.seed is not None else 42 + i,
+            )
+        counts[spec.agent] = counts.get(spec.agent, 0) + 1
 
     log.info(
         "Scenario %s: %d VPPs loaded (%s, real_weather=%s)",
         path.name,
-        len(entries),
+        len(specs),
         ", ".join(f"{k}={v}" for k, v in sorted(counts.items())),
         use_real_weather,
     )
 
-    load_my_llm_vpp(sim)
+    # Back-compat: a roster without reflective entries still gets the demo LLM VPP.
+    if not reflective_specs:
+        load_my_llm_vpp(sim)
 
     # Optional: if a PPO checkpoint is configured, add one more VPP driven by it.
     ckpt = os.environ.get("EFLUX_PPO_CHECKPOINT")
@@ -92,128 +111,129 @@ def load_default_scenario(sim: Simulator) -> None:
         load_ppo_scenario(sim, ckpt)
 
     log.info(
-        "Default scenario ready: %d ordinary agents + %d LLM agent",
-        len(entries),
+        "Default scenario ready: %d ordinary agents + %d LLM agents",
+        len(specs) - len(reflective_specs),
         len(sim.my_managed_vpps()),
     )
 
 
-def load_my_llm_vpp(sim: Simulator) -> None:
-    """Add the single LLM-managed VPP that appears on the My VPPs page.
+def _build_params(spec: AgentSpec, use_real_weather: bool) -> VPPParams:
+    params_dict = dict(spec.params)
+    if not use_real_weather:
+        # Strip site coords → no Open-Meteo fetch, stub PV + wind models.
+        params_dict.pop("pv_lat", None)
+        params_dict.pop("pv_lon", None)
+    # Build from the *validated/coerced* dict, not the raw YAML values —
+    # from_dict alone would happily store battery_kwh: "12" (a string) and
+    # blow up mid-run on the first arithmetic touch.
+    return VPPParams.from_dict(validate_vpp_params(params_dict))
 
-    The agent is always present for the demo. It calls the LLM only when reflective
-    mode is enabled and the OpenAI-compatible endpoint is fully configured.
+
+def _add_reflective_vpp(
+    sim: Simulator,
+    spec: AgentSpec,
+    *,
+    shared: SharedLLM,
+    use_real_weather: bool,
+    default_seed: int,
+    offset_index: int,
+    n_reflective: int,
+) -> None:
+    """Add one LLM-steered VPP sharing the SharedLLM connection.
+
+    Offsets are spread evenly over the reflection interval (index-based —
+    deterministic, no collisions) so calls to the single endpoint stagger
+    instead of landing on the same tick.
     """
-    from eflux.config import get_settings
-
     settings = get_settings()
-    from eflux.agents.reflective import ReflectiveAgent
-    from eflux.agents.reflective.llm_client import LLMClient
-    from eflux.agents.truthful import TruthfulAgent
-
-    api_key = settings.llm_api_key
-    client = None
-    strategy = "ReflectiveAgent (offline fallback)"
-    llm_status = "offline fallback until LLM is configured"
-    if settings.reflective_enabled and api_key and settings.llm_base_url and settings.llm_model:
-        ok, detail = _validate_llm_connection(
-            base_url=settings.llm_base_url,
-            api_key=api_key,
-            model=settings.llm_model,
-        )
-        if ok:
-            client = LLMClient(
-                base_url=settings.llm_base_url,
-                api_key=api_key,
-                model=settings.llm_model,
-                timeout_sec=settings.llm_timeout_sec,
-            )
-            strategy = f"ReflectiveAgent ({settings.llm_provider}:{settings.llm_model})"
-            llm_status = f"live LLM reflection via {settings.llm_base_url}"
-        else:
-            llm_status = f"offline fallback: {detail}"
-            log.warning("My LLM VPP connection check failed: %s", detail)
-    else:
-        missing = []
-        if not settings.reflective_enabled:
-            missing.append("EFLUX_REFLECTIVE_ENABLED=false")
-        if not api_key:
-            missing.append("missing key.txt")
-        if not settings.llm_base_url:
-            missing.append("missing EFLUX_LLM_BASE_URL")
-        if not settings.llm_model:
-            missing.append("missing EFLUX_LLM_MODEL")
-        llm_status = "offline fallback: " + ", ".join(missing)
-        log.warning(
-            "My LLM VPP loaded without live LLM calls (enabled=%s key=%s base_url=%s model=%s)",
-            settings.reflective_enabled,
-            bool(api_key),
-            bool(settings.llm_base_url),
-            bool(settings.llm_model),
-        )
-
+    interval = settings.reflective_interval_ticks
+    offset = round(offset_index * interval / max(1, n_reflective))
+    memory_dir = Path(settings.agent_memory_dir)
+    if not memory_dir.is_absolute():
+        memory_dir = PROJECT_ROOT / memory_dir
+    memory = AgentMemory(memory_dir / f"{slug(spec.name)}.jsonl")
+    loaded = memory.load()
+    if loaded:
+        log.info("Reflective VPP %s recalled %d memory records", spec.name, loaded)
     agent = ReflectiveAgent(
-        llm_client=client,
-        inner=TruthfulAgent(),
-        reflect_every_n_ticks=settings.reflective_interval_ticks,
+        llm_client=shared.client,
+        inner=TruthfulAgent(**spec.agent_params),
+        reflect_every_n_ticks=interval,
+        reflect_offset_ticks=offset,
+        llm_gate=shared.gate,
+        persona_prompt=spec.persona.prompt if spec.persona else None,
+        memory=memory,
     )
     sim.add_builtin_vpp(
-        name="my-llm-vpp",
-        params=VPPParams(pv_kw_peak=5.0, battery_kwh=15.0, battery_kw_max=4.0, load_kw_base=2.5, markup_floor=0.4),
+        name=spec.name,
+        params=_build_params(spec, use_real_weather),
         agent=agent,
-        seed=77,
-        strategy=strategy,
+        seed=spec.seed if spec.seed is not None else default_seed,
+        strategy=f"ReflectiveAgent ({shared.strategy_suffix})",
         is_my_vpp=True,
-        llm_live=client is not None,
-        llm_status=llm_status,
+        llm_live=shared.live,
+        llm_status=shared.status,
     )
-    log.info("My LLM VPP loaded (interval=%d ticks, live_llm=%s)", settings.reflective_interval_ticks, client is not None)
+    log.info(
+        "Reflective VPP %s loaded (interval=%d ticks, offset=%d, live_llm=%s)",
+        spec.name,
+        interval,
+        offset,
+        shared.live,
+    )
 
 
-def _validate_llm_connection(*, base_url: str, api_key: str, model: str) -> tuple[bool, str]:
-    try:
-        resp = httpx.post(
-            f"{base_url.rstrip('/')}/chat/completions",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "api-key": api_key,
-                "Content-Type": "application/json",
-            },
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": "Reply with only: ok"}],
-                "max_completion_tokens": 8,
-                "temperature": 0.2,
-                "stream": False,
-            },
-            timeout=15.0,
-        )
-        if resp.status_code >= 400:
-            try:
-                data = resp.json()
-                message = data.get("error", {}).get("message") or resp.text[:160]
-            except Exception:
-                message = resp.text[:160]
-            return False, f"{resp.status_code} {message}"
-        data = resp.json()
-        data["choices"][0]["message"]["content"]
-        return True, "ok"
-    except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
+def load_my_llm_vpp(sim: Simulator) -> None:
+    """Back-compat shim: add the demo LLM VPP when the roster declares none."""
+    spec = AgentSpec(
+        name="my-llm-vpp",
+        agent="reflective",
+        seed=77,
+        params={
+            "pv_kw_peak": 5.0,
+            "battery_kwh": 15.0,
+            "battery_kw_max": 4.0,
+            "load_kw_base": 2.5,
+            "markup_floor": 0.4,
+        },
+    )
+    shared = SharedLLM.from_settings(get_settings())
+    _add_reflective_vpp(
+        sim,
+        spec,
+        shared=shared,
+        use_real_weather=_real_pv_available(),
+        default_seed=77,
+        offset_index=0,
+        n_reflective=1,
+    )
 
 
 def load_ppo_scenario(sim: Simulator, checkpoint_path: str) -> None:
-    """Add a PPO-driven VPP to the simulator. Skipped silently if 'ai' extras missing."""
+    """Add a PPO-driven VPP to the simulator. Skipped (with a warning) if the 'ai'
+    extras are missing or the checkpoint cannot be loaded — a bad EFLUX_PPO_CHECKPOINT
+    must not take down the whole app at startup."""
     try:
         from eflux.agents.ppo.agent import PPOAgent
     except ImportError as e:
         log.warning("PPO checkpoint %s configured but 'ai' extras not installed (%s) — skipping", checkpoint_path, e)
         return
+    # The policy wrapper loads lazily (Ray init is expensive), so a bad path
+    # would otherwise surface as an inference error on every tick instead of
+    # one clear startup message.
+    if not Path(checkpoint_path).exists():
+        log.warning("PPO checkpoint %s does not exist — skipping the PPO VPP", checkpoint_path)
+        return
+    try:
+        agent = PPOAgent(checkpoint_path=checkpoint_path)
+    except Exception:
+        log.exception("PPO checkpoint %s failed to load — skipping the PPO VPP", checkpoint_path)
+        return
     params = VPPParams(pv_kw_peak=6.0, battery_kwh=20.0, battery_kw_max=5.0, load_kw_base=2.0)
     sim.add_builtin_vpp(
         name=f"builtin-ppo-{os.path.basename(checkpoint_path)}",
         params=params,
-        agent=PPOAgent(checkpoint_path=checkpoint_path),
+        agent=agent,
         seed=99,
     )
     log.info("PPO VPP loaded from checkpoint %s", checkpoint_path)

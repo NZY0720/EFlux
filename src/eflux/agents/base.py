@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import random
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
 from eflux.vpp.base import VPPParams, VPPState
-from eflux.vpp.der import Battery, FlexibleLoad, PV
+from eflux.vpp.der import PV, Battery, FlexibleLoad
 
 
 @dataclass
@@ -35,6 +35,12 @@ class MarketSnapshot:
     best_ask: Decimal | None
     last_price: Decimal | None
     mid_price: Decimal | None
+    # Market-wide context for learning agents, populated once per tick by the
+    # runner (empty for unit-test snapshots): recent fills with party names,
+    # and each LLM agent's latest successful reflection (tagged with vpp_id so
+    # an agent can filter itself out).
+    recent_trades: list[dict] = field(default_factory=list)
+    peer_reflections: list[dict] = field(default_factory=list)
 
     @classmethod
     def from_engine(cls, sim_ts: datetime, snapshot: dict) -> MarketSnapshot:
@@ -58,6 +64,13 @@ class AgentContext:
     market: MarketSnapshot
     rng: random.Random
     tick_duration_h: float
+    # Signed energy this VPP has "spoken for" in resting (non-dispatched) book
+    # orders: sell remainders positive, buy remainders negative — the same
+    # convention as pending_net_kwh, which is debited at submit time. Together
+    # `pending_net_kwh + open_orders_net_kwh` is the true unserved position;
+    # without it a deficit agent sees only the post-debit sliver and can never
+    # price scarcity (the demand_beta mechanism). Populated by the runner.
+    open_orders_net_kwh: float = 0.0
 
 
 class BaseAgent(ABC):

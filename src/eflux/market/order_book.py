@@ -27,6 +27,10 @@ class LimitOrder:
     remaining_qty: Decimal
     sim_ts: datetime
     seq: int = 0  # tie-breaker for time priority
+    expires_at: datetime | None = None  # sim-time TTL; None = rests forever
+    # True = energy settles outside pending_net_kwh (battery band / gas), so
+    # expiry must not refund the accumulator.
+    dispatched: bool = False
 
 
 @dataclass
@@ -118,6 +122,12 @@ class OrderBook:
         if not self._asks:
             return None
         return self._asks.peekitem(0)[1]
+
+    def iter_orders(self, side: Side):
+        """Yield resting orders best-price-first (asks ascending, bids descending),
+        FIFO within a level — the walk a supply/demand curve needs."""
+        for level in self._book(side).values():
+            yield from level.orders
 
     def depth(self, side: Side, levels: int = 10) -> list[tuple[Decimal, Decimal]]:
         """Return [(price, total_qty), ...] for top N levels."""

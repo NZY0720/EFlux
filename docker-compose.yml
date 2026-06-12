@@ -1,0 +1,52 @@
+# One-command demo: docker compose up --build → http://localhost:8080
+#
+# Optional services (off by default — the app falls back gracefully without them):
+#   docker compose --profile redis up      # durable event bus via Redis Streams
+#   docker compose --profile postgres up   # users/VPPs in Postgres instead of SQLite
+# When enabling a profile, also uncomment the matching EFLUX_* vars below.
+
+services:
+  backend:
+    build:
+      context: .
+      target: backend
+    environment:
+      EFLUX_ENV: dev # dev keeps create_all + magic-link tokens echoed in the response
+      EFLUX_CORS_ORIGINS: http://localhost:8080
+      # EFLUX_BUS_BACKEND: redis
+      # EFLUX_REDIS_URL: redis://redis:6379/0
+      # EFLUX_DB_URL: postgresql+asyncpg://eflux:eflux@postgres:5432/eflux
+      # LLM reflection (optional): mount a key and set the endpoint to bring
+      # the my-llm-vpp agent fully online inside the container.
+      # EFLUX_REFLECTIVE_ENABLED: "true"
+      # EFLUX_LLM_BASE_URL: https://...
+      # EFLUX_LLM_MODEL: ...
+    # volumes:
+    #   - ./key.txt:/app/key.txt:ro
+    expose:
+      - "8000"
+
+  web:
+    build:
+      context: .
+      target: web
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    expose:
+      - "6379"
+
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      POSTGRES_USER: eflux
+      POSTGRES_PASSWORD: eflux
+      POSTGRES_DB: eflux
+    expose:
+      - "5432"

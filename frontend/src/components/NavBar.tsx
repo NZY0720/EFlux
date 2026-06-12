@@ -28,6 +28,7 @@ export default function NavBar() {
       <div className="flex items-center gap-4">
         <span className="text-lg font-semibold text-white">⚡ EFlux</span>
         {link("/", "Market")}
+        {link("/participants", "Participants")}
         {link("/vpps", "My VPPs")}
       </div>
       <div className="flex items-center gap-4 text-sm text-slate-400">

@@ -42,15 +42,22 @@ export default function OrderBookDepth({ snapshot }: Props) {
 
   const option = {
     backgroundColor: "transparent",
-    grid: { left: 50, right: 20, top: 30, bottom: 30 },
+    grid: { left: 55, right: 20, top: 30, bottom: 42 },
+    legend: { top: 0, textStyle: { color: "#94a3b8", fontSize: 11 }, itemWidth: 12, itemHeight: 8 },
     xAxis: {
       type: "value",
       scale: true,
+      name: "price ($/kWh)",
+      nameLocation: "middle",
+      nameGap: 28,
+      nameTextStyle: { color: "#64748b", fontSize: 11 },
       axisLabel: { color: "#94a3b8" },
       splitLine: { lineStyle: { color: "#1e293b" } },
     },
     yAxis: {
       type: "value",
+      name: "cumulative qty (kWh)",
+      nameTextStyle: { color: "#64748b", fontSize: 11 },
       axisLabel: { color: "#94a3b8" },
       splitLine: { lineStyle: { color: "#1e293b" } },
     },

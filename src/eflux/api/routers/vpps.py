@@ -5,12 +5,12 @@ from __future__ import annotations
 from datetime import datetime
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
 from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
 from eflux.db.models import VPP
-from eflux.vpp.base import VPPParams
+from eflux.simulator.agent_spec import validate_vpp_params
 
 router = APIRouter(prefix="/vpps", tags=["vpps"])
 
@@ -63,6 +63,9 @@ class ReflectionEntryOut(BaseModel):
     price_adjust: float
     qty_scale: float
     rationale: str
+    # Persisted takeaway the LLM distilled from its hint→outcome history.
+    # None for entries recorded before lessons existed.
+    lesson: str | None = None
     error: str | None
 
 
@@ -136,7 +139,7 @@ def _llm_health(vpp) -> tuple[str, LLMHealthOut | None]:
 
 @router.get("/managed", response_model=list[ManagedVPPOut])
 async def list_my_managed_vpps(
-    user: CurrentUser,  # noqa: ARG001 — route belongs to the authenticated My VPPs view
+    user: CurrentUser,
     sim: SimulatorDep,
 ) -> list[ManagedVPPOut]:
     out: list[ManagedVPPOut] = []
@@ -165,7 +168,7 @@ async def list_my_managed_vpps(
 @router.get("/managed/{vpp_id}/performance", response_model=ManagedVPPPerformanceOut)
 async def get_my_managed_vpp_performance(
     vpp_id: int,
-    user: CurrentUser,  # noqa: ARG001 — route belongs to the authenticated My VPPs view
+    user: CurrentUser,
     sim: SimulatorDep,
 ) -> ManagedVPPPerformanceOut:
     vpp = next((v for v in sim.my_managed_vpps() if v.vpp_id == vpp_id), None)
@@ -192,8 +195,26 @@ async def get_my_managed_vpp_performance(
 
 @router.post("", response_model=VPPOut, status_code=status.HTTP_201_CREATED)
 async def create_vpp(payload: VPPCreate, session: DbSession, user: CurrentUser) -> VPPOut:
-    # Validate params shape by round-tripping through VPPParams.
-    parsed = VPPParams.from_dict(payload.params).to_dict()
+    # Same validation path as the built-in roster (simulator/agent_spec.py) —
+    # internal and external participants share one params schema.
+    # ValueError also covers the unknown-keys rejection; the detail mirrors
+    # FastAPI's native 422 shape (a list of {loc, msg, type}) so clients can
+    # parse every validation failure on this endpoint the same way.
+    try:
+        parsed = validate_vpp_params(payload.params)
+    except ValidationError as e:
+        detail = [
+            {
+                "loc": ["body", "params", *err["loc"]],
+                "msg": err["msg"],
+                "type": err["type"],
+            }
+            for err in e.errors(include_url=False)
+        ]
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail) from e
+    except ValueError as e:
+        detail = [{"loc": ["body", "params"], "msg": str(e), "type": "value_error"}]
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail) from e
     vpp = VPP(
         owner_id=user.id,
         name=payload.name,
@@ -203,7 +224,7 @@ async def create_vpp(payload: VPPCreate, session: DbSession, user: CurrentUser) 
     session.add(vpp)
     try:
         await session.flush()
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         raise HTTPException(status.HTTP_409_CONFLICT, f"name conflict: {e}") from e
     return VPPOut(
         id=vpp.id,

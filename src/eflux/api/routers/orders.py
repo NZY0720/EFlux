@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -18,8 +19,11 @@ router = APIRouter(prefix="/orders", tags=["orders"])
 class OrderSubmit(BaseModel):
     vpp_id: int
     side: Literal["buy", "sell"]
-    price: Decimal = Field(gt=0)
-    qty: Decimal = Field(gt=0)
+    # Bounds keep a fat-fingered UI/SDK order from distorting the demo market:
+    # price is capped well above the gas merit-order top (~72), qty at a level
+    # no single battery in the roster could physically deliver.
+    price: Decimal = Field(gt=0, le=1000, decimal_places=4)
+    qty: Decimal = Field(ge=Decimal("0.01"), le=1000, decimal_places=4)
 
 
 class TradeOut(BaseModel):
@@ -33,6 +37,9 @@ class TradeOut(BaseModel):
 class OrderSubmitResponse(BaseModel):
     order_id: int
     remaining_qty: str
+    # Sim time when the unfilled remainder is swept from the book (order TTL;
+    # an `order.cancelled` event is published). None = rests until filled/cancelled.
+    expires_at_sim: datetime | None = None
     trades: list[dict]
 
 
@@ -71,7 +78,7 @@ async def cancel_order(
     user: CurrentUser,
     sim: SimulatorDep,
 ) -> None:
-    from datetime import UTC, datetime
+    from datetime import UTC
 
     # Only the owner may cancel: resolve the resting order's VPP and check it
     # belongs to this user. Built-in VPPs use negative ids and are never
@@ -86,7 +93,7 @@ async def cancel_order(
 
     now_sim = sim.clock.now_sim()
     now_wall = datetime.now(UTC)
-    async with sim._lock:  # noqa: SLF001 — internal lock, deliberate
+    async with sim._lock:
         ok = sim.engine.cancel(payload.order_id, sim_ts=now_sim, wall_ts=now_wall)
     if not ok:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "order not found")

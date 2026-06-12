@@ -56,15 +56,27 @@ class RollingClock:
     def now_sim(self) -> datetime:
         return self.clock.now_sim()
 
+    def set_speed(self, speed: float) -> None:
+        """Change speed at runtime. Rebases the epochs so sim time is continuous
+        across the change — only the rate at which it advances jumps."""
+        if speed not in (1.0, 10.0, 100.0):
+            raise ValueError(f"speed must be 1.0, 10.0, or 100.0; got {speed}")
+        if speed == self.clock.speed:
+            return
+        self.clock.sim_epoch = self.clock.now_sim()
+        self.clock.wall_epoch = datetime.now(UTC)
+        self.clock.speed = speed
+
     def stop(self) -> None:
         self._stop.set()
 
     async def ticks(self):
         """Async generator yielding (tick_no, sim_ts) on every tick."""
-        wall_interval = self.tick_sim_sec / self.speed
         while not self._stop.is_set():
             self.tick_no += 1
             yield self.tick_no, self.now_sim()
+            # Recomputed every iteration so set_speed() takes effect mid-run.
+            wall_interval = self.tick_sim_sec / self.speed
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=wall_interval)
             except TimeoutError:

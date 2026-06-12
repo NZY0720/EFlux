@@ -20,8 +20,8 @@ export default function TradeTape({ events, limit = 25 }: Props) {
         <thead className="sticky top-0 bg-slate-900 text-slate-400">
           <tr>
             <th className="px-3 py-2 text-left">Time</th>
-            <th className="px-3 py-2 text-right">Price</th>
-            <th className="px-3 py-2 text-right">Qty</th>
+            <th className="px-3 py-2 text-right">Price ($/kWh)</th>
+            <th className="px-3 py-2 text-right">Qty (kWh)</th>
             <th className="px-3 py-2 text-left">Buyer</th>
             <th className="px-3 py-2 text-left">Seller</th>
           </tr>

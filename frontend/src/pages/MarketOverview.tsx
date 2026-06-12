@@ -1,5 +1,8 @@
+import AgentThoughtsFeed from "../components/AgentThoughtsFeed";
 import DataSourceBanner from "../components/DataSourceBanner";
+import IntroStrip from "../components/IntroStrip";
 import KpiBar from "../components/KpiBar";
+import MeritOrderChart from "../components/MeritOrderChart";
 import OrderBookDepth from "../components/OrderBookDepth";
 import PriceChart from "../components/PriceChart";
 import TradeTape from "../components/TradeTape";
@@ -12,8 +15,22 @@ export default function MarketOverview() {
 
   return (
     <div className="p-6 space-y-6">
+      <IntroStrip />
       <KpiBar snapshot={snapshot} builtinVpps={snapshot?.num_builtin_vpps ?? 0} />
       <DataSourceBanner dataSource={snapshot?.data_source} />
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        <section className="rounded-lg border border-slate-800 bg-slate-900/40 p-4 lg:col-span-2">
+          <h3 className="text-sm uppercase tracking-wide text-slate-400 mb-3">
+            Merit order — who supplies at what price
+          </h3>
+          <MeritOrderChart />
+        </section>
+        <section className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+          <h3 className="text-sm uppercase tracking-wide text-slate-400 mb-3">Agent thoughts (LLM)</h3>
+          <AgentThoughtsFeed />
+        </section>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <section className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">

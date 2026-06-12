@@ -19,15 +19,64 @@ def _load(monkeypatch) -> Simulator:
     return sim
 
 
-def test_default_scenario_loads_thirty_vpps_incl_llm(monkeypatch):
+def test_load_ppo_scenario_skips_gracefully_on_bad_checkpoint(monkeypatch):
+    """A bogus EFLUX_PPO_CHECKPOINT must not crash startup — whether the 'ai'
+    extras are missing (ImportError) or the checkpoint fails to load."""
+    from eflux.simulator.scenarios import load_ppo_scenario
+
+    monkeypatch.setenv("EFLUX_PV_PHYSICAL", "false")
+    get_settings.cache_clear()
+    sim = Simulator(bus=InMemoryBus())
+
+    load_ppo_scenario(sim, "/nonexistent/checkpoint/path")
+
+    assert len(sim.vpps) == 0
+
+
+def test_default_scenario_loads_thirty_three_vpps_incl_llm_fleet(monkeypatch):
     sim = _load(monkeypatch)
 
-    assert len(sim.vpps) == 30
+    assert len(sim.vpps) == 33
     my_vpps = sim.my_managed_vpps()
-    assert len(my_vpps) == 1
+    assert len(my_vpps) == 4
     assert my_vpps[0].name == "my-llm-vpp"
-    assert isinstance(my_vpps[0].agent, ReflectiveAgent)
+    assert {v.name for v in my_vpps} == {
+        "my-llm-vpp",
+        "llm-arb-aggressive",
+        "llm-wind-conservative",
+        "llm-demand-buyer",
+    }
+    assert all(isinstance(v.agent, ReflectiveAgent) for v in my_vpps)
     assert len([v for v in sim.vpps.values() if not v.is_my_vpp]) == 29
+
+
+def test_llm_fleet_shares_connection_and_staggers_reflections(monkeypatch):
+    """All reflective agents must share one LLM client + gate (single slow
+    endpoint), with distinct evenly-spread reflection offsets so they never
+    trigger on the same tick."""
+    sim = _load(monkeypatch)
+    agents = [v.agent for v in sim.my_managed_vpps()]
+
+    offsets = [a.reflect_offset_ticks for a in agents]
+    assert len(set(offsets)) == len(agents), f"offsets must be distinct, got {offsets}"
+    assert all(0 <= o < a.reflect_every_n_ticks for o, a in zip(offsets, agents, strict=True))
+
+    gates = {id(a.llm_gate) for a in agents}
+    assert len(gates) == 1, "all reflective agents must share the same gate"
+    # Reflective disabled in _load → shared client is None everywhere.
+    assert all(a.llm_client is None for a in agents)
+
+
+def test_llm_personas_reach_agents(monkeypatch):
+    sim = _load(monkeypatch)
+    by_name = {v.name: v.agent for v in sim.my_managed_vpps()}
+
+    assert by_name["my-llm-vpp"].persona_prompt is None  # no persona declared
+    assert "arbitrageur" in by_name["llm-arb-aggressive"].persona_prompt
+    assert "wind farm" in by_name["llm-wind-conservative"].persona_prompt
+    assert "Minimize cost" in by_name["llm-demand-buyer"].persona_prompt
+    # demand-side personas carry price-responsive inner agents
+    assert by_name["llm-demand-buyer"].inner.demand_beta == 0.5
 
 
 def test_default_scenario_has_diverse_vpp_types(monkeypatch):

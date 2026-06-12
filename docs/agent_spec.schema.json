@@ -1,0 +1,198 @@
+{
+  "$defs": {
+    "PersonaSpec": {
+      "additionalProperties": false,
+      "description": "Strategy persona for LLM-steered (reflective) agents.",
+      "properties": {
+        "name": {
+          "maxLength": 60,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "prompt": {
+          "maxLength": 600,
+          "minLength": 1,
+          "title": "Prompt",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "prompt"
+      ],
+      "title": "PersonaSpec",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One market participant: identity, assets (VPPParams) and strategy.",
+  "properties": {
+    "name": {
+      "maxLength": 100,
+      "minLength": 1,
+      "title": "Name",
+      "type": "string"
+    },
+    "agent": {
+      "default": "zi",
+      "enum": [
+        "zi",
+        "truthful",
+        "gas",
+        "reflective"
+      ],
+      "title": "Agent",
+      "type": "string"
+    },
+    "seed": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Seed"
+    },
+    "params": {
+      "properties": {
+        "pv_kw_peak": {
+          "default": 5.0,
+          "title": "Pv Kw Peak",
+          "type": "number"
+        },
+        "battery_kwh": {
+          "default": 10.0,
+          "title": "Battery Kwh",
+          "type": "number"
+        },
+        "battery_kw_max": {
+          "default": 3.0,
+          "title": "Battery Kw Max",
+          "type": "number"
+        },
+        "battery_eta_rt": {
+          "default": 0.9,
+          "title": "Battery Eta Rt",
+          "type": "number"
+        },
+        "load_kw_base": {
+          "default": 1.5,
+          "title": "Load Kw Base",
+          "type": "number"
+        },
+        "load_elasticity": {
+          "default": 0.2,
+          "title": "Load Elasticity",
+          "type": "number"
+        },
+        "load_profile": {
+          "default": "residential",
+          "title": "Load Profile",
+          "type": "string"
+        },
+        "wind_kw_rated": {
+          "default": 0.0,
+          "title": "Wind Kw Rated",
+          "type": "number"
+        },
+        "wind_mean_speed": {
+          "default": 7.0,
+          "title": "Wind Mean Speed",
+          "type": "number"
+        },
+        "gas_kw_max": {
+          "default": 0.0,
+          "title": "Gas Kw Max",
+          "type": "number"
+        },
+        "gas_cost_per_kwh": {
+          "default": 60.0,
+          "title": "Gas Cost Per Kwh",
+          "type": "number"
+        },
+        "risk_aversion": {
+          "default": 0.5,
+          "title": "Risk Aversion",
+          "type": "number"
+        },
+        "forecast_noise_std": {
+          "default": 0.1,
+          "title": "Forecast Noise Std",
+          "type": "number"
+        },
+        "markup_floor": {
+          "default": 0.0,
+          "title": "Markup Floor",
+          "type": "number"
+        },
+        "markup_ceiling": {
+          "default": 1.0,
+          "title": "Markup Ceiling",
+          "type": "number"
+        },
+        "pv_lat": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pv Lat"
+        },
+        "pv_lon": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pv Lon"
+        },
+        "pv_tilt": {
+          "default": 30.0,
+          "title": "Pv Tilt",
+          "type": "number"
+        },
+        "pv_azimuth": {
+          "default": 180.0,
+          "title": "Pv Azimuth",
+          "type": "number"
+        }
+      },
+      "title": "VPPParams",
+      "type": "object",
+      "description": "DER portfolio (VPPParams). All fields optional; unknown keys are rejected."
+    },
+    "agent_params": {
+      "additionalProperties": true,
+      "title": "Agent Params",
+      "type": "object"
+    },
+    "persona": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/PersonaSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "title": "AgentSpec",
+  "type": "object"
+}

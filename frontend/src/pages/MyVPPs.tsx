@@ -372,10 +372,10 @@ function ManagedPerformancePanel({ data }: { data?: ManagedVPPPerformance }) {
       ) : (
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-            <Metric label="PnL" value={Number(data.pnl).toFixed(4)} valueClass={pnlClass} />
-            <Metric label="SOC" value={`${(data.soc_frac * 100).toFixed(1)}%`} />
-            <Metric label="Bought" value={data.cumulative_energy_bought_kwh.toFixed(4)} />
-            <Metric label="Sold" value={data.cumulative_energy_sold_kwh.toFixed(4)} />
+            <Metric label="PnL ($)" value={Number(data.pnl).toFixed(4)} valueClass={pnlClass} />
+            <Metric label="Battery SOC" value={`${(data.soc_frac * 100).toFixed(1)}%`} />
+            <Metric label="Bought (kWh)" value={data.cumulative_energy_bought_kwh.toFixed(4)} />
+            <Metric label="Sold (kWh)" value={data.cumulative_energy_sold_kwh.toFixed(4)} />
           </div>
           <ReflectionTimeline data={data} />
           <div className="overflow-hidden rounded border border-slate-800">
@@ -384,10 +384,10 @@ function ManagedPerformancePanel({ data }: { data?: ManagedVPPPerformance }) {
                 <tr>
                   <th className="px-2 py-2 text-left">Time</th>
                   <th className="px-2 py-2 text-left">Side</th>
-                  <th className="px-2 py-2 text-right">Price</th>
-                  <th className="px-2 py-2 text-right">Qty</th>
-                  <th className="px-2 py-2 text-right">Cash</th>
-                  <th className="px-2 py-2 text-right">CP</th>
+                  <th className="px-2 py-2 text-right">Price ($/kWh)</th>
+                  <th className="px-2 py-2 text-right">Qty (kWh)</th>
+                  <th className="px-2 py-2 text-right">Cash ($)</th>
+                  <th className="px-2 py-2 text-right">Counterparty</th>
                 </tr>
               </thead>
               <tbody>

@@ -38,6 +38,17 @@ def openapi() -> None:
     click.echo(json.dumps(app.openapi(), indent=2))
 
 
+@main.command(name="agent-spec-schema")
+def agent_spec_schema() -> None:
+    """Dump the AgentSpec JSON Schema to stdout — the contract a market
+    participant (built-in roster entry or external VPP) is declared with."""
+    import json
+
+    from eflux.simulator.agent_spec import agent_spec_json_schema
+
+    click.echo(json.dumps(agent_spec_json_schema(), indent=2))
+
+
 @main.command()
 def info() -> None:
     """Print runtime info."""

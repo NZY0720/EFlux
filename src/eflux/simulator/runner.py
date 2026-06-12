@@ -61,6 +61,7 @@ class Simulator:
             tick_sim_sec=settings.market_tick_sec,
         )
         self.vpps: dict[int, SimulatorVPP] = {}
+        self.order_ttl_sec: float = settings.order_ttl_sec
         # Site-weather memo: several VPPs share coords (e.g. the HKU rooftop),
         # and today/future forecast days are deliberately not disk-cached.
         self._site_weather_cache: dict[tuple[float, float], object] = {}
@@ -332,11 +333,15 @@ class Simulator:
                 qty=qty,
                 sim_ts=now_sim,
                 wall_ts=now_wall,
+                ttl_sec=self.order_ttl_sec or None,
             )
             self._record_trades(result.trades)
         return {
             "order_id": result.order.order_id,
             "remaining_qty": str(result.order.remaining_qty),
+            # Surface the TTL so API integrators know unfilled remainders are
+            # swept at this sim time (order.cancelled event) instead of resting.
+            "expires_at_sim": result.order.expires_at,
             "trades": [t.model_dump(mode="json") for t in result.trades],
         }
 
@@ -344,6 +349,7 @@ class Simulator:
         if self._task is not None:
             return
         self._task = asyncio.create_task(self._run(), name="simulator-loop")
+        self._task.add_done_callback(_log_unexpected_loop_exit)
 
     async def stop(self) -> None:
         self.clock.stop()
@@ -353,17 +359,58 @@ class Simulator:
             except TimeoutError:
                 self._task.cancel()
             self._task = None
+        await self._shutdown_reflections()
+
+    async def _shutdown_reflections(self) -> None:
+        """Cancel in-flight LLM reflection tasks and close the shared client.
+
+        An LLM round-trip can take minutes; without this, shutdown mid-call
+        leaves a 'Task was destroyed but it is pending!' warning and the shared
+        httpx client's connections leak."""
+        pending: list[asyncio.Task] = []
+        clients = set()
+        for vpp in self.my_managed_vpps():
+            task = getattr(vpp.agent, "_reflection_task", None)
+            if task is not None and not task.done():
+                task.cancel()
+                pending.append(task)
+            client = getattr(vpp.agent, "llm_client", None)
+            if client is not None:
+                clients.add(client)
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
+        for client in clients:
+            aclose = getattr(client, "aclose", None)
+            if callable(aclose):
+                try:
+                    await aclose()
+                except Exception:
+                    log.exception("LLM client close failed during shutdown")
 
     async def _run(self) -> None:
         log.info("Simulator loop started (speed=%sx, tick=%ss)", self.clock.speed, self.clock.tick_sim_sec)
         tick_h = self.clock.tick_sim_sec / 3600.0
         async for tick_no, sim_ts in self.clock.ticks():
             async with self._lock:
+                self._expire_orders(sim_ts)
                 snapshot = self.engine.snapshot(depth_levels=5)
                 market_snap = MarketSnapshot.from_engine(sim_ts, snapshot)
-                # Step each built-in VPP.
+                market_snap.recent_trades = self._recent_market_trades()
+                market_snap.peer_reflections = self._peer_reflections()
+                open_orders_net = self._open_orders_net_by_vpp()
+                # Step each built-in VPP. One faulty agent (bad agent_params,
+                # DER model edge case) must not kill the whole market loop.
                 for vpp in self.vpps.values():
-                    self._tick_vpp(vpp, sim_ts, tick_h, market_snap)
+                    try:
+                        self._tick_vpp(
+                            vpp,
+                            sim_ts,
+                            tick_h,
+                            market_snap,
+                            open_orders_net_kwh=open_orders_net.get(vpp.vpp_id, 0.0),
+                        )
+                    except Exception:
+                        log.exception("VPP %s (%d) tick failed — skipping this tick", vpp.name, vpp.vpp_id)
                 # Publish a tick event with current market summary.
                 bb = self.engine.book.best_bid()
                 ba = self.engine.book.best_ask()
@@ -381,12 +428,71 @@ class Simulator:
                     )
                 )
 
+    def _recent_market_trades(self, limit: int = 8) -> list[dict]:
+        """Latest market-wide fills with party names — prompt context for
+        learning agents (who is trading with whom, and at what price)."""
+        out: list[dict] = []
+        for t in list(self.trade_log)[-limit:]:
+            buyer = self.vpps.get(t.buy_vpp_id)
+            seller = self.vpps.get(t.sell_vpp_id)
+            out.append(
+                {
+                    "price": float(t.price),
+                    "qty": float(t.qty),
+                    "buyer": buyer.name if buyer else f"external-{t.buy_vpp_id}",
+                    "seller": seller.name if seller else f"external-{t.sell_vpp_id}",
+                }
+            )
+        return out
+
+    def _peer_reflections(self) -> list[dict]:
+        """Each LLM agent's latest successful reflection, for the other LLM
+        agents' prompts. Tagged with vpp_id so an agent can drop its own."""
+        out: list[dict] = []
+        for vpp in self.my_managed_vpps():
+            entries = getattr(vpp.agent, "reflection_log", None)
+            if not entries:
+                continue
+            last_ok = next((e for e in reversed(entries) if e.get("ok")), None)
+            if last_ok is None:
+                continue
+            out.append(
+                {
+                    "vpp_id": vpp.vpp_id,
+                    "name": vpp.name,
+                    "pa": last_ok["price_adjust"],
+                    "qs": last_ok["qty_scale"],
+                    "rationale": last_ok["rationale"],
+                }
+            )
+        return out
+
+    def _open_orders_net_by_vpp(self) -> dict[int, float]:
+        """Signed resting (non-dispatched) book exposure per VPP: sell
+        remainders +, buy remainders - (the pending_net_kwh convention).
+        Lets agents see their true unserved position — pending alone is the
+        post-debit balance. One book walk per tick; depth is TTL-bounded."""
+        out: dict[int, float] = {}
+        for side in ("buy", "sell"):
+            for order in self.engine.book.iter_orders(side):
+                if order.dispatched:
+                    continue
+                signed = (
+                    float(order.remaining_qty)
+                    if order.side == "sell"
+                    else -float(order.remaining_qty)
+                )
+                out[order.vpp_id] = out.get(order.vpp_id, 0.0) + signed
+        return out
+
     def _tick_vpp(
         self,
         vpp: SimulatorVPP,
         sim_ts: datetime,
         tick_h: float,
         market: MarketSnapshot,
+        *,
+        open_orders_net_kwh: float = 0.0,
     ) -> None:
         # Refresh DER state.
         vpp.pv.kw_peak = vpp.params.pv_kw_peak  # keep params live-editable later
@@ -413,10 +519,52 @@ class Simulator:
             market=market,
             rng=vpp.rng,
             tick_duration_h=tick_h,
+            open_orders_net_kwh=open_orders_net_kwh,
         )
         intents = vpp.agent.decide(ctx)
         for intent in intents:
             self._submit_intent(vpp, intent, sim_ts)
+
+    def _expire_orders(self, sim_ts: datetime) -> None:
+        """Expire TTL'd resting orders; refund the unfilled remainder to the
+        owner's accumulator. The agent 'spoke for' that energy at submit time
+        (the debit in _submit_intent) and it was never delivered/received —
+        without the refund agents permanently understate their position."""
+        expired = self.engine.expire(sim_ts=sim_ts, wall_ts=datetime.now(UTC))
+        for order in expired:
+            vpp = self.vpps.get(order.vpp_id)
+            if vpp is None:
+                continue  # external order — the owner re-quotes on its own
+            if order.order_id in vpp.open_order_ids:
+                vpp.open_order_ids.remove(order.order_id)
+            if order.dispatched:
+                continue  # battery-band/gas quotes never touched the accumulator
+            signed = (
+                float(order.remaining_qty) if order.side == "sell" else -float(order.remaining_qty)
+            )
+            cap = max(vpp.params.battery_kwh, 1.0)
+            vpp.state.pending_net_kwh = min(
+                cap, max(-cap, vpp.state.pending_net_kwh + signed)
+            )
+
+    def market_balance(self) -> dict:
+        """Aggregate live supply/demand across built-in VPPs plus book depth —
+        the instrument for judging whether the market is structurally balanced."""
+        renewable_kw = sum(v.state.pv_kw + v.state.wind_kw for v in self.vpps.values())
+        load_kw = sum(v.state.load_kw for v in self.vpps.values())
+        gas_capacity_kw = sum(v.params.gas_kw_max for v in self.vpps.values())
+        ratio = (renewable_kw + gas_capacity_kw) / load_kw if load_kw > 1e-6 else None
+        bid_depth = sum(q for _, q in self.engine.book.depth("buy", 10**6))
+        ask_depth = sum(q for _, q in self.engine.book.depth("sell", 10**6))
+        return {
+            "renewable_kw": round(renewable_kw, 3),
+            "load_kw": round(load_kw, 3),
+            "gas_capacity_kw": round(gas_capacity_kw, 3),
+            "net_kw": round(renewable_kw - load_kw, 3),
+            "supply_demand_ratio": round(ratio, 4) if ratio is not None else None,
+            "bid_depth_kwh": float(bid_depth),
+            "ask_depth_kwh": float(ask_depth),
+        }
 
     def _submit_intent(self, vpp: SimulatorVPP, intent: OrderIntent, sim_ts: datetime) -> None:
         try:
@@ -427,6 +575,8 @@ class Simulator:
                 qty=intent.qty,
                 sim_ts=sim_ts,
                 wall_ts=datetime.now(UTC),
+                ttl_sec=self.order_ttl_sec or None,
+                dispatched=intent.dispatched,
             )
             # Debit the untraded balance for the quoted quantity — the agent has
             # now "spoken for" that energy, whether or not the order fills.
@@ -483,6 +633,16 @@ class Simulator:
         record_trade = getattr(vpp.agent, "record_trade", None)
         if callable(record_trade):
             record_trade(record)
+
+
+def _log_unexpected_loop_exit(task: asyncio.Task) -> None:
+    """Surface a dead simulator loop immediately — otherwise the market would
+    freeze silently (stale snapshots, no ticks) until shutdown re-raises."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        log.error("Simulator loop died unexpectedly", exc_info=exc)
 
 
 def _tick_h_from_ts() -> float:

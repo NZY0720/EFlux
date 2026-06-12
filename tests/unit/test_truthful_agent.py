@@ -10,7 +10,7 @@ from decimal import Decimal
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.truthful import TruthfulAgent
 from eflux.vpp.base import VPPParams, VPPState
-from eflux.vpp.der import Battery, FlexibleLoad, PV
+from eflux.vpp.der import PV, Battery, FlexibleLoad
 
 
 def _make_ctx(*, pv_kw: float, load_kw: float, soc_kwh: float = 5.0, markup_floor: float = 0.0) -> AgentContext:
@@ -75,7 +75,7 @@ def test_marginal_cost_includes_battery_when_pv_insufficient():
     # So this codepath is currently unreachable from real DER physics alone. Verify the
     # math is consistent when triggered synthetically by load=0, pv just above zero.
     # Instead, exercise it indirectly by checking the formula at sqrt(0.9):
-    expected = float(50.0) / math.sqrt(0.9)
+    expected = 50.0 / math.sqrt(0.9)
     assert 52 < expected < 53  # ~52.7 — sanity check
 
 
@@ -85,6 +85,46 @@ def test_floor_zero_clamped_to_minimum_positive():
     intents = agent.decide(_make_ctx(pv_kw=5.0, load_kw=1.0, markup_floor=0.0))
     assert len(intents) == 1
     assert intents[0].price > 0
+
+
+def test_demand_beta_raises_bid_with_deficit():
+    """Price-responsive demand: bid rises with the deficit fraction so scarcity
+    hours can cross the gas merit order instead of waiting unserved at 50."""
+    agent = TruthfulAgent(price_ref=Decimal("50.0"), demand_beta=0.5)
+    # deficit 2.5 kWh on a 10 kWh battery → frac 0.25 → 50 * (1 + 0.5*0.25) = 56.25
+    intents = agent.decide(_make_ctx(pv_kw=0.5, load_kw=3.0))
+    assert len(intents) == 1
+    assert intents[0].side == "buy"
+    assert intents[0].price == Decimal("56.2500")
+
+
+def test_demand_beta_bid_capped_at_price_cap_mult():
+    agent = TruthfulAgent(price_ref=Decimal("50.0"), demand_beta=5.0)
+    intents = agent.decide(_make_ctx(pv_kw=0.5, load_kw=3.0))
+    # 1 + 5.0*0.25 = 2.25 → capped at price_cap_mult 1.5 → 75
+    assert intents[0].price == Decimal("75.0000")
+
+
+def test_demand_beta_defaults_to_legacy_flat_bid():
+    agent = TruthfulAgent(price_ref=Decimal("50.0"))
+    intents = agent.decide(_make_ctx(pv_kw=0.5, load_kw=3.0))
+    assert intents[0].price == Decimal("50.0000")
+
+
+def test_demand_beta_sees_resting_book_deficit():
+    """In the real runner, pending is debited at submit — the unmet deficit
+    sits in resting bids. The deficit fraction must include that book exposure
+    or the bid never leaves price_ref (and gas at 55-72 never clears)."""
+    agent = TruthfulAgent(price_ref=Decimal("50.0"), demand_beta=0.5)
+    ctx = _make_ctx(pv_kw=0.5, load_kw=3.0)  # this tick's sliver: -2.5 kWh
+    # 5 kWh of earlier deficit already quoted and resting in the book (buy = negative).
+    ctx.open_orders_net_kwh = -5.0
+    intents = agent.decide(ctx)
+    assert len(intents) == 1 and intents[0].side == "buy"
+    # total unserved 7.5 kWh on a 10 kWh battery → frac 0.75 → 50*(1+0.5*0.75)
+    assert intents[0].price == Decimal("68.7500")
+    # the new order still quotes only this tick's accumulated balance
+    assert intents[0].qty == Decimal("2.5000")
 
 
 def test_battery_band_sells_stored_energy_at_night():

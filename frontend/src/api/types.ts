@@ -1,3 +1,13 @@
+export interface MarketBalance {
+  renewable_kw: number;
+  load_kw: number;
+  gas_capacity_kw: number;
+  net_kw: number;
+  supply_demand_ratio: number | null;
+  bid_depth_kwh: number;
+  ask_depth_kwh: number;
+}
+
 export interface MarketSnapshot {
   sim_ts: string;
   speed: number;
@@ -8,6 +18,7 @@ export interface MarketSnapshot {
   asks: [string, string][];
   num_builtin_vpps: number;
   data_source: DataSourceStatus;
+  balance: MarketBalance;
 }
 
 export interface DataSourceEntry {
@@ -52,6 +63,7 @@ export interface ReflectionEntry {
   price_adjust: number;
   qty_scale: number;
   rationale: string;
+  lesson?: string | null;
   error: string | null;
 }
 
@@ -95,6 +107,60 @@ export interface Participant {
   strategy: string | null;
 }
 
+export type AgentCategory = "solar" | "wind" | "gas" | "battery_load" | "llm" | "external";
+
+export interface SupplyCurveOrder {
+  price: string;
+  qty: string;
+  category: AgentCategory | string;
+  vpp_name: string | null;
+}
+
+export interface SupplyCurve {
+  sim_ts: string;
+  asks: SupplyCurveOrder[]; // cheapest first — the merit order
+  bids: SupplyCurveOrder[]; // highest first — the demand curve
+}
+
+export interface MarketAgent {
+  id: number;
+  name: string;
+  strategy: string;
+  category: AgentCategory | string;
+  is_llm: boolean;
+  llm_health_state: "live" | "degraded" | "offline" | null;
+  pv_kw_peak: number;
+  wind_kw_rated: number;
+  battery_kwh: number;
+  battery_kw_max: number;
+  load_kw_base: number;
+  gas_kw_max: number;
+  gas_cost_per_kwh: number;
+  pnl: string;
+  soc_kwh: number;
+  soc_frac: number;
+  pv_kw: number;
+  wind_kw: number;
+  load_kw: number;
+  net_kw: number;
+  energy_bought_kwh: number;
+  energy_sold_kwh: number;
+  recent_trade_count: number;
+}
+
+export interface MarketReflection {
+  vpp_id: number;
+  vpp_name: string;
+  health_state: "live" | "degraded" | "offline" | string;
+  ts: string;
+  ok: boolean;
+  price_adjust: number;
+  qty_scale: number;
+  rationale: string;
+  lesson?: string | null;
+  error: string | null;
+}
+
 export interface SessionInfo {
   session_token: string;
   user_id: number;
@@ -104,6 +170,8 @@ export interface SessionInfo {
 export interface OrderSubmitResponse {
   order_id: number;
   remaining_qty: string;
+  /** Sim time the unfilled remainder is swept by the order TTL; null = rests. */
+  expires_at_sim?: string | null;
   trades: TradeEvent[];
 }
 

@@ -2,10 +2,63 @@
 
 VPP agents trade in a continuous double auction electricity market. Heterogeneous DER endowments (PV + battery + flexible load), online strategy learning (PPO + LLM reflection).
 
+![EFlux market overview](docs/img/market.png)
+
+## The 30-second tour
+
+1. **Open the Market page** (`/`) — the **merit-order chart** shows every resting
+   offer as a price-tall block, cheapest first: solar/wind at the floor,
+   batteries in the middle band, gas (55–72) on top, demand as a dashed line.
+   Where the curves meet, trades clear — live, every 2 seconds.
+2. **Watch the Agent thoughts panel** — four participants (`my-llm-vpp` plus
+   three persona rivals: arbitrageur, wind farmer, demand buyer) are
+   steered by an LLM that reviews its own PnL every ~minute and nudges its
+   pricing; its reasoning streams here, no login needed.
+3. **Open Participants** — all 33 autonomous VPPs with strategy badges, live
+   battery SOC, producing/consuming state and PnL. Sort by PnL to see who's
+   winning.
+
+   ![Participants roster](docs/img/participants.png)
+4. **Join the market** — log in (passwordless, dev token autofills), create a
+   VPP, submit a buy at ~80 → instant fill against the cheapest ask in the
+   stack. Your trade appears in the tape, counterparty named.
+5. **Flip the speed control** to 10x/100x (KPI bar, logged in) and watch sim
+   time accelerate. External orders lock out at fast speeds by design.
+
+Full click-by-click pitch script: [docs/DEMO.md](docs/DEMO.md).
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Frontend["React + Vite frontend :5173"]
+    UI["Market / Participants / My VPPs"]
+  end
+  subgraph Backend["FastAPI backend :8000"]
+    API["REST routers<br/>(market, orders, vpps, auth)"]
+    WS["/ws/market"]
+    SIM["Simulator loop<br/>(1s rolling clock, 1x/10x/100x)"]
+    ENGINE["CDA matching engine<br/>(in-memory LOB)"]
+    AGENTS["33 built-in agents<br/>ZI · Truthful · Gas · PPO · Reflective"]
+    LLM["MiMo LLM<br/>(reflection hints)"]
+  end
+  DB[("SQLite / Postgres<br/>users + VPP defs")]
+  OM["Open-Meteo<br/>(PV + wind weather)"]
+
+  UI -->|"/api/* + WS"| API
+  WS --> UI
+  API --> SIM
+  SIM --> ENGINE
+  AGENTS --> SIM
+  AGENTS -.->|"every ~60 ticks"| LLM
+  SIM -.-> OM
+  API --> DB
+```
+
 ## Status
 
 Fully working demo: backend + frontend + all four agent tiers. The default
-scenario ([scenarios/default.yaml](scenarios/default.yaml)) runs 30 built-in
+scenario ([scenarios/default.yaml](scenarios/default.yaml)) runs 33 built-in
 VPPs — rooftop-solar households, wind farms (two on real Open-Meteo wind
 speed), factories with industrial shift loads, commercial buildings, a
 datacenter, and four gas generators that top the merit order — plus the
@@ -70,7 +123,17 @@ Swagger UI: http://localhost:8000/docs
 Open http://localhost:5173/ — backend must be running on :8000.
 
 Frontend stack: Vite + React 18 + TypeScript + Tailwind v4 + ECharts.
-Pages: `Market` (live price chart + order book depth + trade tape), `My VPPs` (create/list + submit order).
+Pages:
+- `Market` (public) — merit-order supply stack, live LLM agent-thoughts feed,
+  price chart, order book depth, trade tape, data-source banner, speed control
+  (1x/10x/100x, when logged in)
+- `Participants` (public) — all 33 built-in VPPs: strategy badges, endowments,
+  live output, battery SOC, PnL; sortable
+- `My VPPs` (auth) — create VPPs, submit orders, per-VPP performance + the LLM
+  reflection timeline
+
+An app-wide banner warns when the backend is unreachable (stale data) and
+announces detected backend restarts (the in-memory market starts over).
 
 ### 6. One-click launcher
 ```bash
@@ -96,20 +159,32 @@ Schema lives in `alembic/versions/`. The dev path runs `Base.metadata.create_all
 To exercise the migration-only path (production-style), set `EFLUX_AUTO_CREATE_SCHEMA=false` in `config.env` — lifespan will then refuse to create tables and you must run `./tasks.sh migrate` first.
 
 ### 8. Default scenario
-On startup, 30 built-in VPPs are loaded from `scenarios/default.yaml`
-(override with `EFLUX_SCENARIO_FILE`): 10 residential/rooftop-solar VPPs,
-6 wind farms (coastal ones on real Open-Meteo wind speed), 6 factories with
-industrial shift loads, 3 commercial buildings, 4 gas generators (dispatchable
-supply at marginal cost 55–72, the market's soft price cap), plus
-`my-llm-vpp`, a ReflectiveAgent that wraps Truthful with periodic LLM strategy
-hints. Agents: `zi | truthful | gas` per YAML entry. They trade against each
-other continuously — merit order is renewables (~floor) → battery band (~52.7)
-→ gas. Connect your own VPPs via `POST /vpps` then `POST /orders`.
+On startup, 33 built-in VPPs are loaded from `scenarios/default.yaml`
+(each entry validated as an [AgentSpec](docs/AGENT_SPEC.md); override with
+`EFLUX_SCENARIO_FILE`): 10 residential/rooftop-solar VPPs, 6 wind farms
+(coastal ones on real Open-Meteo wind speed), 6 factories with industrial
+shift loads, 3 commercial buildings, 4 gas generators (dispatchable supply at
+marginal cost 55–72, the market's soft price cap), plus **four LLM-managed
+ReflectiveAgents** (`my-llm-vpp` and three persona rivals) that wrap Truthful
+with periodic LLM strategy hints. The LLM fleet *learns*: each reflection's
+hints are attributed to the PnL window that followed and persisted to
+`data/agent_memory/<name>.jsonl` (survives restarts); prompts carry the last
+outcomes, market-wide trades, and the other LLM agents' latest views.
+Agents: `zi | truthful | gas | reflective` per YAML entry. They trade against
+each other continuously — merit order is renewables (~floor) → battery band
+(~52.7) → gas, with demand bids rising toward 75 under deficit
+(`demand_beta`) and resting orders expiring after `EFLUX_ORDER_TTL_SEC`
+(default 180 s). Connect your own VPPs via `POST /vpps` then `POST /orders`
+(see [docs/AGENT_SPEC.md](docs/AGENT_SPEC.md) for the full external-agent guide).
 
 Useful market endpoints (all public, no auth):
 - `GET /market/snapshot?depth=N` — order book depth + KPIs + data-source status
 - `GET /market/trades?limit=N` — recent trade history (used by the UI to backfill charts)
 - `GET /market/participants` — VPP id → name/strategy directory (trade-tape labels)
+- `GET /market/supply_curve` — every resting order with per-VPP category attribution (the merit-order chart)
+- `GET /market/agents` — live roster: strategy, endowment, SOC, PnL, current output per built-in VPP
+- `GET /market/reflections?limit=N` — LLM reflection feed across managed agents, newest first
+- `POST /market/speed` (auth) — switch the rolling clock between 1x/10x/100x at runtime
 
 The *My VPPs* page surfaces the LLM agent end-to-end: click the `my-llm-vpp`
 card for PnL/SOC/trades plus the **reflection timeline** — each LLM round-trip
@@ -124,6 +199,28 @@ the same data as JSON.
 - Speed lock: external (user-submitted) orders only allowed at `market_speed=1.0`. Fast modes are for training/replay.
 - Market state is in-memory by design — restart wipes orders/trades/PnL.
 
+## Run with Docker
+
+No local Python/Node needed — one command brings up the whole demo:
+
+```bash
+docker compose up --build     # → http://localhost:8080
+```
+
+Two containers: `backend` (FastAPI + simulator, SQLite inside the container)
+and `web` (nginx serving the built frontend, proxying `/api/*` and `/ws` to
+the backend — same rules as the Vite dev proxy). Optional profiles:
+
+```bash
+docker compose --profile redis up      # durable event bus (Redis Streams)
+docker compose --profile postgres up   # users/VPPs in Postgres
+```
+
+Uncomment the matching `EFLUX_*` environment lines in
+[docker-compose.yml](docker-compose.yml) when enabling a profile, and mount
+`key.txt` + set the LLM vars there to bring the reflective agent fully online
+in the container.
+
 ## Project Layout
 
 ```
@@ -133,8 +230,13 @@ conf_1/
   key.txt              # LLM API key (gitignored)
   pyproject.toml
   tasks.sh             # dev task runner (dev/run/smoke/ws/fe-dev/start/stop/...)
+  Dockerfile           # multi-stage: frontend build → backend → nginx web tier
+  docker-compose.yml   # one-command demo (+ optional redis/postgres profiles)
+  deploy/nginx.conf    # web-tier proxy rules (mirror of the Vite dev proxy)
+  docs/
+    DEMO.md            # 3-minute click-by-click pitch script
   scenarios/
-    default.yaml       # built-in VPP roster (30 VPPs: solar/wind/factory/commercial/gas)
+    default.yaml       # built-in VPP roster (33 VPPs: solar/wind/factory/commercial/gas/LLM)
   scripts/
     start-all.sh       # backend + frontend in background + open browser
     stop-all.sh        # kill backend + frontend
@@ -182,6 +284,12 @@ Disable explicitly with `EFLUX_PV_PHYSICAL=false`. User-created VPPs (via the UI
 or `POST /vpps`) can opt in by passing `pv_lat` + `pv_lon` + (optional)
 `pv_tilt`, `pv_azimuth` in the params dict — the *MyVPPs* page has an
 "advanced" toggle that exposes these fields.
+
+To set expectations: only VPPs with site coordinates use real weather — in the
+default roster that's the first rooftop-solar VPP and the two coastal wind
+farms; the other built-ins deliberately run synthetic profiles (diurnal sine
+PV, AR(1) gust wind) so the demo works offline. The data-source banner always
+tells you which is which.
 
 ### Switching to Redis Streams (event bus)
 By default events flow through `InMemoryBus` (in-process fan-out). For multi-process / replay / durable streams use Redis:

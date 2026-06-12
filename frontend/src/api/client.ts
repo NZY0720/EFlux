@@ -3,10 +3,13 @@ import axios from "axios";
 import type {
   ManagedVPPPerformance,
   ManagedVPP,
+  MarketAgent,
+  MarketReflection,
   MarketSnapshot,
   OrderSubmitResponse,
   Participant,
   SessionInfo,
+  SupplyCurve,
   TradeEvent,
   VPP,
 } from "./types";
@@ -122,6 +125,26 @@ export async function fetchRecentTrades(limit = 200): Promise<TradeEvent[]> {
 
 export async function fetchParticipants(): Promise<Participant[]> {
   const { data } = await api.get<Participant[]>("/market/participants");
+  return data;
+}
+
+export async function fetchSupplyCurve(): Promise<SupplyCurve> {
+  const { data } = await api.get<SupplyCurve>("/market/supply_curve");
+  return data;
+}
+
+export async function fetchMarketAgents(): Promise<MarketAgent[]> {
+  const { data } = await api.get<MarketAgent[]>("/market/agents");
+  return data;
+}
+
+export async function fetchMarketReflections(limit = 20): Promise<MarketReflection[]> {
+  const { data } = await api.get<MarketReflection[]>("/market/reflections", { params: { limit } });
+  return data;
+}
+
+export async function setMarketSpeed(speed: number): Promise<{ speed: number; is_realtime: boolean }> {
+  const { data } = await api.post("/market/speed", { speed });
   return data;
 }
 

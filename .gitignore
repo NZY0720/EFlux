@@ -33,6 +33,7 @@ htmlcov/
 # Data caches (large)
 data/cache/
 data/raw/
+data/agent_memory/
 *.parquet
 
 # Logs / runtime

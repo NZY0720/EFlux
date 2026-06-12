@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -38,6 +38,11 @@ class Settings(BaseSettings):
 
     market_speed: float = 1.0
     market_tick_sec: float = 1.0
+    # Resting orders expire after this many sim-seconds (0 disables expiry).
+    # Keeps never-crossing quotes (e.g. gas asks above every bid) from piling
+    # up in the book. Must exceed the agents' 30-tick quote cadence or the
+    # book flickers empty between re-quotes.
+    order_ttl_sec: float = 180.0
     site_timezone: str = "Asia/Hong_Kong"
     # Built-in VPP roster (relative paths resolve against the project root).
     scenario_file: str = "scenarios/default.yaml"
@@ -57,6 +62,10 @@ class Settings(BaseSettings):
     # for default dev runs.
     reflective_enabled: bool = False
     reflective_interval_ticks: int = 60
+    # Per-agent learning memory (JSONL, one file per reflective agent). The
+    # hint→outcome records written here survive restarts and are fed back into
+    # future prompts. Relative paths resolve against the project root.
+    agent_memory_dir: str = "data/agent_memory"
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

@@ -1,0 +1,15 @@
+.env/
+.venv/
+.run/
+.git/
+.claude/
+__pycache__/
+*.pyc
+*.db
+*.db-journal
+key.txt
+config.env
+data/cache/
+docs/img/
+frontend/node_modules/
+frontend/dist/

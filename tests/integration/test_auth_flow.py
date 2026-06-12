@@ -28,13 +28,13 @@ async def test_magic_link_consume_then_session_protected_route(client):
     assert r.status_code == 200, r.text
     assert isinstance(r.json(), list)
 
-    # 3b. The demo LLM agent is exposed as a managed My VPP.
+    # 3b. The LLM fleet is exposed as managed My VPPs.
     r = await client.get("/vpps/managed", headers={"Authorization": f"Bearer {sess_token}"})
     assert r.status_code == 200, r.text
     managed = r.json()
-    assert len(managed) == 1
+    assert len(managed) == 4
     assert managed[0]["name"] == "my-llm-vpp"
-    assert managed[0]["agent_kind"] == "ReflectiveAgent"
+    assert all(m["agent_kind"] == "ReflectiveAgent" for m in managed)
     r = await client.get(
         f"/vpps/managed/{managed[0]['id']}/performance",
         headers={"Authorization": f"Bearer {sess_token}"},

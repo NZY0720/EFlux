@@ -59,6 +59,8 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
     yAxis: {
       type: "value",
       scale: true,
+      name: "price ($/kWh)",
+      nameTextStyle: { color: "#64748b", fontSize: 11 },
       axisLabel: { color: "#94a3b8" },
       splitLine: { lineStyle: { color: "#1e293b" } },
     },

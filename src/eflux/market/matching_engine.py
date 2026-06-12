@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 from eflux.market.events import EventKind, MarketEvent, OrderEvent, TradeEvent
@@ -54,6 +54,8 @@ class MatchingEngine:
         sim_ts: datetime,
         wall_ts: datetime,
         order_id: int | None = None,
+        ttl_sec: float | None = None,
+        dispatched: bool = False,
     ) -> MatchResult:
         if side not in ("buy", "sell"):
             raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
@@ -72,6 +74,8 @@ class MatchingEngine:
             remaining_qty=qty,
             sim_ts=sim_ts,
             seq=self.book.next_seq(),
+            expires_at=sim_ts + timedelta(seconds=ttl_sec) if ttl_sec else None,
+            dispatched=dispatched,
         )
 
         trades = self._match(order, sim_ts=sim_ts, wall_ts=wall_ts)
@@ -112,6 +116,40 @@ class MatchingEngine:
             )
         )
         return True
+
+    def expire(self, *, sim_ts: datetime, wall_ts: datetime) -> list[LimitOrder]:
+        """Cancel resting orders whose TTL has lapsed; return the removed orders.
+
+        Without expiry, quotes that never cross (e.g. gas asks above every bid)
+        accumulate forever and the book depth stops meaning anything. Linear
+        sweep — the book holds at most a few orders per participant.
+        """
+        expired = [
+            o
+            for side in ("buy", "sell")
+            for o in self.book.iter_orders(side)  # type: ignore[arg-type]
+            if o.expires_at is not None and o.expires_at <= sim_ts
+        ]
+        removed: list[LimitOrder] = []
+        for order in expired:
+            gone = self.book.cancel(order.order_id)
+            if gone is None:
+                continue
+            removed.append(gone)
+            self.publish(
+                OrderEvent(
+                    kind=EventKind.ORDER_CANCELLED,
+                    sim_ts=sim_ts,
+                    wall_ts=wall_ts,
+                    order_id=gone.order_id,
+                    vpp_id=gone.vpp_id,
+                    side=gone.side,
+                    price=gone.price,
+                    qty=gone.qty,
+                    remaining_qty=gone.remaining_qty,
+                )
+            )
+        return removed
 
     def _match(
         self, taker: LimitOrder, *, sim_ts: datetime, wall_ts: datetime
