@@ -99,6 +99,36 @@ def test_snapshot_reports_best_levels(engine):
     assert snap["asks"][0] == ("51", "3")
 
 
+def test_self_trade_prevented_skips_own_resting_order(engine):
+    """An agent's incoming order must not wash-trade against its own resting
+    quote: it should skip the same-vpp maker and match a genuine counterparty."""
+    # Same VPP (5) rests an ask @ 52.70.
+    engine.submit(vpp_id=5, side="sell", price=Decimal("52.70"), qty=Decimal("2"), sim_ts=_ts(), wall_ts=_ts())
+    # A cheaper genuine ask from VPP 8 — should match first by price priority.
+    engine.submit(vpp_id=8, side="sell", price=Decimal("51.00"), qty=Decimal("2"), sim_ts=_ts(), wall_ts=_ts())
+    # VPP 5 crosses both prices, but only the non-self ask may fill.
+    r = engine.submit(vpp_id=5, side="buy", price=Decimal("60"), qty=Decimal("3"), sim_ts=_ts(), wall_ts=_ts())
+
+    assert all(t.buy_vpp_id != t.sell_vpp_id for t in r.trades), "no self-trades allowed"
+    assert len(r.trades) == 1
+    assert r.trades[0].sell_vpp_id == 8 and r.trades[0].price == Decimal("51.00")
+    assert r.trades[0].qty == Decimal("2")
+    assert engine.last_price == Decimal("51.00")  # not polluted by a wash print @52.70
+    # VPP 5's own 52.70 ask stays resting; its 1-kWh buy remainder rests as a bid.
+    snap = engine.snapshot(depth_levels=5)
+    assert snap["asks"] == [("52.70", "2")]
+    assert snap["bids"] == [("60", "1")]
+
+
+def test_self_trade_only_own_liquidity_rests_no_fill(engine):
+    """If the only crossing liquidity is the taker's own, nothing trades."""
+    engine.submit(vpp_id=7, side="sell", price=Decimal("50"), qty=Decimal("1"), sim_ts=_ts(), wall_ts=_ts())
+    r = engine.submit(vpp_id=7, side="buy", price=Decimal("55"), qty=Decimal("1"), sim_ts=_ts(), wall_ts=_ts())
+    assert r.trades == []
+    assert r.order.remaining_qty == Decimal("1")  # rests as a bid
+    assert engine.last_price is None
+
+
 def test_cancel_removes_order(engine):
     r = engine.submit(vpp_id=1, side="buy", price=Decimal("50"), qty=Decimal("1"), sim_ts=_ts(), wall_ts=_ts())
     assert engine.cancel(r.order.order_id, sim_ts=_ts(), wall_ts=_ts()) is True

@@ -97,6 +97,46 @@ def test_default_scenario_has_diverse_vpp_types(monkeypatch):
     assert commercial and flat
 
 
+def test_cost_diversification_spreads_price_ref_excluding_llm(monkeypatch):
+    """Non-LLM truthful/ZI agents get a deterministic per-agent price_ref jitter
+    so their cost levels fan out; reflective (LLM) agents are left at the default."""
+    from eflux.agents.truthful import TruthfulAgent
+    from eflux.agents.zi import ZIAgent
+
+    sim = _load(monkeypatch)
+
+    price_refs = [
+        float(v.agent.price_ref)
+        for v in sim.vpps.values()
+        if type(v.agent) in (TruthfulAgent, ZIAgent)
+    ]
+    assert len(price_refs) >= 5
+    assert len(set(price_refs)) > 1, "jitter should spread price_ref off the flat 50"
+    assert all(46.9 < p < 53.1 for p in price_refs), "stay within ±6% of 50"
+    assert any(abs(p - 50.0) > 1e-6 for p in price_refs)
+
+    # LLM (reflective) agents excluded → inner truthful keeps the 50.0 default.
+    llm = [v.agent for v in sim.my_managed_vpps()]
+    assert llm and all(isinstance(a, ReflectiveAgent) for a in llm)
+    assert all(float(a.inner.price_ref) == 50.0 for a in llm)
+
+
+def test_cost_diversification_is_deterministic_across_loads(monkeypatch):
+    """Same roster + seed ⇒ identical jittered price_refs (stable across restarts)."""
+    from eflux.agents.truthful import TruthfulAgent
+    from eflux.agents.zi import ZIAgent
+
+    def refs() -> dict[str, float]:
+        sim = _load(monkeypatch)
+        return {
+            v.name: float(v.agent.price_ref)
+            for v in sim.vpps.values()
+            if type(v.agent) in (TruthfulAgent, ZIAgent)
+        }
+
+    assert refs() == refs()
+
+
 def test_scenario_strips_site_coords_when_real_weather_disabled(monkeypatch):
     sim = _load(monkeypatch)  # EFLUX_PV_PHYSICAL=false in _load
     # No VPP should have ended up with site coords → no weather fetch attempted.

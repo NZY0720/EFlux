@@ -46,6 +46,13 @@ class Settings(BaseSettings):
     site_timezone: str = "Asia/Hong_Kong"
     # Built-in VPP roster (relative paths resolve against the project root).
     scenario_file: str = "scenarios/default.yaml"
+    # Cost diversification: spread each non-LLM agent's price_ref by ±this
+    # fraction (deterministic per agent) so battery-band asks (price_ref/√eta)
+    # and deficit bids don't all collapse onto one price level — otherwise the
+    # market clears at ~2 discrete prints and the price chart is a square wave.
+    # 0 disables (every agent uses the default 50). LLM/reflective agents are
+    # always excluded. Gas is unaffected (its cost is set per-VPP already).
+    price_ref_jitter_frac: float = 0.06
 
     magic_link_ttl_min: int = 15
     session_ttl_day: int = 30

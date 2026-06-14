@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import os
+import random
+from decimal import Decimal
 from pathlib import Path
 
 import yaml
@@ -85,11 +87,13 @@ def load_default_scenario(sim: Simulator) -> None:
             reflective_index += 1
         else:
             factory = AGENT_FACTORIES[spec.agent]
+            seed = spec.seed if spec.seed is not None else 42 + i
+            agent_params = _diversify_cost(spec, seed, settings.price_ref_jitter_frac, factory)
             sim.add_builtin_vpp(
                 name=spec.name,
                 params=_build_params(spec, use_real_weather),
-                agent=factory(**spec.agent_params),
-                seed=spec.seed if spec.seed is not None else 42 + i,
+                agent=factory(**agent_params),
+                seed=seed,
             )
         counts[spec.agent] = counts.get(spec.agent, 0) + 1
 
@@ -115,6 +119,35 @@ def load_default_scenario(sim: Simulator) -> None:
         len(specs) - len(reflective_specs),
         len(sim.my_managed_vpps()),
     )
+
+
+def _diversify_cost(
+    spec: AgentSpec, seed: int, jitter_frac: float, factory: type[BaseAgent]
+) -> dict:
+    """Spread cost levels across non-LLM agents by jittering price_ref.
+
+    Every truthful/ZI agent otherwise shares price_ref=50, so their battery-band
+    asks (price_ref/√eta ≈ 52.7) and deficit bids land on identical price levels
+    and the market clears at ~2 discrete prints. A small deterministic per-agent
+    offset (seeded by name+seed, so it's stable across restarts) fans those
+    levels out into a band. Reflective (LLM) agents never reach here — they are
+    handled on the other branch — so the LLM fleet is excluded by construction.
+    Gas has no price_ref (its cost is per-VPP already) and is left untouched, as
+    is any agent whose roster entry pins price_ref explicitly.
+    """
+    agent_params = dict(spec.agent_params)
+    if (
+        jitter_frac <= 0
+        or spec.agent not in ("zi", "truthful")
+        or "price_ref" in agent_params
+    ):
+        return agent_params
+    field = factory.__dataclass_fields__.get("price_ref")
+    base = float(field.default) if field is not None else 50.0  # type: ignore[union-attr]
+    rng = random.Random(f"price_ref::{spec.name}::{seed}")
+    price_ref = round(base * (1.0 + rng.uniform(-jitter_frac, jitter_frac)), 4)
+    agent_params["price_ref"] = Decimal(str(price_ref))
+    return agent_params
 
 
 def _build_params(spec: AgentSpec, use_real_weather: bool) -> VPPParams:

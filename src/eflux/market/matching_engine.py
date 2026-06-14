@@ -158,24 +158,17 @@ class MatchingEngine:
         opposite_side = "sell" if taker.side == "buy" else "buy"
 
         while taker.remaining_qty > 0:
-            opp_book = self.book._book(opposite_side)  # noqa: SLF001
-            if not opp_book:
-                break
-            best_level = opp_book.peekitem(0)[1]
-            # Check price crossing.
-            if taker.side == "buy" and taker.price < best_level.price:
-                break
-            if taker.side == "sell" and taker.price > best_level.price:
+            resting = self._best_maker(opposite_side, taker)
+            if resting is None:
                 break
 
-            resting = best_level.orders[0]
             fill_qty = min(taker.remaining_qty, resting.remaining_qty)
             fill_price = resting.price  # price-time priority: resting price wins
 
             taker.remaining_qty -= fill_qty
             resting.remaining_qty -= fill_qty
-            best_level.total_qty -= fill_qty
             self.last_price = fill_price
+            self.book.reduce(resting, fill_qty)
 
             buy_order = taker if taker.side == "buy" else resting
             sell_order = resting if taker.side == "buy" else taker
@@ -194,10 +187,29 @@ class MatchingEngine:
             trades.append(trade)
             self.publish(trade)
 
-            if resting.remaining_qty <= 0:
-                self.book.remove_filled(resting)
-
         return trades
+
+    def _best_maker(self, opposite_side: str, taker: LimitOrder) -> LimitOrder | None:
+        """Best-priced, FIFO resting order that crosses the taker and is NOT the
+        taker's own — self-trade (wash-trade) prevention.
+
+        A single VPP routinely rests orders on both sides (e.g. a deficit bid
+        plus a battery-band ask), so without this guard an agent's incoming
+        order would cross its own quote: a no-counterparty fill that still moves
+        last_price and double-applies to the same battery in the runner. Policy
+        here is "skip": same-owner makers are passed over (left resting) and the
+        taker matches the next genuine counterparty, or rests if none remains.
+        """
+        for level in self.book._book(opposite_side).values():  # noqa: SLF001  best-price first
+            if taker.side == "buy" and taker.price < level.price:
+                break  # asks ascending — no deeper level can cross
+            if taker.side == "sell" and taker.price > level.price:
+                break  # bids descending — no deeper level can cross
+            for order in level.orders:  # FIFO within the level
+                if order.vpp_id != taker.vpp_id:
+                    return order
+            # Every order at this crossing level is the taker's own → look deeper.
+        return None
 
     def snapshot(self, depth_levels: int = 10) -> dict:
         bb = self.book.best_bid()

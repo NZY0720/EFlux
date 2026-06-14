@@ -148,16 +148,32 @@ class OrderBook:
             return None
         return bb.orders[0], ba.orders[0]
 
-    def remove_filled(self, order: LimitOrder) -> None:
-        side, key = self._order_index[order.order_id]
+    def reduce(self, order: LimitOrder, fill_qty: Decimal) -> None:
+        """Apply a fill to a resting order: decrement its level's total_qty and,
+        if the order is now fully filled, remove it from the book.
+
+        Removal scans the level's deque by id rather than popping the head:
+        self-trade prevention can leave skipped same-owner orders ahead of the
+        one that actually matched, so the filled order is not always at the head.
+        The caller must have already decremented order.remaining_qty.
+        """
+        loc = self._order_index.get(order.order_id)
+        if loc is None:
+            return
+        side, key = loc
         book = self._book(side)
-        level = book[key]
-        # Order is at the head of the level (we only fully fill from head during matching).
-        if level.orders and level.orders[0].order_id == order.order_id:
-            level.orders.popleft()
-        del self._order_index[order.order_id]
-        if not level.orders:
-            del book[key]
+        level = book.get(key)
+        if level is None:
+            return
+        level.total_qty -= fill_qty
+        if order.remaining_qty <= 0:
+            for i, o in enumerate(level.orders):
+                if o.order_id == order.order_id:
+                    del level.orders[i]
+                    break
+            del self._order_index[order.order_id]
+            if not level.orders:
+                del book[key]
 
     def update_level_qty_after_partial(self, order: LimitOrder, filled_qty: Decimal) -> None:
         side, key = self._order_index[order.order_id]

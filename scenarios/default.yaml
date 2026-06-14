@@ -20,6 +20,10 @@
 #   gas marginal cost   ~ 55-72 (soft price cap, merit order top)
 #   urgent demand bids  ~ up to 75 (demand_beta: bids rise with deficit, so
 #                         scarcity hours actually clear the gas ladder)
+# Cost diversification: each non-LLM agent's price_ref is jittered ±6%
+# (EFLUX_PRICE_REF_JITTER_FRAC, deterministic per agent), so the battery band
+# and deficit bids above fan out across a range instead of collapsing onto two
+# discrete prints. LLM/reflective agents are excluded; gas is set per-VPP below.
 
 vpps:
   # --- residential / rooftop solar mix (originals) ------------------------
