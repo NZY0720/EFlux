@@ -3,6 +3,7 @@ import { useState } from "react";
 import { setMarketSpeed } from "../api/client";
 import type { MarketSnapshot } from "../api/types";
 import { useAuth } from "../state/auth";
+import { BoltIcon, GaugeIcon, ScaleIcon, TrendDownIcon, TrendUpIcon, VppIcon, type IconProps } from "./icons";
 
 interface Props {
   snapshot: MarketSnapshot | null;
@@ -11,10 +12,23 @@ interface Props {
 
 const SPEEDS = [1, 10, 100];
 
-function Cell({ label, value, sub }: { label: string; value: React.ReactNode; sub?: string }) {
+function Cell({
+  label,
+  value,
+  sub,
+  icon: Icon,
+}: {
+  label: string;
+  value: React.ReactNode;
+  sub?: string;
+  icon?: (p: IconProps) => React.ReactElement;
+}) {
   return (
-    <div className="flex-1 min-w-[140px] px-4 py-3 border border-slate-800 rounded-lg bg-slate-900/60">
-      <div className="text-xs uppercase tracking-wide text-slate-400">{label}</div>
+    <div className="eflux-card flex-1 min-w-[140px] px-4 py-3 border border-slate-800 rounded-lg bg-slate-900/60">
+      <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-slate-400">
+        {Icon && <Icon size={14} className="text-slate-500" />}
+        {label}
+      </div>
       <div className="text-2xl font-semibold text-white mt-1 tabular-nums">{value}</div>
       {sub && <div className="text-xs text-slate-500 mt-0.5">{sub}</div>}
     </div>
@@ -41,11 +55,14 @@ function SpeedCell({ snapshot }: { snapshot: MarketSnapshot | null }) {
     }
   };
 
-  if (!token) return <Cell label="Speed" value={`${speed}x`} sub={sub} />;
+  if (!token) return <Cell label="Speed" value={`${speed}x`} sub={sub} icon={GaugeIcon} />;
 
   return (
-    <div className="flex-1 min-w-[140px] px-4 py-3 border border-slate-800 rounded-lg bg-slate-900/60">
-      <div className="text-xs uppercase tracking-wide text-slate-400">Speed</div>
+    <div className="eflux-card flex-1 min-w-[140px] px-4 py-3 border border-slate-800 rounded-lg bg-slate-900/60">
+      <div className="flex items-center gap-1.5 text-xs uppercase tracking-wide text-slate-400">
+        <GaugeIcon size={14} className="text-slate-500" />
+        Speed
+      </div>
       <div className="mt-1.5 inline-flex overflow-hidden rounded border border-slate-700">
         {SPEEDS.map((s) => (
           <button
@@ -70,9 +87,9 @@ export default function KpiBar({ snapshot, builtinVpps }: Props) {
   const balance = snapshot?.balance;
   return (
     <div className="flex flex-wrap gap-3">
-      <Cell label="Last price" value={fmt(snapshot?.last_price)} sub="last trade ($/kWh)" />
-      <Cell label="Best bid" value={fmt(snapshot?.best_bid)} sub="$/kWh" />
-      <Cell label="Best ask" value={fmt(snapshot?.best_ask)} sub="$/kWh" />
+      <Cell label="Last price" value={fmt(snapshot?.last_price)} sub="last trade ($/kWh)" icon={BoltIcon} />
+      <Cell label="Best bid" value={fmt(snapshot?.best_bid)} sub="$/kWh" icon={TrendDownIcon} />
+      <Cell label="Best ask" value={fmt(snapshot?.best_ask)} sub="$/kWh" icon={TrendUpIcon} />
       <Cell
         label="Supply / demand"
         value={balance?.supply_demand_ratio != null ? `${balance.supply_demand_ratio.toFixed(2)}x` : "—"}
@@ -81,9 +98,10 @@ export default function KpiBar({ snapshot, builtinVpps }: Props) {
             ? `${balance.renewable_kw.toFixed(0)} kW renew + ${balance.gas_capacity_kw.toFixed(0)} kW gas vs ${balance.load_kw.toFixed(0)} kW load`
             : "live capacity vs load"
         }
+        icon={ScaleIcon}
       />
       <SpeedCell snapshot={snapshot} />
-      <Cell label="Built-in VPPs" value={String(builtinVpps)} sub="auto traders" />
+      <Cell label="Built-in VPPs" value={String(builtinVpps)} sub="auto traders" icon={VppIcon} />
     </div>
   );
 }

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchMarketAgents } from "../api/client";
 import type { MarketAgent } from "../api/types";
+import { CategoryIcon } from "../components/icons";
 import { CATEGORY_ORDER, categoryMeta, strategyLabel } from "../lib/categories";
 
 type SortKey = "name" | "category" | "pnl" | "soc" | "net" | "trades";
@@ -95,10 +96,10 @@ export default function Participants() {
             return (
               <span
                 key={c}
-                className="flex items-center gap-1.5 rounded border border-slate-800 bg-slate-900/60 px-2 py-1 text-xs text-slate-300"
+                className="flex items-center gap-1.5 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-xs text-slate-300"
               >
-                <span className="inline-block h-2 w-2 rounded-sm" style={{ backgroundColor: meta.color }} />
-                {counts.get(c)} {meta.label.toLowerCase()}
+                <CategoryIcon category={c} size={14} style={{ color: meta.color }} />
+                <span className="tabular-nums text-slate-200">{counts.get(c)}</span> {meta.label.toLowerCase()}
               </span>
             );
           })}
@@ -185,9 +186,10 @@ function AgentRow({ agent: a }: { agent: MarketAgent }) {
       </td>
       <td className="px-3 py-2">
         <span
-          className="rounded px-1.5 py-0.5 text-[11px]"
+          className="inline-flex items-center gap-1.5 rounded px-1.5 py-0.5 text-[11px]"
           style={{ backgroundColor: `${meta.color}26`, color: meta.color }}
         >
+          <CategoryIcon category={a.category} size={13} />
           {meta.label}
         </span>
       </td>
