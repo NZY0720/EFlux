@@ -14,7 +14,7 @@ Design choices
   * side: > 0 → buy, < 0 → sell, in [-0.1, 0.1] → no-op
   * price = mid * (1 + 0.5 * price_offset)  (so ±50% around mid)
   * qty = qty_frac * max_action_qty  (clipped to [0, max_action_qty])
-- Reward: ΔPnL from trades this tick − SOC out-of-bounds penalty.
+- Reward: ΔPnL from trades this tick minus a SOC out-of-bounds penalty.
 - Episode: 24 ticks (one synthetic day) by default.
 """
 
@@ -24,7 +24,7 @@ import math
 import random
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Any
+from typing import Any, ClassVar
 
 import gymnasium as gym
 import numpy as np
@@ -32,7 +32,7 @@ from gymnasium import spaces
 
 from eflux.market.matching_engine import MatchingEngine
 from eflux.vpp.base import VPPParams, VPPState
-from eflux.vpp.der import Battery, FlexibleLoad, PV
+from eflux.vpp.der import PV, Battery, FlexibleLoad
 
 EPISODE_TICKS = 24
 TICK_DURATION_H = 1.0  # one sim-hour per tick
@@ -45,15 +45,17 @@ SOC_PENALTY = 1.0  # per kWh out of bounds
 class VPPSingleAgentEnv(gym.Env):
     """Single-agent gym env training one VPP to trade against synthetic counter-orders."""
 
-    metadata = {"render_modes": []}
-
-    observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(10,), dtype=np.float32)
-    # [side_logit, price_offset, qty_frac]
-    action_space = spaces.Box(low=np.array([-1.0, -1.0, 0.0], dtype=np.float32),
-                               high=np.array([1.0, 1.0, 1.0], dtype=np.float32), dtype=np.float32)
+    metadata: ClassVar[dict] = {"render_modes": []}
 
     def __init__(self, config: dict | None = None) -> None:
         super().__init__()
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(10,), dtype=np.float32)
+        # [side_logit, price_offset, qty_frac]
+        self.action_space = spaces.Box(
+            low=np.array([-1.0, -1.0, 0.0], dtype=np.float32),
+            high=np.array([1.0, 1.0, 1.0], dtype=np.float32),
+            dtype=np.float32,
+        )
         cfg = config or {}
         self._episode_ticks = int(cfg.get("episode_ticks", EPISODE_TICKS))
         self._seed = cfg.get("seed", None)
@@ -228,5 +230,5 @@ class VPPSingleAgentEnv(gym.Env):
             dtype=np.float32,
         )
 
-    def render(self, mode: str = "human") -> Any:  # noqa: ARG002 — interface conformance
+    def render(self) -> Any:
         return None

@@ -16,6 +16,7 @@ from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from eflux.agents.base import AgentContext, BaseAgent, MarketSnapshot, OrderIntent
+from eflux.agents.hybrid import RiskGate, RiskLimits, RiskRejected
 from eflux.bridge.bus import EventBus
 from eflux.config import get_settings
 from eflux.market.clock import RollingClock
@@ -62,6 +63,25 @@ class Simulator:
         )
         self.vpps: dict[int, SimulatorVPP] = {}
         self.order_ttl_sec: float = settings.order_ttl_sec
+        # Single hard-constraint authority every order (built-in, learned, fallback,
+        # external) passes through before the engine — see agents/hybrid/risk.py.
+        # The max-open-orders cap is derived from the order TTL: a VPP requotes its
+        # balance as it re-accumulates, and each quote rests for the TTL, so one VPP
+        # legitimately holds ~order_ttl_sec/tick_sec resting orders in steady state.
+        # Size the cap above that natural ceiling (with headroom) so the gate never
+        # clips the existing market — it only bounds genuine runaway/abuse.
+        tick_sec = max(settings.market_tick_sec, 1e-9)
+        ttl_ticks = settings.order_ttl_sec / tick_sec if settings.order_ttl_sec > 0 else 0.0
+        self.risk_gate = RiskGate(RiskLimits(max_open_orders=max(256, int(ttl_ticks) + 64)))
+        # Orders the gate vetoed — a global total plus a per-VPP breakdown (the
+        # benchmark's invalid-action metric must be attributable to one candidate).
+        self.risk_rejections = 0
+        self.risk_rejections_by_vpp: dict[int, int] = {}
+        # tick_h of the tick currently being processed. Trade settlement reads this
+        # so battery charge/discharge use the actual tick duration, not a global
+        # default — they diverge whenever the loop is stepped at a non-default
+        # cadence (e.g. the benchmark's coarse ticks).
+        self._current_tick_h: float = tick_sec / 3600.0
         # Site-weather memo: several VPPs share coords (e.g. the HKU rooftop),
         # and today/future forecast days are deliberately not disk-cached.
         self._site_weather_cache: dict[tuple[float, float], object] = {}
@@ -326,6 +346,18 @@ class Simulator:
         async with self._lock:
             now_sim = self.clock.now_sim()
             now_wall = datetime.now(UTC)
+            # Same gate as built-in agents (principle #7). External VPPs carry no
+            # in-memory battery/DER state here, so only the universal static and
+            # rate limits apply; ownership was already checked at the REST layer.
+            decision = self.risk_gate.validate(
+                [OrderIntent(side=side, price=price, qty=qty)],
+                vpp_id=vpp_id,
+                open_order_count=self._open_order_counts_by_vpp().get(vpp_id, 0),
+            )
+            if not decision.accepted:
+                self._record_rejections(vpp_id, len(decision.rejected) or 1)
+                reason = decision.rejected[0].reason if decision.rejected else "rejected by risk gate"
+                raise RiskRejected(reason)
             result = self.engine.submit(
                 vpp_id=vpp_id,
                 side=side,
@@ -398,6 +430,7 @@ class Simulator:
                 market_snap.recent_trades = self._recent_market_trades()
                 market_snap.peer_reflections = self._peer_reflections()
                 open_orders_net = self._open_orders_net_by_vpp()
+                open_order_counts = self._open_order_counts_by_vpp()
                 # Step each built-in VPP. One faulty agent (bad agent_params,
                 # DER model edge case) must not kill the whole market loop.
                 for vpp in self.vpps.values():
@@ -408,6 +441,7 @@ class Simulator:
                             tick_h,
                             market_snap,
                             open_orders_net_kwh=open_orders_net.get(vpp.vpp_id, 0.0),
+                            open_order_count=open_order_counts.get(vpp.vpp_id, 0),
                         )
                     except Exception:
                         log.exception("VPP %s (%d) tick failed — skipping this tick", vpp.name, vpp.vpp_id)
@@ -485,6 +519,16 @@ class Simulator:
                 out[order.vpp_id] = out.get(order.vpp_id, 0.0) + signed
         return out
 
+    def _open_order_counts_by_vpp(self) -> dict[int, int]:
+        """Live count of resting orders per VPP (the authoritative open-order
+        count for the RiskGate's max-open-orders limit). Counted from the book
+        rather than vpp.open_order_ids, which only sheds ids on TTL expiry."""
+        counts: dict[int, int] = {}
+        for side in ("buy", "sell"):
+            for order in self.engine.book.iter_orders(side):  # type: ignore[arg-type]
+                counts[order.vpp_id] = counts.get(order.vpp_id, 0) + 1
+        return counts
+
     def _tick_vpp(
         self,
         vpp: SimulatorVPP,
@@ -493,6 +537,7 @@ class Simulator:
         market: MarketSnapshot,
         *,
         open_orders_net_kwh: float = 0.0,
+        open_order_count: int = 0,
     ) -> None:
         # Refresh DER state.
         vpp.pv.kw_peak = vpp.params.pv_kw_peak  # keep params live-editable later
@@ -509,6 +554,9 @@ class Simulator:
             cap, max(-cap, vpp.state.pending_net_kwh + vpp.state.net_kw * tick_h)
         )
 
+        # Trade settlement (battery charge/discharge) reads this so it uses the
+        # cadence the loop is actually stepping at, not the configured default.
+        self._current_tick_h = tick_h
         ctx = AgentContext(
             vpp_id=vpp.vpp_id,
             params=vpp.params,
@@ -522,8 +570,48 @@ class Simulator:
             open_orders_net_kwh=open_orders_net_kwh,
         )
         intents = vpp.agent.decide(ctx)
-        for intent in intents:
+        self._gate_and_submit(vpp, ctx, intents, sim_ts, open_order_count)
+
+    def _gate_and_submit(
+        self,
+        vpp: SimulatorVPP,
+        ctx: AgentContext,
+        intents: list[OrderIntent],
+        sim_ts: datetime,
+        open_order_count: int,
+    ) -> None:
+        """Run the VPP's order batch through the RiskGate, then submit what survives.
+        If every order is vetoed and the agent exposes a `risk_fallback` policy, the
+        fallback's (re-gated) action is submitted instead — the safe-action path for
+        a learned policy that produced an out-of-envelope batch."""
+        decision = self.risk_gate.validate(
+            intents,
+            vpp_id=vpp.vpp_id,
+            params=vpp.params,
+            battery=vpp.battery,
+            tick_h=ctx.tick_duration_h,
+            open_order_count=open_order_count,
+        )
+        self._record_rejections(vpp.vpp_id, len(decision.rejected))
+        if decision.requires_fallback:
+            fallback = getattr(vpp.agent, "risk_fallback", None)
+            if fallback is not None:
+                decision = self.risk_gate.validate(
+                    fallback.decide(ctx),
+                    vpp_id=vpp.vpp_id,
+                    params=vpp.params,
+                    battery=vpp.battery,
+                    tick_h=ctx.tick_duration_h,
+                    open_order_count=open_order_count,
+                )
+                self._record_rejections(vpp.vpp_id, len(decision.rejected))
+        for intent in decision.accepted:
             self._submit_intent(vpp, intent, sim_ts)
+
+    def _record_rejections(self, vpp_id: int, n: int) -> None:
+        if n:
+            self.risk_rejections += n
+            self.risk_rejections_by_vpp[vpp_id] = self.risk_rejections_by_vpp.get(vpp_id, 0) + n
 
     def _expire_orders(self, sim_ts: datetime) -> None:
         """Expire TTL'd resting orders; refund the unfilled remainder to the
@@ -604,7 +692,7 @@ class Simulator:
 
         qty_f = float(trade.qty)
         cash = Decimal(str(float(trade.price) * qty_f))
-        tick_h = _tick_h_from_ts()
+        tick_h = self._current_tick_h
         counterparty = trade.sell_vpp_id if side == "buy" else trade.buy_vpp_id
 
         if side == "buy":
@@ -643,11 +731,6 @@ def _log_unexpected_loop_exit(task: asyncio.Task) -> None:
     exc = task.exception()
     if exc is not None:
         log.error("Simulator loop died unexpectedly", exc_info=exc)
-
-
-def _tick_h_from_ts() -> float:
-    settings = get_settings()
-    return settings.market_tick_sec / 3600.0
 
 
 def _default_sim_epoch(site_timezone: str) -> datetime:

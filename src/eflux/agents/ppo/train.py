@@ -17,10 +17,16 @@ from pathlib import Path
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Train PPO on the EFlux single-agent VPP env.")
+    p = argparse.ArgumentParser(description="Train PPO on an EFlux VPP env.")
     p.add_argument("--iters", type=int, default=10, help="number of training iterations")
     p.add_argument("--out", type=Path, default=Path("checkpoints/ppo_v1"), help="checkpoint output directory")
     p.add_argument("--num-env-runners", type=int, default=0, help="rollout workers (0 = local only)")
+    p.add_argument(
+        "--env",
+        choices=["single", "primitive"],
+        default="single",
+        help="single = legacy 3-float action; primitive = structured StrategyAction space",
+    )
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
 
@@ -35,10 +41,16 @@ def main() -> int:
         print(f"PPO training requires the 'ai' extras (uv sync --extra ai): {e}", file=sys.stderr)
         return 1
 
-    from eflux.agents.ppo.env import VPPSingleAgentEnv
+    if args.env == "primitive":
+        from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 
-    env_name = "eflux_vpp"
-    register_env(env_name, lambda config: VPPSingleAgentEnv(config))
+        env_name = "eflux_vpp_primitive"
+        register_env(env_name, lambda config: VPPPrimitiveEnv(config))
+    else:
+        from eflux.agents.ppo.env import VPPSingleAgentEnv
+
+        env_name = "eflux_vpp"
+        register_env(env_name, lambda config: VPPSingleAgentEnv(config))
 
     ray.init(ignore_reinit_error=True, num_cpus=max(2, args.num_env_runners + 1))
 

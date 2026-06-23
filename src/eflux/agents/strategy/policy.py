@@ -1,0 +1,53 @@
+"""Strategy policy seam.
+
+`StrategyPolicy.select_action` is the single decision point a tactical policy implements:
+given the market/VPP context and the valuation signal (and, later, slow LLM guidance), it
+chooses one `StrategyAction`. This is the seam every policy plugs into without touching the
+agent, compiler, or risk gate:
+
+- `ScriptedStrategyPolicy` (here) — a deterministic baseline mirroring Truthful's
+  imbalance logic.
+- `PPOPrimitiveAgent` (M4) — a learned policy over the same action space.
+- LLM-guided policy (M6) — the scripted/PPO policy biased by `StrategyGuidance`.
+
+Keeping the action space identical across all three is what lets PPO learn behaviour that
+departs from Truthful while staying interpretable and risk-gated (design note §5.2, §8).
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
+
+from eflux.agents.base import AgentContext
+from eflux.agents.strategy.schema import StrategyAction, StrategyMode
+from eflux.agents.valuation import ValuationSignal
+
+
+@runtime_checkable
+class StrategyPolicy(Protocol):
+    def select_action(
+        self, ctx: AgentContext, valuation: ValuationSignal, guidance: object | None = None
+    ) -> StrategyAction:
+        ...
+
+
+@dataclass
+class ScriptedStrategyPolicy:
+    """Deterministic baseline policy: trade the ambient imbalance, else stand down.
+
+    Mirrors the Truthful agent's primary behaviour within the one-action-per-tick
+    contract that PPO will inherit — surplus → liquidate, deficit → cover, balanced →
+    no-op. Battery-band arbitrage is left to the learned policy (the primitive exists
+    and is gated; sizing it well across cadences is exactly what PPO should learn)."""
+
+    min_qty: float = 0.01
+
+    def select_action(
+        self, ctx: AgentContext, valuation: ValuationSignal, guidance: object | None = None
+    ) -> StrategyAction:
+        if valuation.surplus_kwh >= self.min_qty:
+            return StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS)
+        if valuation.deficit_kwh >= self.min_qty:
+            return StrategyAction(mode=StrategyMode.COVER_DEFICIT)
+        return StrategyAction(mode=StrategyMode.NOOP)

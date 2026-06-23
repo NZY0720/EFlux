@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
+from eflux.agents.hybrid import RiskRejected
 from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
 from eflux.db.models import VPP
 
@@ -64,6 +65,8 @@ async def submit_order(
         )
     except PermissionError as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except RiskRejected as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"risk gate: {e.reason}") from e
     return OrderSubmitResponse(**result)
 
 

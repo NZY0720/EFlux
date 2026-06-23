@@ -44,7 +44,9 @@ Tasks: start | stop | dev | sync | run | smoke | ws | clean | openapi | fe-dev |
   migrate        - apply pending alembic migrations (= alembic upgrade head)
   makemigration  - autogenerate a new alembic migration; usage: ./tasks.sh makemigration "<message>"
   test           - run pytest suite (tests/)
-  train-ppo      - train PPO agent on the sandbox env (needs 'ai' extras: uv sync --extra ai)
+  train-ppo      - train PPO (needs 'ai' extras); --env single|primitive (structured StrategyAction space)
+  bench          - score candidate agents vs a fixed counter-roster (leaderboard)
+  eval-ppo       - score a trained primitive checkpoint vs the benchmark baselines (--checkpoint DIR)
 EOF
     ;;
 
@@ -148,6 +150,16 @@ EOF
   train-ppo)
     shift  # drop "train-ppo", forward the rest to the trainer
     exec "$PY" -m eflux.agents.ppo.train "$@"
+    ;;
+
+  bench)
+    shift  # drop "bench", forward the rest to the benchmark runner
+    exec "$PY" -m eflux.agents.bench.run "$@"
+    ;;
+
+  eval-ppo)
+    shift  # drop "eval-ppo", forward the rest to the evaluator
+    exec "$PY" -m eflux.agents.ppo.eval "$@"
     ;;
 
   *)

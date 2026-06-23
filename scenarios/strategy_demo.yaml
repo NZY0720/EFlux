@@ -1,0 +1,34 @@
+# Strategy-layer demo roster — a small market driven by the structured
+# StrategyAgent (oracle → scripted policy → OrderProgram compiler → RiskGate).
+#
+# Run it live with:  EFLUX_SCENARIO_FILE=scenarios/strategy_demo.yaml ./tasks.sh run
+#
+# Validated entry-by-entry as an AgentSpec, same as scenarios/default.yaml.
+# `agent: strategy` agent_params: price_ref, min_qty, demand_beta, price_cap_mult.
+# (The scripted policy has no battery band, so truthful's soc_high/soc_low /
+# battery_quote_every_n_ticks do NOT apply and are rejected at load.)
+
+vpps:
+  # Structured-language prosumers (surplus midday, deficit at night).
+  - name: strategy-prosumer-01
+    agent: strategy
+    params: { pv_kw_peak: 8.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 4.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+  - name: strategy-prosumer-02
+    agent: strategy
+    params: { pv_kw_peak: 6.0, battery_kwh: 12.0, battery_kw_max: 3.0, load_kw_base: 5.0, markup_floor: 0.4 }
+
+  # Counterparties for two-sided liquidity.
+  - name: demo-load-buyer
+    agent: truthful
+    params: { pv_kw_peak: 0.0, battery_kwh: 15.0, load_kw_base: 6.0 }
+    agent_params: { demand_beta: 0.5 }
+  - name: demo-pv-seller
+    agent: truthful
+    params: { pv_kw_peak: 16.0, battery_kwh: 15.0, load_kw_base: 2.0, markup_floor: 0.4 }
+  - name: demo-zi-noise
+    agent: zi
+    params: { pv_kw_peak: 6.0, battery_kwh: 10.0, load_kw_base: 4.0 }
+  - name: demo-gas-backstop
+    agent: gas
+    params: { gas_kw_max: 20.0, gas_cost_per_kwh: 65.0, load_kw_base: 0.0 }

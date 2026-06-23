@@ -19,6 +19,7 @@ import yaml
 
 from eflux.agents.base import BaseAgent
 from eflux.agents.gas import GasGeneratorAgent
+from eflux.agents.hybrid import HybridPolicyAgent, StrategyAgent
 from eflux.agents.reflective import ReflectiveAgent
 from eflux.agents.reflective.memory import AgentMemory, slug
 from eflux.agents.reflective.pool import SharedLLM
@@ -35,7 +36,27 @@ AGENT_FACTORIES: dict[str, type[BaseAgent]] = {
     "zi": ZIAgent,
     "truthful": TruthfulAgent,
     "gas": GasGeneratorAgent,
+    "strategy": StrategyAgent,
+    "hybrid": HybridPolicyAgent,
 }
+
+# Dataclass fields that hold injected policy/strategist objects, never YAML kwargs.
+_INJECTED_FIELDS = frozenset({"policy", "executor", "strategist", "fallback"})
+
+
+def _validate_agent_params(name: str, agent_params: dict, factory: type) -> None:
+    """Reject agent_params keys the target agent's constructor doesn't accept, at
+    load time with a named error. Otherwise `factory(**agent_params)` raises a bare
+    TypeError mid-load (e.g. a strategy entry passing truthful-only soc_high)."""
+    fields = {
+        f for f in factory.__dataclass_fields__ if not f.startswith("_") and f not in _INJECTED_FIELDS
+    }
+    unknown = sorted(set(agent_params) - fields)
+    if unknown:
+        raise ValueError(
+            f"{name!r}: agent_params {unknown} not accepted by {factory.__name__} "
+            f"(valid: {sorted(fields)})"
+        )
 
 
 def _real_pv_available() -> bool:
@@ -87,6 +108,7 @@ def load_default_scenario(sim: Simulator) -> None:
             reflective_index += 1
         else:
             factory = AGENT_FACTORIES[spec.agent]
+            _validate_agent_params(spec.name, spec.agent_params, factory)
             seed = spec.seed if spec.seed is not None else 42 + i
             agent_params = _diversify_cost(spec, seed, settings.price_ref_jitter_frac, factory)
             sim.add_builtin_vpp(
@@ -138,7 +160,7 @@ def _diversify_cost(
     agent_params = dict(spec.agent_params)
     if (
         jitter_frac <= 0
-        or spec.agent not in ("zi", "truthful")
+        or spec.agent not in ("zi", "truthful", "strategy")
         or "price_ref" in agent_params
     ):
         return agent_params
@@ -188,6 +210,7 @@ def _add_reflective_vpp(
     loaded = memory.load()
     if loaded:
         log.info("Reflective VPP %s recalled %d memory records", spec.name, loaded)
+    _validate_agent_params(spec.name, spec.agent_params, TruthfulAgent)
     agent = ReflectiveAgent(
         llm_client=shared.client,
         inner=TruthfulAgent(**spec.agent_params),
@@ -245,9 +268,17 @@ def load_my_llm_vpp(sim: Simulator) -> None:
 def load_ppo_scenario(sim: Simulator, checkpoint_path: str) -> None:
     """Add a PPO-driven VPP to the simulator. Skipped (with a warning) if the 'ai'
     extras are missing or the checkpoint cannot be loaded — a bad EFLUX_PPO_CHECKPOINT
-    must not take down the whole app at startup."""
+    must not take down the whole app at startup.
+
+    EFLUX_PPO_ENV selects the policy kind: "single" (default, the legacy 3-float
+    action agent) or "primitive" (a StrategyAgent driven by a learned policy over the
+    structured StrategyAction space — must match how the checkpoint was trained)."""
+    ppo_env = os.environ.get("EFLUX_PPO_ENV", "single").lower()
     try:
-        from eflux.agents.ppo.agent import PPOAgent
+        if ppo_env == "primitive":
+            from eflux.agents.ppo.primitive_agent import build_ppo_primitive_agent
+        else:
+            from eflux.agents.ppo.agent import PPOAgent
     except ImportError as e:
         log.warning("PPO checkpoint %s configured but 'ai' extras not installed (%s) — skipping", checkpoint_path, e)
         return
@@ -258,7 +289,11 @@ def load_ppo_scenario(sim: Simulator, checkpoint_path: str) -> None:
         log.warning("PPO checkpoint %s does not exist — skipping the PPO VPP", checkpoint_path)
         return
     try:
-        agent = PPOAgent(checkpoint_path=checkpoint_path)
+        agent = (
+            build_ppo_primitive_agent(checkpoint_path)
+            if ppo_env == "primitive"
+            else PPOAgent(checkpoint_path=checkpoint_path)
+        )
     except Exception:
         log.exception("PPO checkpoint %s failed to load — skipping the PPO VPP", checkpoint_path)
         return

@@ -1,0 +1,115 @@
+"""Shared obs/action encoding for the structured-action PPO path.
+
+The training env (`primitive_env`) and the live policy (`primitive_agent`) must agree
+exactly on how an `AgentContext` + `ValuationSignal` becomes an observation vector, and
+how a raw policy vector becomes a `StrategyAction`. Keeping both in one module guarantees
+train/serve parity (design note §5.2: PPO observes market + DER + imbalance + SOC +
+valuation signals, and acts in the structured primitive space).
+"""
+
+from __future__ import annotations
+
+import math
+
+import numpy as np
+
+from eflux.agents.base import AgentContext
+from eflux.agents.strategy.schema import StrategyAction, StrategyMode
+from eflux.agents.valuation import ValuationSignal
+
+PRICE_REF = 50.0
+
+# The primitive set PPO chooses among (argmax over the first N_MODES action logits).
+# A small, safe set: stand down, trade the imbalance either way, or work the battery.
+PRIMITIVE_MODES: list[StrategyMode] = [
+    StrategyMode.NOOP,
+    StrategyMode.LIQUIDATE_SURPLUS,
+    StrategyMode.COVER_DEFICIT,
+    StrategyMode.BATTERY_ARBITRAGE,
+]
+N_MODES = len(PRIMITIVE_MODES)
+N_PARAMS = 4  # aggressiveness, qty_fraction, price_offset_bps, soc_target
+ACTION_DIM = N_MODES + N_PARAMS
+OBS_DIM = 18
+
+
+def _sigmoid(x: float) -> float:
+    return 1.0 / (1.0 + math.exp(-max(-30.0, min(30.0, x))))
+
+
+def encode_obs(ctx: AgentContext, valuation: ValuationSignal) -> np.ndarray:
+    """AgentContext + ValuationSignal → fixed-width observation (OBS_DIM)."""
+    m = ctx.market
+    mid = float(m.mid_price) if m.mid_price is not None else (float(m.last_price) if m.last_price is not None else PRICE_REF)
+    mid = max(mid, 1e-3)
+    bb = float(m.best_bid) if m.best_bid is not None else None
+    ba = float(m.best_ask) if m.best_ask is not None else None
+    spread = ((ba - bb) / mid) if (bb is not None and ba is not None) else 0.0
+    last = float(m.last_price) if m.last_price is not None else mid
+    hour = ctx.state.sim_ts.hour + ctx.state.sim_ts.minute / 60.0
+    cap = max(ctx.params.battery_kwh, 1e-3)
+    pr = PRICE_REF
+    return np.array(
+        [
+            ctx.state.pv_kw / max(ctx.params.pv_kw_peak, 1e-3),
+            ctx.state.load_kw / max(ctx.params.load_kw_base * 2.0, 1e-3),
+            ctx.battery.soc_frac,
+            math.sin(2 * math.pi * hour / 24.0),
+            math.cos(2 * math.pi * hour / 24.0),
+            (bb - mid) / mid if bb is not None else 0.0,
+            (ba - mid) / mid if ba is not None else 0.0,
+            mid / pr,
+            spread,
+            last / pr,
+            # valuation channels (design note §5.2)
+            valuation.surplus_kwh / cap,
+            valuation.deficit_kwh / cap,
+            valuation.fair_buy_price / pr,
+            valuation.fair_sell_price / pr,
+            valuation.battery_sell_price / pr,
+            valuation.battery_buy_price / pr,
+            valuation.soc_pressure,
+            ctx.open_orders_net_kwh / cap,
+        ],
+        dtype=np.float32,
+    )
+
+
+def _logit(p: float) -> float:
+    p = min(1.0 - 1e-3, max(1e-3, p))
+    return max(-5.0, min(5.0, math.log(p / (1.0 - p))))
+
+
+def encode_action(action: StrategyAction) -> np.ndarray:
+    """StrategyAction → a raw policy vector that decode_action maps back to it — the
+    supervised target for behavior cloning. Inverse of decode_action up to the squash
+    clamps; modes outside the PPO set clone to NOOP."""
+    vec = np.full(ACTION_DIM, -1.0, dtype=np.float32)
+    try:
+        idx = PRIMITIVE_MODES.index(action.mode)
+    except ValueError:
+        idx = 0  # NOOP
+    vec[idx] = 1.0
+    p = vec[N_MODES:]
+    p[0] = _logit(action.aggressiveness)
+    p[1] = _logit(action.qty_fraction)
+    bps = max(-1.0 + 1e-3, min(1.0 - 1e-3, action.price_offset_bps / 50.0))
+    p[2] = max(-5.0, min(5.0, math.atanh(bps)))
+    p[3] = _logit(action.soc_target)
+    return vec
+
+
+def decode_action(vec: np.ndarray) -> StrategyAction:
+    """Raw policy vector (ACTION_DIM) → a bounded StrategyAction. The first N_MODES
+    components are mode logits (argmax picks the primitive); the rest are squashed
+    into their parameter ranges."""
+    vec = np.asarray(vec, dtype=np.float32).flatten()
+    mode = PRIMITIVE_MODES[int(np.argmax(vec[:N_MODES]))]
+    p = vec[N_MODES:]
+    return StrategyAction(
+        mode=mode,
+        aggressiveness=_sigmoid(float(p[0])),
+        qty_fraction=_sigmoid(float(p[1])),
+        price_offset_bps=math.tanh(float(p[2])) * 50.0,
+        soc_target=_sigmoid(float(p[3])),
+    )

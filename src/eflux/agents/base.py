@@ -29,6 +29,38 @@ class OrderIntent:
 
 
 @dataclass
+class CancelIntent:
+    """Cancel a resting order this VPP owns, by engine order id."""
+
+    order_id: int
+
+
+@dataclass
+class ReplaceIntent:
+    """Atomically reprice/resize a resting order this VPP owns. The runner may
+    implement it as cancel-then-submit; the compiler emits it so a strategy can
+    reprice stale quotes without a gap in the book."""
+
+    order_id: int
+    new_price: Decimal
+    new_qty: Decimal
+
+
+@dataclass
+class OpenOrderView:
+    """Read-only view of one of this VPP's own resting orders, surfaced to the
+    agent so strategy primitives (e.g. CANCEL_REPRICE) can act on stale quotes.
+    Populated by the runner from its open-order tracking."""
+
+    order_id: int
+    side: str
+    price: Decimal
+    remaining_qty: Decimal
+    age_ticks: int = 0
+    dispatched: bool = False
+
+
+@dataclass
 class MarketSnapshot:
     sim_ts: datetime
     best_bid: Decimal | None
@@ -71,6 +103,10 @@ class AgentContext:
     # without it a deficit agent sees only the post-debit sliver and can never
     # price scarcity (the demand_beta mechanism). Populated by the runner.
     open_orders_net_kwh: float = 0.0
+    # This VPP's own resting orders (id, side, price, remaining qty, age). Empty
+    # unless the runner populates it; strategy primitives that cancel/reprice
+    # stale quotes read it. Defaulting to empty keeps existing agents/tests intact.
+    open_orders: list[OpenOrderView] = field(default_factory=list)
 
 
 class BaseAgent(ABC):

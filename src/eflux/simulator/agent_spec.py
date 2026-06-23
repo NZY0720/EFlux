@@ -57,7 +57,7 @@ class AgentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")  # catch YAML typos loudly
 
     name: str = Field(min_length=1, max_length=100)
-    agent: Literal["zi", "truthful", "gas", "reflective"] = "zi"
+    agent: Literal["zi", "truthful", "gas", "strategy", "reflective"] = "zi"
     seed: int | None = None
     # DER portfolio — sparse VPPParams fields (see validate_vpp_params).
     params: dict = Field(default_factory=dict)

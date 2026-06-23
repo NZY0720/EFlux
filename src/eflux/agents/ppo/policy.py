@@ -18,8 +18,19 @@ log = logging.getLogger(__name__)
 
 
 class PPOPolicyWrapper:
-    def __init__(self, checkpoint_path: str | Path) -> None:
+    def __init__(
+        self,
+        checkpoint_path: str | Path,
+        *,
+        env_name: str = "eflux_vpp",
+        env_factory=None,
+    ) -> None:
         self._checkpoint_path = Path(checkpoint_path)
+        # The env the checkpoint was trained with must be registered before
+        # from_checkpoint() rebuilds its env runners. Defaults to the original
+        # single-agent env; the structured-action path passes its own.
+        self._env_name = env_name
+        self._env_factory = env_factory
         self._algo = None  # lazy — Ray init is expensive
         self._module = None
         self._torch = None  # lazy import
@@ -30,18 +41,23 @@ class PPOPolicyWrapper:
         from ray.rllib.algorithms.algorithm import Algorithm
         from ray.tune.registry import register_env
 
-        from eflux.agents.ppo.env import VPPSingleAgentEnv
-
         if not self._checkpoint_path.exists():
             raise FileNotFoundError(f"PPO checkpoint not found: {self._checkpoint_path}")
 
         # Algorithm.from_checkpoint() rebuilds env runners, which look up the env
-        # by name in the Tune registry. The training script registers "eflux_vpp"
-        # but the live backend hasn't — do it now so loading succeeds.
-        register_env("eflux_vpp", lambda config: VPPSingleAgentEnv(config))
+        # by name in the Tune registry. The live backend hasn't registered it — do
+        # it now so loading succeeds.
+        if self._env_factory is not None:
+            register_env(self._env_name, self._env_factory)
+        else:
+            from eflux.agents.ppo.env import VPPSingleAgentEnv
+
+            register_env(self._env_name, lambda config: VPPSingleAgentEnv(config))
 
         log.info("Loading PPO checkpoint from %s", self._checkpoint_path)
-        self._algo = Algorithm.from_checkpoint(str(self._checkpoint_path))
+        # PyArrow (used by from_checkpoint) rejects bare relative paths as "URI has
+        # empty scheme", so always pass an absolute path.
+        self._algo = Algorithm.from_checkpoint(str(self._checkpoint_path.resolve()))
         self._module = self._algo.get_module()  # default policy's RLModule
         import torch
         self._torch = torch
