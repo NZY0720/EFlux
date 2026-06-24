@@ -12,9 +12,13 @@
 #   agent        — zi | truthful | gas | strategy | hybrid (LLM-steered)
 #   seed         — optional RNG seed (defaults to 42 + index)
 #   params       — VPPParams fields; unknown keys are rejected.
-#                  pv_lat/pv_lon are SITE coords: they enable real Open-Meteo data
-#                  for both PV (pvlib) and wind (wind_speed_10m). Stripped when
-#                  EFLUX_PV_PHYSICAL=false or the 'data' extras are missing.
+#                  Real Open-Meteo data (PV via pvlib, wind via wind_speed_10m) is
+#                  enabled fleet-wide by EFLUX_PV_PHYSICAL=true + the 'data' extras.
+#                  When on, every generation-capable VPP is pinned to the configured
+#                  market region's coords (EFLUX_SITE_DEFAULT_* for PV, EFLUX_SITE_WIND_*
+#                  for wind) so weather and the price signal share one region; per-VPP
+#                  pv_lat/pv_lon are therefore not set here. pv_tilt/pv_azimuth still
+#                  configure panel geometry.
 #   agent_params — strategy-class kwargs (for hybrid: HybridPolicyAgent),
 #                  e.g. { demand_beta: 0.5 } for price-responsive bids.
 #   executor     — strategy/hybrid only: { kind: scripted|ppo|ppo_online, checkpoint }.
@@ -34,12 +38,12 @@ vpps:
   - name: ordinary-zi-solar-01
     agent: zi
     params: { pv_kw_peak: 10.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 1.2,
-              pv_lat: 22.28, pv_lon: 114.13, pv_tilt: 22.0, pv_azimuth: 180.0 }
+              pv_tilt: 22.0, pv_azimuth: 180.0 }
   - name: wind-coastal-12
     agent: zi
     params: { pv_kw_peak: 0.0, wind_kw_rated: 8.0, wind_mean_speed: 8.5,
               battery_kwh: 5.0, battery_kw_max: 2.0,
-              load_kw_base: 0.3, pv_lat: 22.20, pv_lon: 114.02 }
+              load_kw_base: 0.3 }
   - name: factory-textile-18
     agent: zi
     params: { pv_kw_peak: 1.0, battery_kwh: 6.0, battery_kw_max: 3.0,
@@ -90,7 +94,7 @@ vpps:
     agent: truthful
     params: { pv_kw_peak: 0.0, wind_kw_rated: 12.0, wind_mean_speed: 9.0,
               battery_kwh: 10.0, battery_kw_max: 4.0,
-              load_kw_base: 0.4, markup_floor: 0.4, pv_lat: 22.28, pv_lon: 114.13 }
+              load_kw_base: 0.4, markup_floor: 0.4 }
   - name: wind-hilltop-13
     agent: truthful
     params: { pv_kw_peak: 0.0, wind_kw_rated: 10.0, wind_mean_speed: 9.0,
@@ -223,7 +227,7 @@ vpps:
     agent: hybrid
     seed: 81
     params: { pv_kw_peak: 9.0, battery_kwh: 18.0, battery_kw_max: 5.0, load_kw_base: 1.5,
-              markup_floor: 0.4, pv_lat: 22.28, pv_lon: 114.13 }
+              markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
     executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
     mirror: true

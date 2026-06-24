@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.valuation import TruthfulValuationOracle
+from eflux.data.electricity_market import synthetic_quote
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
 
@@ -90,6 +91,33 @@ def test_demand_beta_capped_at_price_cap_mult():
         _make_ctx(pv_kw=0.5, load_kw=3.0)
     )
     assert sig.fair_buy_price == 75.0  # capped at 1.5 * 50
+
+
+def test_external_market_quote_clamps_p2p_buy_and_sell_prices():
+    oracle = TruthfulValuationOracle(price_ref=Decimal("50.0"), demand_beta=5.0)
+    buy_ctx = _make_ctx(pv_kw=0.5, load_kw=3.0)
+    buy_ctx.market.external_market = synthetic_quote(
+        price=Decimal("42"),
+        status="real",
+        source="CAISO OASIS RTM",
+    )
+
+    buy_sig = oracle.estimate(buy_ctx)
+
+    assert buy_sig.fair_buy_price == 42.0
+    assert buy_sig.battery_buy_price == 42.0
+
+    sell_ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, markup_floor=0.1)
+    sell_ctx.market.external_market = synthetic_quote(
+        price=Decimal("42"),
+        status="real",
+        source="CAISO OASIS RTM",
+    )
+
+    sell_sig = oracle.estimate(sell_ctx)
+
+    assert sell_sig.fair_sell_price == 42.0
+    assert sell_sig.battery_sell_price == 50.0 / math.sqrt(0.9)
 
 
 def test_soc_signal():

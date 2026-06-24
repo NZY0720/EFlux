@@ -384,7 +384,7 @@ function ManagedPerformancePanel({ data }: { data?: ManagedVPPPerformance }) {
                 <tr>
                   <th className="px-2 py-2 text-left">Time</th>
                   <th className="px-2 py-2 text-left">Side</th>
-                  <th className="px-2 py-2 text-right">Price ($/kWh)</th>
+                  <th className="px-2 py-2 text-right">Price ($/MWh)</th>
                   <th className="px-2 py-2 text-right">Qty (kWh)</th>
                   <th className="px-2 py-2 text-right">Cash ($)</th>
                   <th className="px-2 py-2 text-right">Counterparty</th>
@@ -402,7 +402,9 @@ function ManagedPerformancePanel({ data }: { data?: ManagedVPPPerformance }) {
                     <td className="px-2 py-1.5 text-right text-slate-200 tabular-nums">{Number(t.price).toFixed(2)}</td>
                     <td className="px-2 py-1.5 text-right text-slate-200 tabular-nums">{Number(t.qty).toFixed(4)}</td>
                     <td className="px-2 py-1.5 text-right text-slate-200 tabular-nums">{Number(t.cash).toFixed(4)}</td>
-                    <td className="px-2 py-1.5 text-right text-slate-400">{nameOf(t.counterparty_vpp_id)}</td>
+                    <td className="px-2 py-1.5 text-right text-slate-400">
+                      {t.counterparty ?? nameOf(t.counterparty_vpp_id)}
+                    </td>
                   </tr>
                 ))}
                 {data.recent_trades.length === 0 && (

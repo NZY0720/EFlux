@@ -66,6 +66,14 @@ class TruthfulValuationOracle:
         deficit_frac = min(1.0, unserved_kwh / max(ctx.params.battery_kwh, 1.0))
         fair_buy_price = pr * min(self.price_cap_mult, 1.0 + self.demand_beta * deficit_frac)
 
+        external = ctx.market.external_market
+        if external is not None and external.is_real_price:
+            anchor = float(external.p2p_anchor_price)
+            fair_buy_price = min(fair_buy_price, anchor)
+            fair_sell_price = max(fair_sell_price, anchor)
+            battery_buy_price = min(battery_buy_price, anchor)
+            battery_sell_price = max(battery_sell_price, anchor)
+
         soc_frac = ctx.battery.soc_frac
         return ValuationSignal(
             fair_buy_price=fair_buy_price,

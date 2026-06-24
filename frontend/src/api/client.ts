@@ -4,13 +4,13 @@ import type {
   ManagedVPPPerformance,
   ManagedVPP,
   MarketAgent,
+  MarketEvent,
   MarketReflection,
   MarketSnapshot,
   OrderSubmitResponse,
   Participant,
   SessionInfo,
   SupplyCurve,
-  TradeEvent,
   VPP,
 } from "./types";
 
@@ -118,8 +118,8 @@ export async function fetchSnapshot(depth = 10): Promise<MarketSnapshot> {
   return data;
 }
 
-export async function fetchRecentTrades(limit = 200): Promise<TradeEvent[]> {
-  const { data } = await api.get<TradeEvent[]>("/market/trades", { params: { limit } });
+export async function fetchRecentTrades(limit = 200): Promise<MarketEvent[]> {
+  const { data } = await api.get<MarketEvent[]>("/market/trades", { params: { limit } });
   return data;
 }
 

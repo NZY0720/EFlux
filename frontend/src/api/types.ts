@@ -18,6 +18,7 @@ export interface MarketSnapshot {
   asks: [string, string][];
   num_builtin_vpps: number;
   data_source: DataSourceStatus;
+  external_market: ExternalMarket;
   balance: MarketBalance;
 }
 
@@ -33,6 +34,23 @@ export interface DataSourceStatus {
   sim_ts: string;
   summary: string;
   sources: DataSourceEntry[];
+}
+
+export interface ExternalMarket {
+  region: string;
+  node: string;
+  raw_lmp: string;
+  p2p_anchor_price: string;
+  import_price: string;
+  export_price: string;
+  interval_start: string | null;
+  interval_end: string | null;
+  currency: string;
+  unit: string;
+  status: string;
+  source: string;
+  detail: string;
+  fetched_at: string;
 }
 
 export interface VPP {
@@ -80,11 +98,14 @@ export interface LLMHealth {
 }
 
 export interface ManagedTrade {
-  trade_id: number;
+  trade_id: number | string;
+  kind?: string | null;
   side: "buy" | "sell" | string;
   price: string;
+  raw_lmp?: string | null;
   qty: string;
   cash: string;
+  counterparty?: string | null;
   counterparty_vpp_id: number;
   buy_vpp_id: number;
   sell_vpp_id: number;
@@ -182,10 +203,10 @@ export interface OrderSubmitResponse {
   remaining_qty: string;
   /** Sim time the unfilled remainder is swept by the order TTL; null = rests. */
   expires_at_sim?: string | null;
-  trades: TradeEvent[];
+  trades: Array<TradeEvent | ExternalTradeEvent>;
 }
 
-export type EventKind = "order.submitted" | "order.cancelled" | "trade" | "tick";
+export type EventKind = "order.submitted" | "order.cancelled" | "trade" | "external.trade" | "tick";
 
 export interface BaseEvent {
   kind: EventKind;
@@ -214,14 +235,30 @@ export interface TradeEvent extends BaseEvent {
   qty: string;
 }
 
+export interface ExternalTradeEvent extends BaseEvent {
+  kind: "external.trade";
+  external_trade_id: number;
+  vpp_id: number;
+  side: "buy" | "sell" | string;
+  price: string;
+  raw_lmp: string;
+  qty: string;
+  region: string;
+  node: string;
+  counterparty: string;
+  interval_start: string | null;
+  interval_end: string | null;
+}
+
 export interface TickEvent extends BaseEvent {
   kind: "tick";
   tick_no: number;
   best_bid: string | null;
   best_ask: string | null;
   last_price: string | null;
+  external_price: string | null;
   bid_depth: string;
   ask_depth: string;
 }
 
-export type MarketEvent = OrderEvent | TradeEvent | TickEvent;
+export type MarketEvent = OrderEvent | TradeEvent | ExternalTradeEvent | TickEvent;

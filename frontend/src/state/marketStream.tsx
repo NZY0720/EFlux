@@ -36,6 +36,8 @@ function keyOf(e: MarketEvent): string {
   switch (e.kind) {
     case "trade":
       return `trade-${e.trade_id}`;
+    case "external.trade":
+      return `external-trade-${e.external_trade_id}`;
     case "tick":
       return `tick-${e.tick_no}`;
     default:

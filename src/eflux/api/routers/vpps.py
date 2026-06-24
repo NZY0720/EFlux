@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, ValidationError
@@ -10,6 +11,7 @@ from sqlalchemy import select
 
 from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
 from eflux.db.models import VPP
+from eflux.market.units import internal_cash_to_usd
 from eflux.simulator.agent_spec import validate_vpp_params
 
 router = APIRouter(prefix="/vpps", tags=["vpps"])
@@ -45,11 +47,14 @@ class ManagedVPPOut(BaseModel):
 
 
 class ManagedTradeOut(BaseModel):
-    trade_id: int
+    trade_id: int | str
+    kind: str | None = None
     side: str
-    price: str
+    price: str  # $/MWh
+    raw_lmp: str | None = None  # $/MWh
     qty: str
-    cash: str
+    cash: str  # USD (converted from internal $/MWh x kWh units; see market.units)
+    counterparty: str | None = None
     counterparty_vpp_id: int
     buy_vpp_id: int
     sell_vpp_id: int
@@ -86,7 +91,7 @@ class LLMHealthOut(BaseModel):
 class ManagedVPPPerformanceOut(BaseModel):
     id: int
     name: str
-    pnl: str
+    pnl: str  # USD (converted from internal $/MWh x kWh units; see market.units)
     cumulative_energy_bought_kwh: float
     cumulative_energy_sold_kwh: float
     soc_kwh: float
@@ -189,15 +194,22 @@ async def get_my_managed_vpp_performance(
     return ManagedVPPPerformanceOut(
         id=vpp.vpp_id,
         name=vpp.name,
-        pnl=str(vpp.state.pnl),
+        pnl=str(internal_cash_to_usd(vpp.state.pnl)),
         cumulative_energy_bought_kwh=vpp.state.cumulative_energy_bought_kwh,
         cumulative_energy_sold_kwh=vpp.state.cumulative_energy_sold_kwh,
         soc_kwh=vpp.battery.soc_kwh,
         soc_frac=vpp.battery.soc_frac,
-        recent_trades=[ManagedTradeOut(**t) for t in vpp.recent_trades[:25]],
+        recent_trades=[_managed_trade_out(t) for t in vpp.recent_trades[:25]],
         reflections=reflections,
         llm_health=health,
     )
+
+
+def _managed_trade_out(record: dict) -> ManagedTradeOut:
+    # Trade `price`/`raw_lmp` stay in $/MWh; only the settled `cash` total is
+    # converted from internal units to USD for display (see market.units).
+    out = {**record, "cash": str(internal_cash_to_usd(Decimal(str(record["cash"]))))}
+    return ManagedTradeOut(**out)
 
 
 @router.post("", response_model=VPPOut, status_code=status.HTTP_201_CREATED)

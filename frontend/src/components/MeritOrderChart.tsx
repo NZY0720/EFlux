@@ -128,7 +128,7 @@ export default function MeritOrderChart() {
     },
     yAxis: {
       type: "value",
-      name: "price ($/kWh)",
+      name: "price ($/MWh)",
       nameTextStyle: { color: "#64748b", fontSize: 11 },
       axisLabel: { color: "#94a3b8" },
       splitLine: { lineStyle: { color: "#1e293b" } },
@@ -142,9 +142,9 @@ export default function MeritOrderChart() {
         const v = p.value as number[];
         if (v.length >= 4) {
           const qty = v[1] - v[0];
-          return `${v[3]}<br/>${p.seriesName} · ${qty.toFixed(3)} kWh @ ${v[2].toFixed(2)} $/kWh`;
+          return `${v[3]}<br/>${p.seriesName} · ${qty.toFixed(3)} kWh @ ${v[2].toFixed(2)} $/MWh`;
         }
-        return `Demand · ${v[1].toFixed(2)} $/kWh at ${v[0].toFixed(3)} kWh`;
+        return `Demand · ${v[1].toFixed(2)} $/MWh at ${v[0].toFixed(3)} kWh`;
       },
     },
     series: [

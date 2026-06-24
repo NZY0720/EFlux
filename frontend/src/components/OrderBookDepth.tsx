@@ -47,7 +47,7 @@ export default function OrderBookDepth({ snapshot }: Props) {
     xAxis: {
       type: "value",
       scale: true,
-      name: "price ($/kWh)",
+      name: "price ($/MWh)",
       nameLocation: "middle",
       nameGap: 28,
       nameTextStyle: { color: "#64748b", fontSize: 11 },

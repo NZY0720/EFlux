@@ -43,7 +43,18 @@ export default function MarketOverview() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">
           <CardTitle icon={BoltIcon}>Price</CardTitle>
-          <PriceChart events={recent} initialPrice={snapshot?.last_price ? Number(snapshot.last_price) : null} />
+          <PriceChart
+            events={recent}
+            initialPrice={snapshot?.last_price ? Number(snapshot.last_price) : null}
+            initialExternalPrice={
+              // Only seed the CAISO line from a live (real/fallback) feed.
+              snapshot?.external_market &&
+              (snapshot.external_market.status === "real" || snapshot.external_market.status === "fallback") &&
+              snapshot.external_market.raw_lmp
+                ? Number(snapshot.external_market.raw_lmp)
+                : null
+            }
+          />
         </section>
         <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">
           <CardTitle icon={ScaleIcon}>Order book depth</CardTitle>

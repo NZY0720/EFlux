@@ -43,7 +43,17 @@ class Settings(BaseSettings):
     # up in the book. Must exceed the agents' 30-tick quote cadence or the
     # book flickers empty between re-quotes.
     order_ttl_sec: float = 180.0
-    site_timezone: str = "Asia/Hong_Kong"
+    site_timezone: str = "America/Los_Angeles"
+    market_region: str = "caiso_sp15"
+    external_market_enabled: bool = True
+    external_market_poll_sec: float = 60.0
+    external_market_node: str = "TH_SP15_GEN-APND"
+    external_market_fallback_price: float = 50.0
+    external_market_transaction_fee: float = 2.0
+    site_default_lat: float = 34.05
+    site_default_lon: float = -118.25
+    site_wind_lat: float = 33.90
+    site_wind_lon: float = -116.60
     # Built-in VPP roster (relative paths resolve against the project root).
     scenario_file: str = "scenarios/default.yaml"
     # Cost diversification: spread each non-LLM agent's price_ref by ±this

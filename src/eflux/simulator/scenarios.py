@@ -250,11 +250,20 @@ def _diversify_cost(
 
 
 def _build_params(spec: AgentSpec, use_real_weather: bool) -> VPPParams:
+    settings = get_settings()
     params_dict = dict(spec.params)
     if not use_real_weather:
         # Strip site coords → no Open-Meteo fetch, stub PV + wind models.
         params_dict.pop("pv_lat", None)
         params_dict.pop("pv_lon", None)
+    elif params_dict.get("wind_kw_rated", 0.0) > 0:
+        # The configured market region is CAISO SP15, so any real-weather DER
+        # should use the same regional weather signal rather than legacy HK coords.
+        params_dict["pv_lat"] = settings.site_wind_lat
+        params_dict["pv_lon"] = settings.site_wind_lon
+    elif params_dict.get("pv_kw_peak", 0.0) > 0:
+        params_dict["pv_lat"] = settings.site_default_lat
+        params_dict["pv_lon"] = settings.site_default_lon
     # Build from the *validated/coerced* dict, not the raw YAML values —
     # from_dict alone would happily store battery_kwh: "12" (a string) and
     # blow up mid-run on the first arithmetic touch.

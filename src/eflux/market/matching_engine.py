@@ -56,6 +56,7 @@ class MatchingEngine:
         order_id: int | None = None,
         ttl_sec: float | None = None,
         dispatched: bool = False,
+        rest_unfilled: bool = True,
     ) -> MatchResult:
         if side not in ("buy", "sell"):
             raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
@@ -80,7 +81,7 @@ class MatchingEngine:
 
         trades = self._match(order, sim_ts=sim_ts, wall_ts=wall_ts)
 
-        if order.remaining_qty > 0:
+        if order.remaining_qty > 0 and rest_unfilled:
             self.book.add(order)
             self.publish(
                 OrderEvent(
@@ -200,7 +201,7 @@ class MatchingEngine:
         here is "skip": same-owner makers are passed over (left resting) and the
         taker matches the next genuine counterparty, or rests if none remains.
         """
-        for level in self.book._book(opposite_side).values():  # noqa: SLF001  best-price first
+        for level in self.book._book(opposite_side).values():  # best-price first
             if taker.side == "buy" and taker.price < level.price:
                 break  # asks ascending — no deeper level can cross
             if taker.side == "sell" and taker.price > level.price:

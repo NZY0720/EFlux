@@ -68,6 +68,7 @@ async def fetch_hourly(
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
         "hourly": ",".join(HOURLY_FIELDS),
+        "wind_speed_unit": "ms",
         "timezone": "UTC",
     }
     endpoint = _endpoint_for(end)
@@ -130,6 +131,7 @@ def fetch_hourly_sync(
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
         "hourly": ",".join(HOURLY_FIELDS),
+        "wind_speed_unit": "ms",
         "timezone": "UTC",
     }
     endpoint = _endpoint_for(end)

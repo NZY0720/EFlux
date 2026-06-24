@@ -19,8 +19,14 @@ from eflux.agents.base import AgentContext, BaseAgent, MarketSnapshot, OrderInte
 from eflux.agents.hybrid import RiskGate, RiskLimits, RiskRejected
 from eflux.bridge.bus import EventBus
 from eflux.config import get_settings
+from eflux.data.electricity_market import (
+    CaisoOasisClient,
+    ExternalMarketQuote,
+    disabled_quote,
+    synthetic_quote,
+)
 from eflux.market.clock import RollingClock
-from eflux.market.events import EventKind, TickEvent, TradeEvent
+from eflux.market.events import EventKind, ExternalTradeEvent, TickEvent, TradeEvent
 from eflux.market.matching_engine import MatchingEngine
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad, WindTurbine
@@ -54,7 +60,7 @@ class Simulator:
         self.bus = bus
         # Rolling log of recent trades so late-joining clients (page loads,
         # WS reconnects) can backfill instead of starting from a blank chart.
-        self.trade_log: deque[TradeEvent] = deque(maxlen=500)
+        self.trade_log: deque[TradeEvent | ExternalTradeEvent] = deque(maxlen=500)
         self.engine = MatchingEngine(publish_cb=self._publish_event)
         self.clock = RollingClock(
             sim_epoch=sim_epoch or _default_sim_epoch(settings.site_timezone),
@@ -86,12 +92,30 @@ class Simulator:
         # and today/future forecast days are deliberately not disk-cached.
         self._site_weather_cache: dict[tuple[float, float], object] = {}
         self._next_vpp_id = -1  # internal VPPs use negative ids to avoid clashing with DB ids
+        self._next_external_trade_id = 1
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
+        self._external_market_task: asyncio.Task | None = None
         self._data_source_status: dict | None = None
+        fallback_price = Decimal(str(settings.external_market_fallback_price))
+        if settings.external_market_enabled:
+            self.external_market_client = CaisoOasisClient()
+            self._external_market_quote: ExternalMarketQuote = synthetic_quote(
+                region=settings.market_region,
+                node=settings.external_market_node,
+                price=fallback_price,
+                detail="Waiting for first CAISO OASIS refresh.",
+            )
+        else:
+            self.external_market_client = None
+            self._external_market_quote = disabled_quote(
+                region=settings.market_region,
+                node=settings.external_market_node,
+                fallback_price=fallback_price,
+            )
 
     def _publish_event(self, event) -> None:
-        if isinstance(event, TradeEvent):
+        if isinstance(event, (TradeEvent, ExternalTradeEvent)):
             self.trade_log.append(event)
         self.bus.publish(event)
 
@@ -162,31 +186,41 @@ class Simulator:
         """Check which data source each built-in VPP is currently using."""
         checked_at = datetime.now(UTC)
         sim_ts = self.clock.now_sim()
-        sources: list[dict[str, str]] = []
+        weather_sources: list[dict[str, str]] = []
         for vpp in self.vpps.values():
             # Only report components a VPP actually has — with 30 VPPs the
             # banner would otherwise drown in "no PV configured" noise.
             if vpp.params.pv_kw_peak > 0:
-                sources.append(self._pv_source_for(vpp, sim_ts))
+                weather_sources.append(self._pv_source_for(vpp, sim_ts))
             if vpp.wind is not None:
-                sources.append(self._wind_source_for(vpp, sim_ts))
-        active_real = [s for s in sources if s["status"] == "real"]
-        fallback = [s for s in sources if s["status"] == "fallback"]
+                weather_sources.append(self._wind_source_for(vpp, sim_ts))
+        active_real = [s for s in weather_sources if s["status"] == "real"]
+        fallback = [s for s in weather_sources if s["status"] == "fallback"]
 
         if active_real and not fallback:
-            summary = "Open-Meteo + pvlib"
+            weather_summary = "Open-Meteo + pvlib"
         elif active_real and fallback:
-            summary = "Mixed PV sources"
+            weather_summary = "Mixed PV sources"
         elif fallback:
-            summary = "Synthetic PV fallback"
+            weather_summary = "Synthetic PV fallback"
         else:
-            summary = "Synthetic profiles"
+            weather_summary = "Synthetic profiles"
+
+        external_source = self._external_market_source_for()
+        if external_source["status"] == "real":
+            price_summary = "CAISO OASIS RTM"
+        elif external_source["status"] == "fallback":
+            price_summary = "CAISO OASIS DAM"
+        elif external_source["status"] == "disabled":
+            price_summary = "External market disabled"
+        else:
+            price_summary = "Synthetic CAISO price"
 
         self._data_source_status = {
             "checked_at": checked_at,
             "sim_ts": sim_ts,
-            "summary": summary,
-            "sources": sources,
+            "summary": f"{weather_summary} + {price_summary}",
+            "sources": [*weather_sources, external_source],
         }
 
     def data_source_status(self) -> dict:
@@ -198,6 +232,25 @@ class Simulator:
         ).total_seconds() > self.DATA_SOURCE_TTL_SEC:
             self.refresh_data_sources()
         return self._data_source_status or {}
+
+    def external_market_quote(self) -> ExternalMarketQuote:
+        return self._external_market_quote
+
+    def _external_market_source_for(self) -> dict[str, str]:
+        q = self._external_market_quote
+        detail = q.detail
+        if q.interval_start is not None and q.interval_end is not None:
+            detail = (
+                f"{detail} Raw LMP {q.raw_lmp} {q.unit}; "
+                f"import {q.import_price}, export {q.export_price}; interval "
+                f"{q.interval_start.isoformat()} to {q.interval_end.isoformat()}."
+            )
+        return {
+            "component": "CAISO SP15 electricity price",
+            "status": q.status,
+            "source": q.source,
+            "detail": detail,
+        }
 
     def _pv_source_for(self, vpp: SimulatorVPP, sim_ts: datetime) -> dict[str, str]:
         model = vpp.pv.physical_model
@@ -358,28 +411,57 @@ class Simulator:
                 self._record_rejections(vpp_id, len(decision.rejected) or 1)
                 reason = decision.rejected[0].reason if decision.rejected else "rejected by risk gate"
                 raise RiskRejected(reason)
+            intent = decision.accepted[0]
+            external_quote = self._external_quote_for_intent(intent)
             result = self.engine.submit(
                 vpp_id=vpp_id,
-                side=side,
-                price=price,
-                qty=qty,
+                side=intent.side,
+                price=intent.price,
+                qty=intent.qty,
                 sim_ts=now_sim,
                 wall_ts=now_wall,
                 ttl_sec=self.order_ttl_sec or None,
+                rest_unfilled=external_quote is None,
             )
             self._record_trades(result.trades)
+            external_events: list[ExternalTradeEvent] = []
+            if external_quote is not None and result.order.remaining_qty > 0:
+                # SDK/REST VPPs carry no in-memory state here (see above), so the
+                # external fill is only *published* (for the tape/chart/WS) — unlike
+                # the built-in path in _submit_intent, it is not applied to a
+                # SimulatorVPP. Ownership accounting for these orders lives at the
+                # REST layer.
+                external_events.append(
+                    self._publish_external_trade_for_vpp_id(
+                        vpp_id=vpp_id,
+                        side=intent.side,
+                        qty=result.order.remaining_qty,
+                        quote=external_quote,
+                        sim_ts=now_sim,
+                    )
+                )
+                result.order.remaining_qty = Decimal("0")
         return {
             "order_id": result.order.order_id,
             "remaining_qty": str(result.order.remaining_qty),
             # Surface the TTL so API integrators know unfilled remainders are
             # swept at this sim time (order.cancelled event) instead of resting.
             "expires_at_sim": result.order.expires_at,
-            "trades": [t.model_dump(mode="json") for t in result.trades],
+            "trades": [
+                *[t.model_dump(mode="json") for t in result.trades],
+                *[t.model_dump(mode="json") for t in external_events],
+            ],
         }
 
     async def start(self) -> None:
         if self._task is not None:
             return
+        settings = get_settings()
+        if settings.external_market_enabled and self._external_market_task is None:
+            self._external_market_task = asyncio.create_task(
+                self._run_external_market_poll(), name="external-market-loop"
+            )
+            self._external_market_task.add_done_callback(_log_unexpected_loop_exit)
         self._task = asyncio.create_task(self._run(), name="simulator-loop")
         self._task.add_done_callback(_log_unexpected_loop_exit)
 
@@ -391,7 +473,31 @@ class Simulator:
             except TimeoutError:
                 self._task.cancel()
             self._task = None
+        if self._external_market_task is not None:
+            self._external_market_task.cancel()
+            await asyncio.gather(self._external_market_task, return_exceptions=True)
+            self._external_market_task = None
         await self._shutdown_reflections()
+
+    async def _run_external_market_poll(self) -> None:
+        settings = get_settings()
+        poll_sec = max(5.0, settings.external_market_poll_sec)
+        while True:
+            await self._refresh_external_market_once()
+            await asyncio.sleep(poll_sec)
+
+    async def _refresh_external_market_once(self) -> None:
+        settings = get_settings()
+        if self.external_market_client is None:
+            return
+        quote = await self.external_market_client.fetch_latest_quote(
+            region=settings.market_region,
+            node=settings.external_market_node,
+            fallback_price=Decimal(str(settings.external_market_fallback_price)),
+            transaction_fee=Decimal(str(settings.external_market_transaction_fee)),
+        )
+        self._external_market_quote = quote
+        self._data_source_status = None
 
     async def _shutdown_reflections(self) -> None:
         """Cancel in-flight LLM guidance/reflection tasks and close the shared client.
@@ -459,7 +565,11 @@ class Simulator:
             async with self._lock:
                 self._expire_orders(sim_ts)
                 snapshot = self.engine.snapshot(depth_levels=5)
-                market_snap = MarketSnapshot.from_engine(sim_ts, snapshot)
+                market_snap = MarketSnapshot.from_engine(
+                    sim_ts,
+                    snapshot,
+                    external_market=self._external_market_quote,
+                )
                 market_snap.recent_trades = self._recent_market_trades()
                 market_snap.peer_reflections = self._peer_reflections()
                 open_orders_net = self._open_orders_net_by_vpp()
@@ -490,6 +600,14 @@ class Simulator:
                         best_bid=bb.price if bb else None,
                         best_ask=ba.price if ba else None,
                         last_price=self.engine.last_price,
+                        # Only surface a CAISO price when it reflects a live feed
+                        # (real/fallback). Synthetic/disabled would otherwise draw a
+                        # flat line at the configured fallback and imply a feed.
+                        external_price=(
+                            self._external_market_quote.raw_lmp
+                            if self._external_market_quote.is_real_price
+                            else None
+                        ),
                         bid_depth=bb.total_qty if bb else Decimal("0"),
                         ask_depth=ba.total_qty if ba else Decimal("0"),
                     )
@@ -500,6 +618,19 @@ class Simulator:
         learning agents (who is trading with whom, and at what price)."""
         out: list[dict] = []
         for t in list(self.trade_log)[-limit:]:
+            if isinstance(t, ExternalTradeEvent):
+                vpp = self.vpps.get(t.vpp_id)
+                vpp_name = vpp.name if vpp else f"external-{t.vpp_id}"
+                out.append(
+                    {
+                        "price": float(t.price),
+                        "qty": float(t.qty),
+                        "buyer": vpp_name if t.side == "buy" else t.counterparty,
+                        "seller": t.counterparty if t.side == "buy" else vpp_name,
+                        "external": True,
+                    }
+                )
+                continue
             buyer = self.vpps.get(t.buy_vpp_id)
             seller = self.vpps.get(t.sell_vpp_id)
             out.append(
@@ -704,6 +835,7 @@ class Simulator:
 
     def _submit_intent(self, vpp: SimulatorVPP, intent: OrderIntent, sim_ts: datetime) -> None:
         try:
+            external_quote = self._external_quote_for_intent(intent)
             result = self.engine.submit(
                 vpp_id=vpp.vpp_id,
                 side=intent.side,
@@ -713,6 +845,7 @@ class Simulator:
                 wall_ts=datetime.now(UTC),
                 ttl_sec=self.order_ttl_sec or None,
                 dispatched=intent.dispatched,
+                rest_unfilled=external_quote is None,
             )
             # Debit the untraded balance for the quoted quantity — the agent has
             # now "spoken for" that energy, whether or not the order fills.
@@ -721,16 +854,116 @@ class Simulator:
             if not intent.dispatched:
                 signed = -float(intent.qty) if intent.side == "sell" else float(intent.qty)
                 vpp.state.pending_net_kwh += signed
+            if external_quote is not None and result.order.remaining_qty > 0:
+                self._settle_external_trade(
+                    vpp,
+                    side=intent.side,
+                    qty=result.order.remaining_qty,
+                    quote=external_quote,
+                    sim_ts=sim_ts,
+                )
+                result.order.remaining_qty = Decimal("0")
             if result.order.remaining_qty > 0:
                 vpp.open_order_ids.append(result.order.order_id)
             self._record_trades(result.trades)
         except ValueError:
             log.exception("VPP %s submitted an invalid order", vpp.vpp_id)
 
+    def _external_quote_for_intent(self, intent: OrderIntent) -> ExternalMarketQuote | None:
+        if intent.dispatched:
+            return None
+        quote = self._external_market_quote
+        if not quote.external_trading_enabled:
+            return None
+        if intent.side == "buy" and intent.price >= quote.import_price:
+            return quote
+        if intent.side == "sell" and intent.price <= quote.export_price:
+            return quote
+        return None
+
+    def _settle_external_trade(
+        self,
+        vpp: SimulatorVPP,
+        *,
+        side: str,
+        qty: Decimal,
+        quote: ExternalMarketQuote,
+        sim_ts: datetime,
+    ) -> ExternalTradeEvent:
+        event = self._publish_external_trade_for_vpp_id(
+            vpp_id=vpp.vpp_id,
+            side=side,
+            qty=qty,
+            quote=quote,
+            sim_ts=sim_ts,
+        )
+        self._apply_external_trade_to_vpp(event)
+        return event
+
+    def _publish_external_trade_for_vpp_id(
+        self,
+        *,
+        vpp_id: int,
+        side: str,
+        qty: Decimal,
+        quote: ExternalMarketQuote,
+        sim_ts: datetime,
+    ) -> ExternalTradeEvent:
+        event = ExternalTradeEvent(
+            external_trade_id=self._alloc_external_trade_id(),
+            sim_ts=sim_ts,
+            wall_ts=datetime.now(UTC),
+            vpp_id=vpp_id,
+            side=side,
+            price=quote.import_price if side == "buy" else quote.export_price,
+            raw_lmp=quote.raw_lmp,
+            qty=qty,
+            region=quote.region,
+            node=quote.node,
+            counterparty="CAISO SP15",
+            interval_start=quote.interval_start,
+            interval_end=quote.interval_end,
+        )
+        self._publish_event(event)
+        return event
+
+    def _alloc_external_trade_id(self) -> int:
+        tid = self._next_external_trade_id
+        self._next_external_trade_id += 1
+        return tid
+
     def _record_trades(self, trades: list[TradeEvent]) -> None:
         for trade in trades:
             self._apply_trade_to_vpp(trade, side="buy")
             self._apply_trade_to_vpp(trade, side="sell")
+
+    def _apply_external_trade_to_vpp(self, trade: ExternalTradeEvent) -> None:
+        vpp = self.vpps.get(trade.vpp_id)
+        if vpp is None:
+            return
+
+        qty_f = float(trade.qty)
+        cash = Decimal(str(float(trade.price) * qty_f))
+        self._settle_cash_and_energy(vpp, side=trade.side, qty_f=qty_f, cash=cash)
+
+        self._push_recent_trade(
+            vpp,
+            {
+                "trade_id": f"external-{trade.external_trade_id}",
+                "kind": trade.kind,
+                "side": trade.side,
+                "price": str(trade.price),
+                "raw_lmp": str(trade.raw_lmp),
+                "qty": str(trade.qty),
+                "cash": str(cash),
+                "counterparty": trade.counterparty,
+                "counterparty_vpp_id": 0,
+                "buy_vpp_id": trade.vpp_id if trade.side == "buy" else 0,
+                "sell_vpp_id": 0 if trade.side == "buy" else trade.vpp_id,
+                "sim_ts": trade.sim_ts,
+                "wall_ts": trade.wall_ts,
+            },
+        )
 
     def _apply_trade_to_vpp(self, trade: TradeEvent, *, side: str) -> None:
         vpp_id = trade.buy_vpp_id if side == "buy" else trade.sell_vpp_id
@@ -740,9 +973,31 @@ class Simulator:
 
         qty_f = float(trade.qty)
         cash = Decimal(str(float(trade.price) * qty_f))
-        tick_h = self._current_tick_h
         counterparty = trade.sell_vpp_id if side == "buy" else trade.buy_vpp_id
+        self._settle_cash_and_energy(vpp, side=side, qty_f=qty_f, cash=cash)
 
+        self._push_recent_trade(
+            vpp,
+            {
+                "trade_id": trade.trade_id,
+                "side": side,
+                "price": str(trade.price),
+                "qty": str(trade.qty),
+                "cash": str(cash),
+                "counterparty_vpp_id": counterparty,
+                "buy_vpp_id": trade.buy_vpp_id,
+                "sell_vpp_id": trade.sell_vpp_id,
+                "sim_ts": trade.sim_ts,
+                "wall_ts": trade.wall_ts,
+            },
+        )
+
+    def _settle_cash_and_energy(
+        self, vpp: SimulatorVPP, *, side: str, qty_f: float, cash: Decimal
+    ) -> None:
+        """Apply a fill's cash, energy counters, and battery SoC to a VPP. Shared
+        by internal (P2P) and external (CAISO) settlement so the two can't drift."""
+        tick_h = self._current_tick_h
         if side == "buy":
             vpp.state.pnl -= cash
             vpp.state.cumulative_energy_bought_kwh += qty_f
@@ -752,18 +1007,7 @@ class Simulator:
             vpp.state.cumulative_energy_sold_kwh += qty_f
             vpp.battery.discharge(power_kw=qty_f / max(1e-9, tick_h), duration_h=tick_h)
 
-        record = {
-            "trade_id": trade.trade_id,
-            "side": side,
-            "price": str(trade.price),
-            "qty": str(trade.qty),
-            "cash": str(cash),
-            "counterparty_vpp_id": counterparty,
-            "buy_vpp_id": trade.buy_vpp_id,
-            "sell_vpp_id": trade.sell_vpp_id,
-            "sim_ts": trade.sim_ts,
-            "wall_ts": trade.wall_ts,
-        }
+    def _push_recent_trade(self, vpp: SimulatorVPP, record: dict) -> None:
         vpp.recent_trades.insert(0, record)
         vpp.recent_trades = vpp.recent_trades[:50]
         record_trade = getattr(vpp.agent, "record_trade", None)

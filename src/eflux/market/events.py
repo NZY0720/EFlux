@@ -4,16 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class EventKind(str, Enum):
+class EventKind(StrEnum):
     ORDER_SUBMITTED = "order.submitted"
     ORDER_CANCELLED = "order.cancelled"
     TRADE = "trade"
+    EXTERNAL_TRADE = "external.trade"
     TICK = "tick"
 
 
@@ -46,6 +47,21 @@ class TradeEvent(_Base):
     qty: Decimal
 
 
+class ExternalTradeEvent(_Base):
+    kind: Literal[EventKind.EXTERNAL_TRADE] = Field(default=EventKind.EXTERNAL_TRADE)
+    external_trade_id: int
+    vpp_id: int
+    side: str
+    price: Decimal
+    raw_lmp: Decimal
+    qty: Decimal
+    region: str
+    node: str
+    counterparty: str = "CAISO SP15"
+    interval_start: datetime | None = None
+    interval_end: datetime | None = None
+
+
 class TickEvent(_Base):
     """Periodic clock tick. Carries a market snapshot summary."""
 
@@ -54,8 +70,9 @@ class TickEvent(_Base):
     best_bid: Decimal | None = None
     best_ask: Decimal | None = None
     last_price: Decimal | None = None
+    external_price: Decimal | None = None
     bid_depth: Decimal = Decimal("0")
     ask_depth: Decimal = Decimal("0")
 
 
-MarketEvent = OrderEvent | TradeEvent | TickEvent
+MarketEvent = OrderEvent | TradeEvent | ExternalTradeEvent | TickEvent

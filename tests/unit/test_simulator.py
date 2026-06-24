@@ -12,6 +12,7 @@ from eflux.agents.truthful import TruthfulAgent
 from eflux.agents.zi import ZIAgent
 from eflux.bridge.bus import InMemoryBus
 from eflux.config import get_settings
+from eflux.data.electricity_market import synthetic_quote
 from eflux.simulator.runner import Simulator
 from eflux.vpp.base import VPPParams
 
@@ -32,7 +33,7 @@ def test_data_source_status_reports_startup_check_for_builtin_vpps():
     sim.refresh_data_sources()
     status = sim.data_source_status()
 
-    assert status["summary"] == "Synthetic profiles"
+    assert status["summary"] == "Synthetic profiles + Synthetic CAISO price"
     assert status["checked_at"] is not None
     assert status["sources"][0]["component"] == "stub-vpp PV"
     assert status["sources"][0]["status"] == "synthetic"
@@ -58,7 +59,7 @@ def test_data_source_reports_real_when_weather_covers_sim_hour():
     sim.refresh_data_sources()
     status = sim.data_source_status()
     assert status["sources"][0]["status"] == "real"
-    assert status["summary"] == "Open-Meteo + pvlib"
+    assert status["summary"] == "Open-Meteo + pvlib + Synthetic CAISO price"
 
 
 def test_data_source_status_recheck_after_ttl():
@@ -125,6 +126,49 @@ async def test_concurrent_external_submissions_are_serialized():
     assert bid is not None
     assert bid.total_qty == Decimal("12.5")
     assert len(bid.orders) == n
+
+
+@pytest.mark.asyncio
+async def test_submit_external_routes_remainder_to_caiso_when_book_empty():
+    """An SDK order that crosses the CAISO import price with no P2P liquidity
+    settles fully against the external market: the response carries the external
+    fill, the order does not rest, and the event reaches the tape. The external
+    leg is publish-only on this path (no in-memory VPP), so it lands in trade_log
+    without mutating SimulatorVPP state."""
+    sim = Simulator(bus=InMemoryBus())
+    sim._external_market_quote = synthetic_quote(
+        price=Decimal("40"),
+        status="real",
+        source="CAISO OASIS RTM",
+        transaction_fee=Decimal("2"),
+    )
+
+    result = await sim.submit_external(
+        vpp_id=777, side="buy", price=Decimal("60"), qty=Decimal("1.0")
+    )
+
+    assert result["remaining_qty"] == "0"
+    ext = [t for t in result["trades"] if t["kind"] == "external.trade"]
+    assert len(ext) == 1
+    assert float(ext[0]["price"]) == 42.0  # import_price = raw_lmp 40 + 2 fee
+    assert float(ext[0]["raw_lmp"]) == 40.0
+    assert sim.engine.book.best_bid() is None  # crossed order did not rest
+    assert any(e.kind == "external.trade" for e in sim.trade_log)
+
+
+@pytest.mark.asyncio
+async def test_submit_external_rests_when_quote_not_live():
+    """A synthetic/disabled quote disables external routing, so the same order
+    rests on the book instead of settling against CAISO."""
+    sim = Simulator(bus=InMemoryBus())
+    # default quote is synthetic → external_trading_enabled is False
+    result = await sim.submit_external(
+        vpp_id=778, side="buy", price=Decimal("60"), qty=Decimal("1.0")
+    )
+
+    assert result["remaining_qty"] == "1.0"
+    assert not any(t["kind"] == "external.trade" for t in result["trades"])
+    assert sim.engine.book.best_bid() is not None
 
 
 def test_expired_order_refunds_pending_balance():
@@ -214,6 +258,40 @@ def test_market_balance_reports_aggregates():
     assert balance["net_kw"] == pytest.approx(
         balance["renewable_kw"] - balance["load_kw"], abs=2e-3
     )
+
+
+def test_external_market_settles_remainder_after_p2p_priority():
+    sim = Simulator(bus=InMemoryBus())
+    seller = sim.add_builtin_vpp("seller", VPPParams(), ZIAgent())
+    buyer = sim.add_builtin_vpp("buyer", VPPParams(), ZIAgent())
+    sim._external_market_quote = synthetic_quote(price=Decimal("40"), status="real", source="CAISO OASIS RTM")
+    sim_ts = sim.clock.now_sim()
+    sim._current_tick_h = 1.0
+
+    # Resting P2P bid is cheaper than CAISO but crosses the seller's ask. It
+    # must fill first; only the seller's residual goes to the external market.
+    sim.engine.submit(
+        vpp_id=buyer.vpp_id,
+        side="buy",
+        price=Decimal("38"),
+        qty=Decimal("0.5"),
+        sim_ts=sim_ts,
+        wall_ts=sim_ts,
+    )
+    seller.state.pending_net_kwh = 1.0
+
+    sim._submit_intent(
+        seller,
+        OrderIntent(side="sell", price=Decimal("35"), qty=Decimal("1.0")),
+        sim_ts,
+    )
+
+    assert sim.engine.last_price == Decimal("38")
+    assert sim.engine.snapshot()["asks"] == []
+    assert seller.state.pending_net_kwh == pytest.approx(0.0)
+    assert seller.state.pnl == Decimal("39.0")
+    assert seller.state.cumulative_energy_sold_kwh == pytest.approx(1.0)
+    assert any(e.kind == "external.trade" for e in sim.trade_log)
 
 
 def test_truthful_vpp_trades_within_seconds_via_accumulator():

@@ -174,3 +174,23 @@ def test_scenario_strips_site_coords_when_real_weather_disabled(monkeypatch):
     # No VPP should have ended up with site coords → no weather fetch attempted.
     assert all(v.params.pv_lat is None for v in sim.vpps.values())
     assert all(v.pv.physical_model is None for v in sim.vpps.values())
+
+
+def test_real_weather_coords_migrate_to_caiso_sp15(monkeypatch):
+    monkeypatch.setenv("EFLUX_PV_PHYSICAL", "true")
+    monkeypatch.setattr("eflux.simulator.scenarios._real_pv_available", lambda: True)
+    get_settings.cache_clear()
+    sim = Simulator(bus=InMemoryBus())
+
+    def no_fetch(_params):
+        return None
+
+    sim._fetch_site_weather = no_fetch  # type: ignore[method-assign]
+
+    load_default_scenario(sim)
+
+    wind = next(v for v in sim.vpps.values() if v.params.wind_kw_rated > 0)
+    solar = next(v for v in sim.vpps.values() if v.params.pv_kw_peak > 0 and v.params.wind_kw_rated == 0)
+
+    assert (wind.params.pv_lat, wind.params.pv_lon) == (33.90, -116.60)
+    assert (solar.params.pv_lat, solar.params.pv_lon) == (34.05, -118.25)

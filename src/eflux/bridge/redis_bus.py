@@ -18,7 +18,14 @@ from decimal import Decimal
 import redis.asyncio as aioredis
 
 from eflux.bridge.bus import EventBus
-from eflux.market.events import EventKind, MarketEvent, OrderEvent, TickEvent, TradeEvent
+from eflux.market.events import (
+    EventKind,
+    ExternalTradeEvent,
+    MarketEvent,
+    OrderEvent,
+    TickEvent,
+    TradeEvent,
+)
 
 log = logging.getLogger(__name__)
 
@@ -35,9 +42,14 @@ def _deserialize(payload: dict[str, str]) -> MarketEvent:
     kind = data.get("kind")
     if kind == EventKind.TRADE.value:
         return TradeEvent.model_validate(_decimalize(data, ["price", "qty"]))
+    if kind == EventKind.EXTERNAL_TRADE.value:
+        return ExternalTradeEvent.model_validate(_decimalize(data, ["price", "raw_lmp", "qty"]))
     if kind == EventKind.TICK.value:
         return TickEvent.model_validate(
-            _decimalize(data, ["best_bid", "best_ask", "last_price", "bid_depth", "ask_depth"])
+            _decimalize(
+                data,
+                ["best_bid", "best_ask", "last_price", "external_price", "bid_depth", "ask_depth"],
+            )
         )
     return OrderEvent.model_validate(_decimalize(data, ["price", "qty", "remaining_qty"]))
 
@@ -57,6 +69,8 @@ class RedisStreamBus(EventBus):
         self._client = aioredis.from_url(redis_url, decode_responses=True)
         self._stream_key = stream_key
         self._maxlen = maxlen
+        self._publish_tasks: set[asyncio.Task[None]] = set()
+        self._publish_tail: asyncio.Task[None] | None = None
 
     async def ping(self) -> None:
         """Round-trip a PING so the lifespan can decide whether Redis is up."""
@@ -72,7 +86,28 @@ class RedisStreamBus(EventBus):
         except RuntimeError:
             log.warning("RedisStreamBus.publish called with no running loop — event dropped: %s", event.kind)
             return
-        loop.create_task(self._publish_async(event))
+        # XADD is async but the stream must preserve publish order (clients
+        # backfill the tape/chart from it), so each publish awaits the previous
+        # one before writing. The chain is self-trimming: finished tasks remove
+        # themselves from the set, and each link drops its `previous` reference
+        # once it proceeds. Trade-off: a stalled Redis stalls the whole chain
+        # (head-of-line blocking) rather than dropping or reordering events.
+        previous = self._publish_tail
+
+        async def publish_after_previous() -> None:
+            if previous is not None:
+                try:
+                    await previous
+                except Exception:
+                    # The previous link already logged its own XADD failure; we
+                    # only awaited it for ordering, so don't break the chain.
+                    log.debug("prior publish failed before %s; continuing chain", event.kind)
+            await self._publish_async(event)
+
+        task = loop.create_task(publish_after_previous())
+        self._publish_tail = task
+        self._publish_tasks.add(task)
+        task.add_done_callback(self._publish_tasks.discard)
 
     async def _publish_async(self, event: MarketEvent) -> None:
         try:
@@ -97,4 +132,9 @@ class RedisStreamBus(EventBus):
                         continue
 
     async def close(self) -> None:
+        # Drain in-flight publishes so the tail of the stream isn't lost when the
+        # app shuts down between an XADD being scheduled and awaited.
+        if self._publish_tasks:
+            await asyncio.gather(*self._publish_tasks, return_exceptions=True)
+        self._publish_tail = None
         await self._client.aclose()

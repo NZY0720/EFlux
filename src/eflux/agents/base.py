@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
 
+from eflux.data.electricity_market import ExternalMarketQuote
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
 
@@ -73,14 +74,28 @@ class MarketSnapshot:
     # an agent can filter itself out).
     recent_trades: list[dict] = field(default_factory=list)
     peer_reflections: list[dict] = field(default_factory=list)
+    external_market: ExternalMarketQuote | None = None
 
     @classmethod
-    def from_engine(cls, sim_ts: datetime, snapshot: dict) -> MarketSnapshot:
+    def from_engine(
+        cls,
+        sim_ts: datetime,
+        snapshot: dict,
+        *,
+        external_market: ExternalMarketQuote | None = None,
+    ) -> MarketSnapshot:
         bb = Decimal(snapshot["best_bid"]) if snapshot.get("best_bid") else None
         ba = Decimal(snapshot["best_ask"]) if snapshot.get("best_ask") else None
         last = Decimal(snapshot["last_price"]) if snapshot.get("last_price") else None
         mid = (bb + ba) / 2 if (bb is not None and ba is not None) else last
-        return cls(sim_ts=sim_ts, best_bid=bb, best_ask=ba, last_price=last, mid_price=mid)
+        return cls(
+            sim_ts=sim_ts,
+            best_bid=bb,
+            best_ask=ba,
+            last_price=last,
+            mid_price=mid,
+            external_market=external_market,
+        )
 
 
 @dataclass

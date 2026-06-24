@@ -27,6 +27,7 @@ interface Props {
   events: MarketEvent[];
   windowMs?: number;
   initialPrice?: number | null;
+  initialExternalPrice?: number | null;
 }
 
 const fmtTime = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour12: false });
@@ -41,7 +42,7 @@ const fmtTime = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour1
  * render — no incremental state — so route remounts rebuild full history rather
  * than wiping the chart.
  */
-export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPrice }: Props) {
+export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPrice, initialExternalPrice }: Props) {
   const [mode, setMode] = useState<Mode>("line");
   const [intervalSec, setIntervalSec] = useState<number>(30);
 
@@ -64,6 +65,17 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
     return pts;
   }, [events]);
 
+  const externalPoints = useMemo(() => {
+    const pts: PricePoint[] = [];
+    for (const e of events) {
+      if (e.kind !== "tick" || e.external_price === null || e.external_price === undefined) continue;
+      const price = Number(e.external_price);
+      if (Number.isFinite(price)) pts.push({ ts: new Date(e.wall_ts).getTime(), price });
+    }
+    pts.sort((a, b) => a.ts - b.ts);
+    return pts;
+  }, [events]);
+
   const linePoints = useMemo(() => {
     const cutoff = Date.now() - windowMs;
     const trimmed = points.filter((p) => p.ts >= cutoff);
@@ -72,6 +84,15 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
     }
     return trimmed;
   }, [points, windowMs, initialPrice]);
+
+  const lineExternalPoints = useMemo(() => {
+    const cutoff = Date.now() - windowMs;
+    const trimmed = externalPoints.filter((p) => p.ts >= cutoff);
+    if (trimmed.length === 0 && initialExternalPrice !== null && initialExternalPrice !== undefined) {
+      trimmed.push({ ts: Date.now(), price: initialExternalPrice });
+    }
+    return trimmed;
+  }, [externalPoints, windowMs, initialExternalPrice]);
 
   // OHLC buckets. Points are sorted ascending, so the first in a bucket is the
   // open and the last is the close. Show the most recent ~80 candles.
@@ -100,12 +121,13 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
 
   const lineOption = {
     backgroundColor: "transparent",
-    grid: { left: 50, right: 20, top: 16, bottom: 30 },
+    legend: { top: 0, right: 12, textStyle: { color: "#94a3b8" } },
+    grid: { left: 50, right: 20, top: 32, bottom: 30 },
     xAxis: { type: "time", ...baseAxis },
     yAxis: {
       type: "value",
       scale: true,
-      name: "price ($/kWh)",
+      name: "price ($/MWh)",
       nameTextStyle: { color: "#64748b", fontSize: 11 },
       ...baseAxis,
     },
@@ -113,12 +135,21 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
     series: [
       {
         type: "line",
+        name: "P2P",
         showSymbol: false,
         smooth: false,
         sampling: "lttb",
         data: linePoints.map((p) => [p.ts, p.price]),
         lineStyle: { color: "#38bdf8", width: 1.5 },
         areaStyle: { color: "rgba(56, 189, 248, 0.1)" },
+      },
+      {
+        type: "line",
+        name: "CAISO SP15",
+        showSymbol: false,
+        smooth: false,
+        data: lineExternalPoints.map((p) => [p.ts, p.price]),
+        lineStyle: { color: "#f59e0b", width: 1.5, type: "dashed" },
       },
     ],
     animation: false,
@@ -137,7 +168,7 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
     yAxis: {
       type: "value",
       scale: true,
-      name: "price ($/kWh)",
+      name: "price ($/MWh)",
       nameTextStyle: { color: "#64748b", fontSize: 11 },
       ...baseAxis,
     },

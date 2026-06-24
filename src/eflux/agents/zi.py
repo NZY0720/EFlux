@@ -43,7 +43,12 @@ class ZIAgent(BaseAgent):
             return []  # keep accumulating until the order is worth placing
 
         # Uniform random price in rational range.
-        ref = float(self.price_ref)
+        external = ctx.market.external_market
+        ref = (
+            float(external.p2p_anchor_price)
+            if external is not None and external.is_real_price
+            else float(self.price_ref)
+        )
         spread = ref * self.spread_frac
         if side == "sell":
             # Seller: rational range [ref * (1 - spread), ref * (1 + spread)],

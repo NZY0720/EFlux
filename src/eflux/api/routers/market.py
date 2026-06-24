@@ -9,8 +9,10 @@ from pydantic import BaseModel
 from sqlalchemy import select
 
 from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
+from eflux.data.electricity_market import ExternalMarketQuote
 from eflux.db.models import VPP
-from eflux.market.events import TradeEvent
+from eflux.market.events import ExternalTradeEvent, TradeEvent
+from eflux.market.units import internal_cash_to_usd
 from eflux.simulator.runner import SimulatorVPP
 
 router = APIRouter(prefix="/market", tags=["market"])
@@ -55,6 +57,23 @@ class DataSourceStatus(BaseModel):
     sources: list[DataSourceEntry]
 
 
+class ExternalMarketOut(BaseModel):
+    region: str
+    node: str
+    raw_lmp: str
+    p2p_anchor_price: str
+    import_price: str
+    export_price: str
+    interval_start: datetime | None
+    interval_end: datetime | None
+    currency: str
+    unit: str
+    status: str
+    source: str
+    detail: str
+    fetched_at: datetime
+
+
 class MarketBalanceOut(BaseModel):
     """Live aggregate supply vs demand — the market-consistency instrument."""
 
@@ -77,6 +96,7 @@ class MarketSnapshot(BaseModel):
     asks: list[tuple[str, str]]
     num_builtin_vpps: int
     data_source: DataSourceStatus
+    external_market: ExternalMarketOut
     balance: MarketBalanceOut
 
 
@@ -93,8 +113,8 @@ async def participants(sim: SimulatorDep, session: DbSession) -> list[Participan
     return out
 
 
-@router.get("/trades", response_model=list[TradeEvent])
-def recent_trades(sim: SimulatorDep, limit: int = 200) -> list[TradeEvent]:
+@router.get("/trades", response_model=list[TradeEvent | ExternalTradeEvent])
+def recent_trades(sim: SimulatorDep, limit: int = 200) -> list[TradeEvent | ExternalTradeEvent]:
     """Most recent trades, oldest first — lets clients backfill chart/tape on load."""
     limit = max(1, min(limit, 500))
     log = list(sim.trade_log)
@@ -120,7 +140,27 @@ async def snapshot(sim: SimulatorDep, depth: int = 10) -> MarketSnapshot:
         asks=s["asks"],
         num_builtin_vpps=len(sim.vpps),
         data_source=sim.data_source_status(),
+        external_market=_external_market_out(sim.external_market_quote()),
         balance=balance,
+    )
+
+
+def _external_market_out(q: ExternalMarketQuote) -> ExternalMarketOut:
+    return ExternalMarketOut(
+        region=q.region,
+        node=q.node,
+        raw_lmp=str(q.raw_lmp),
+        p2p_anchor_price=str(q.p2p_anchor_price),
+        import_price=str(q.import_price),
+        export_price=str(q.export_price),
+        interval_start=q.interval_start,
+        interval_end=q.interval_end,
+        currency=q.currency,
+        unit=q.unit,
+        status=q.status,
+        source=q.source,
+        detail=q.detail,
+        fetched_at=q.fetched_at,
     )
 
 
@@ -181,7 +221,7 @@ class AgentOut(BaseModel):
     gas_kw_max: float
     gas_cost_per_kwh: float
     # Live state (changes every tick)
-    pnl: str
+    pnl: str  # USD (converted from internal $/MWh x kWh units; see market.units)
     soc_kwh: float
     soc_frac: float
     pv_kw: float
@@ -223,7 +263,7 @@ async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
                 load_kw_base=p.load_kw_base,
                 gas_kw_max=p.gas_kw_max,
                 gas_cost_per_kwh=p.gas_cost_per_kwh,
-                pnl=str(vpp.state.pnl),
+                pnl=str(internal_cash_to_usd(vpp.state.pnl)),
                 soc_kwh=vpp.battery.soc_kwh,
                 soc_frac=vpp.battery.soc_frac,
                 pv_kw=vpp.state.pv_kw,
