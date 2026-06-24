@@ -1,6 +1,6 @@
 # EFlux — Agent-based VPP Electricity Trading Platform
 
-VPP agents trade in a continuous double auction electricity market. Heterogeneous DER endowments (PV + battery + flexible load), online strategy learning (PPO + LLM reflection).
+VPP agents trade in a continuous double auction electricity market. Heterogeneous DER endowments (PV + battery + flexible load), online strategy learning (PPO + LLM hybrid strategy guidance).
 
 ![EFlux market overview](docs/img/market.png)
 
@@ -12,8 +12,8 @@ VPP agents trade in a continuous double auction electricity market. Heterogeneou
    Where the curves meet, trades clear — live, every 2 seconds.
 2. **Watch the Agent thoughts panel** — four participants (`my-llm-vpp` plus
    three persona rivals: arbitrageur, wind farmer, demand buyer) are
-   steered by an LLM that reviews its own PnL every ~minute and nudges its
-   pricing; its reasoning streams here, no login needed.
+   steered by an LLM strategist that reviews market state every ~minute and
+   biases their trading primitives; its reasoning streams here, no login needed.
 3. **Open Participants** — all 33 autonomous VPPs with strategy badges, live
    battery SOC, producing/consuming state and PnL. Sort by PnL to see who's
    winning.
@@ -39,8 +39,8 @@ flowchart LR
     WS["/ws/market"]
     SIM["Simulator loop<br/>(1s rolling clock, 1x/10x/100x)"]
     ENGINE["CDA matching engine<br/>(in-memory LOB)"]
-    AGENTS["33 built-in agents<br/>ZI · Truthful · Gas · PPO · Reflective"]
-    LLM["MiMo LLM<br/>(reflection hints)"]
+    AGENTS["33 built-in agents<br/>ZI · Truthful · Gas · PPO · Hybrid"]
+    LLM["MiMo LLM<br/>(strategy guidance)"]
   end
   DB[("SQLite / Postgres<br/>users + VPP defs")]
   OM["Open-Meteo<br/>(PV + wind weather)"]
@@ -62,8 +62,8 @@ scenario ([scenarios/default.yaml](scenarios/default.yaml)) runs 33 built-in
 VPPs — rooftop-solar households, wind farms (two on real Open-Meteo wind
 speed), factories with industrial shift loads, commercial buildings, a
 datacenter, and four gas generators that top the merit order — plus the
-LLM-managed VPP whose reflection timeline (hints + rationale per LLM
-round-trip) is visible on the *My VPPs* page. Market state (orders, trades,
+LLM-managed VPP whose guidance timeline (risk posture, primitive preferences,
+and rationale per LLM round-trip) is visible on the *My VPPs* page. Market state (orders, trades,
 PnL) lives **in memory** — restarting the backend resets the market; the DB
 only persists users and VPP definitions.
 
@@ -76,7 +76,7 @@ per agent.
 
 - **Backend**: Python 3.12 + FastAPI + SQLAlchemy 2 (async) + Postgres + Redis Streams
 - **Market**: CDA limit order book, rolling clock with adjustable speed (1x/10x/100x)
-- **Agents**: ZI baseline → Truthful → PPO (Ray RLlib) → Reflective (LLM hints over Truthful)
+- **Agents**: ZI baseline → Truthful → PPO (Ray RLlib) → HybridPolicyAgent (LLM strategist over structured primitives)
 - **Frontend**: React + Vite + ECharts
 - **Package mgmt**: `uv`
 
@@ -130,7 +130,7 @@ Pages:
 - `Participants` (public) — all 33 built-in VPPs: strategy badges, endowments,
   live output, battery SOC, PnL; sortable
 - `My VPPs` (auth) — create VPPs, submit orders, per-VPP performance + the LLM
-  reflection timeline
+  guidance timeline
 
 An app-wide banner warns when the backend is unreachable (stale data) and
 announces detected backend restarts (the in-memory market starts over).
@@ -165,12 +165,12 @@ On startup, 33 built-in VPPs are loaded from `scenarios/default.yaml`
 (coastal ones on real Open-Meteo wind speed), 6 factories with industrial
 shift loads, 3 commercial buildings, 4 gas generators (dispatchable supply at
 marginal cost 55–72, the market's soft price cap), plus **four LLM-managed
-ReflectiveAgents** (`my-llm-vpp` and three persona rivals) that wrap Truthful
-with periodic LLM strategy hints. The LLM fleet *learns*: each reflection's
-hints are attributed to the PnL window that followed and persisted to
-`data/agent_memory/<name>.jsonl` (survives restarts); prompts carry the last
-outcomes, market-wide trades, and the other LLM agents' latest views.
-Agents: `zi | truthful | gas | reflective` per YAML entry. They trade against
+HybridPolicyAgents** (`my-llm-vpp` and three persona rivals). Each hybrid agent
+uses a truthful valuation oracle, a fast strategy-primitive policy, a deterministic
+order compiler, a risk-gated Truthful fallback, and a slow LLMStrategist that
+recommends/discourages primitives plus `risk_budget` and `soc_target`.
+Agents: `zi | truthful | gas | strategy | hybrid` per YAML entry (`reflective`
+is still accepted as a legacy alias). They trade against
 each other continuously — merit order is renewables (~floor) → battery band
 (~52.7) → gas, with demand bids rising toward 75 under deficit
 (`demand_beta`) and resting orders expiring after `EFLUX_ORDER_TTL_SEC`
@@ -183,19 +183,19 @@ Useful market endpoints (all public, no auth):
 - `GET /market/participants` — VPP id → name/strategy directory (trade-tape labels)
 - `GET /market/supply_curve` — every resting order with per-VPP category attribution (the merit-order chart)
 - `GET /market/agents` — live roster: strategy, endowment, SOC, PnL, current output per built-in VPP
-- `GET /market/reflections?limit=N` — LLM reflection feed across managed agents, newest first
+- `GET /market/reflections?limit=N` — LLM guidance feed across managed agents, newest first
 - `POST /market/speed` (auth) — switch the rolling clock between 1x/10x/100x at runtime
 
 The *My VPPs* page surfaces the LLM agent end-to-end: click the `my-llm-vpp`
-card for PnL/SOC/trades plus the **reflection timeline** — each LLM round-trip
-with its price/qty hints, the model's rationale, and failures (the badge shows
+card for PnL/SOC/trades plus the **guidance timeline** — each LLM round-trip
+with risk/primitive guidance, the model's rationale, and failures (the badge shows
 live / degraded / offline health). `GET /vpps/managed/{id}/performance` returns
 the same data as JSON.
 
 ### Important notes
 - venv is at `.env/`, NOT `.venv/`. uv defaults to `.venv/` — always export `UV_PROJECT_ENVIRONMENT=.env` first (the shell scripts already do this).
 - Env vars file is `config.env` (not `.env`) to avoid clashing with the venv dir.
-- `key.txt` holds the MiMo LLM key (gitignored). With `EFLUX_REFLECTIVE_ENABLED=true` + base URL + model configured, the LLM VPP reflects every `EFLUX_REFLECTIVE_INTERVAL_TICKS` ticks; `EFLUX_LLM_TIMEOUT_SEC` (default 120) bounds each call.
+- `key.txt` holds the MiMo LLM key (gitignored). With `EFLUX_REFLECTIVE_ENABLED=true` + base URL + model configured, the LLM strategist refreshes every `EFLUX_REFLECTIVE_INTERVAL_TICKS` ticks; `EFLUX_LLM_TIMEOUT_SEC` (default 120) bounds each call.
 - Speed lock: external (user-submitted) orders only allowed at `market_speed=1.0`. Fast modes are for training/replay.
 - Market state is in-memory by design — restart wipes orders/trades/PnL.
 
@@ -218,7 +218,7 @@ docker compose --profile postgres up   # users/VPPs in Postgres
 
 Uncomment the matching `EFLUX_*` environment lines in
 [docker-compose.yml](docker-compose.yml) when enabling a profile, and mount
-`key.txt` + set the LLM vars there to bring the reflective agent fully online
+`key.txt` + set the LLM vars there to bring the hybrid LLM strategist fully online
 in the container.
 
 ## Project Layout
@@ -248,7 +248,7 @@ conf_1/
     db/                # SQLAlchemy models, session
     market/            # LOB matching engine, rolling clock, events
     vpp/               # VPP abstraction + DER models
-    agents/            # ZI / Truthful / PPO / Reflective
+    agents/            # ZI / Truthful / PPO / Hybrid / legacy Reflective
     bridge/            # Redis Stream <-> WebSocket
     simulator/         # in-process runner
     config.py

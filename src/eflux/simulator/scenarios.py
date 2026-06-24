@@ -2,9 +2,9 @@
 
 Every entry is validated as an AgentSpec (see simulator/agent_spec.py — the same
 schema external participants integrate against). Strategy kinds: zi | truthful |
-gas | reflective. Reflective (LLM-steered) entries share one SharedLLM connection
-and get evenly staggered reflection offsets so the single slow endpoint is never
-hit concurrently.
+gas | strategy | hybrid. Hybrid LLM-managed entries share one SharedLLM connection
+and get evenly staggered strategist refresh offsets so the single slow endpoint
+is never hit concurrently. `reflective` is kept as a legacy alias for hybrid.
 """
 
 from __future__ import annotations
@@ -20,9 +20,8 @@ import yaml
 from eflux.agents.base import BaseAgent
 from eflux.agents.gas import GasGeneratorAgent
 from eflux.agents.hybrid import HybridPolicyAgent, StrategyAgent
-from eflux.agents.reflective import ReflectiveAgent
-from eflux.agents.reflective.memory import AgentMemory, slug
 from eflux.agents.reflective.pool import SharedLLM
+from eflux.agents.reflective.strategist import LLMStrategist
 from eflux.agents.truthful import TruthfulAgent
 from eflux.agents.zi import ZIAgent
 from eflux.config import PROJECT_ROOT, get_settings
@@ -41,7 +40,17 @@ AGENT_FACTORIES: dict[str, type[BaseAgent]] = {
 }
 
 # Dataclass fields that hold injected policy/strategist objects, never YAML kwargs.
-_INJECTED_FIELDS = frozenset({"policy", "executor", "strategist", "fallback"})
+_INJECTED_FIELDS = frozenset(
+    {
+        "policy",
+        "executor",
+        "strategist",
+        "fallback",
+        "refresh_every_n_ticks",
+        "refresh_offset_ticks",
+        "persona_prompt",
+    }
+)
 
 
 def _validate_agent_params(name: str, agent_params: dict, factory: type) -> None:
@@ -59,6 +68,36 @@ def _validate_agent_params(name: str, agent_params: dict, factory: type) -> None
         )
 
 
+def _build_executor(name: str, executor):
+    """Build the tactical policy for a strategy/hybrid entry from its ExecutorSpec.
+
+    None / scripted → None (the agent uses its own ScriptedStrategyPolicy default).
+    ppo → a PPOPrimitivePolicy over the structured action space, loaded lazily from the
+    checkpoint. Any failure (missing 'ai' extras or checkpoint, load error) falls back to
+    scripted with a warning — a bad executor must not take down startup."""
+    if executor is None or executor.kind == "scripted":
+        return None
+    if executor.kind == "ppo":
+        try:
+            from eflux.agents.ppo.primitive_agent import PPOPrimitivePolicy
+        except ImportError as e:
+            log.warning("%s: PPO executor needs the 'ai' extras (%s) — using scripted", name, e)
+            return None
+        ckpt = executor.checkpoint
+        path = Path(ckpt)
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        if not path.exists():
+            log.warning("%s: PPO executor checkpoint %r missing — using scripted", name, ckpt)
+            return None
+        try:
+            return PPOPrimitivePolicy(str(path))
+        except Exception:
+            log.exception("%s: PPO executor failed to load — using scripted", name)
+            return None
+    return None
+
+
 def _real_pv_available() -> bool:
     """True iff pvlib is installed AND user hasn't opted out via EFLUX_PV_PHYSICAL=false."""
     if os.environ.get("EFLUX_PV_PHYSICAL", "auto").lower() in ("false", "0", "off"):
@@ -71,7 +110,7 @@ def _real_pv_available() -> bool:
 
 
 def load_default_scenario(sim: Simulator) -> None:
-    """Load and validate the YAML roster; wire reflective entries to the shared LLM."""
+    """Load and validate the YAML roster; wire LLM-managed entries to the shared LLM."""
     settings = get_settings()
     path = Path(settings.scenario_file)
     if not path.is_absolute():
@@ -89,28 +128,31 @@ def load_default_scenario(sim: Simulator) -> None:
         seen.add(spec.name)
 
     use_real_weather = _real_pv_available()
-    reflective_specs = [s for s in specs if s.agent == "reflective"]
-    shared = SharedLLM.from_settings(settings) if reflective_specs else None
+    managed_specs = [s for s in specs if s.agent in ("hybrid", "reflective")]
+    shared = SharedLLM.from_settings(settings) if managed_specs else None
 
     counts: dict[str, int] = {}
-    reflective_index = 0
+    managed_index = 0
     for i, spec in enumerate(specs):
-        if spec.agent == "reflective":
-            _add_reflective_vpp(
+        if spec.agent in ("hybrid", "reflective"):
+            _add_hybrid_vpp(
                 sim,
                 spec,
-                shared=shared,  # type: ignore[arg-type]  # set when reflective_specs is non-empty
+                shared=shared,  # type: ignore[arg-type]  # set when managed_specs is non-empty
                 use_real_weather=use_real_weather,
                 default_seed=42 + i,
-                offset_index=reflective_index,
-                n_reflective=len(reflective_specs),
+                offset_index=managed_index,
+                n_managed=len(managed_specs),
             )
-            reflective_index += 1
+            managed_index += 1
         else:
             factory = AGENT_FACTORIES[spec.agent]
             _validate_agent_params(spec.name, spec.agent_params, factory)
             seed = spec.seed if spec.seed is not None else 42 + i
             agent_params = _diversify_cost(spec, seed, settings.price_ref_jitter_frac, factory)
+            # A `strategy` entry may carry a learned executor (the standalone PPO VPP).
+            if spec.agent == "strategy" and spec.executor is not None:
+                agent_params["policy"] = _build_executor(spec.name, spec.executor)
             sim.add_builtin_vpp(
                 name=spec.name,
                 params=_build_params(spec, use_real_weather),
@@ -127,8 +169,8 @@ def load_default_scenario(sim: Simulator) -> None:
         use_real_weather,
     )
 
-    # Back-compat: a roster without reflective entries still gets the demo LLM VPP.
-    if not reflective_specs:
+    # Back-compat: a roster without LLM-managed entries still gets the demo LLM VPP.
+    if not managed_specs:
         load_my_llm_vpp(sim)
 
     # Optional: if a PPO checkpoint is configured, add one more VPP driven by it.
@@ -138,7 +180,7 @@ def load_default_scenario(sim: Simulator) -> None:
 
     log.info(
         "Default scenario ready: %d ordinary agents + %d LLM agents",
-        len(specs) - len(reflective_specs),
+        len(specs) - len(managed_specs),
         len(sim.my_managed_vpps()),
     )
 
@@ -152,8 +194,8 @@ def _diversify_cost(
     asks (price_ref/√eta ≈ 52.7) and deficit bids land on identical price levels
     and the market clears at ~2 discrete prints. A small deterministic per-agent
     offset (seeded by name+seed, so it's stable across restarts) fans those
-    levels out into a band. Reflective (LLM) agents never reach here — they are
-    handled on the other branch — so the LLM fleet is excluded by construction.
+    levels out into a band. LLM-managed agents never reach here — they are
+    handled on the hybrid branch — so the LLM fleet is excluded by construction.
     Gas has no price_ref (its cost is per-VPP already) and is left untouched, as
     is any agent whose roster entry pins price_ref explicitly.
     """
@@ -184,7 +226,7 @@ def _build_params(spec: AgentSpec, use_real_weather: bool) -> VPPParams:
     return VPPParams.from_dict(validate_vpp_params(params_dict))
 
 
-def _add_reflective_vpp(
+def _add_hybrid_vpp(
     sim: Simulator,
     spec: AgentSpec,
     *,
@@ -192,9 +234,9 @@ def _add_reflective_vpp(
     use_real_weather: bool,
     default_seed: int,
     offset_index: int,
-    n_reflective: int,
+    n_managed: int,
 ) -> None:
-    """Add one LLM-steered VPP sharing the SharedLLM connection.
+    """Add one HybridPolicyAgent VPP sharing the SharedLLM connection.
 
     Offsets are spread evenly over the reflection interval (index-based —
     deterministic, no collisions) so calls to the single endpoint stagger
@@ -202,36 +244,38 @@ def _add_reflective_vpp(
     """
     settings = get_settings()
     interval = settings.reflective_interval_ticks
-    offset = round(offset_index * interval / max(1, n_reflective))
-    memory_dir = Path(settings.agent_memory_dir)
-    if not memory_dir.is_absolute():
-        memory_dir = PROJECT_ROOT / memory_dir
-    memory = AgentMemory(memory_dir / f"{slug(spec.name)}.jsonl")
-    loaded = memory.load()
-    if loaded:
-        log.info("Reflective VPP %s recalled %d memory records", spec.name, loaded)
-    _validate_agent_params(spec.name, spec.agent_params, TruthfulAgent)
-    agent = ReflectiveAgent(
-        llm_client=shared.client,
-        inner=TruthfulAgent(**spec.agent_params),
-        reflect_every_n_ticks=interval,
-        reflect_offset_ticks=offset,
-        llm_gate=shared.gate,
+    offset = round(offset_index * interval / max(1, n_managed))
+    _validate_agent_params(spec.name, spec.agent_params, HybridPolicyAgent)
+    strategist = (
+        LLMStrategist(
+            client=shared.client,
+            persona_prompt=spec.persona.prompt if spec.persona else None,
+            hard_timeout_sec=max(settings.llm_timeout_sec, 1.0) + 60.0,
+            llm_gate=shared.gate,
+        )
+        if shared.client is not None
+        else None
+    )
+    agent = HybridPolicyAgent(
+        **spec.agent_params,
+        executor=_build_executor(spec.name, spec.executor),
+        strategist=strategist,
+        refresh_every_n_ticks=interval,
+        refresh_offset_ticks=offset,
         persona_prompt=spec.persona.prompt if spec.persona else None,
-        memory=memory,
     )
     sim.add_builtin_vpp(
         name=spec.name,
         params=_build_params(spec, use_real_weather),
         agent=agent,
         seed=spec.seed if spec.seed is not None else default_seed,
-        strategy=f"ReflectiveAgent ({shared.strategy_suffix})",
+        strategy=f"HybridPolicyAgent ({shared.strategy_suffix})",
         is_my_vpp=True,
         llm_live=shared.live,
         llm_status=shared.status,
     )
     log.info(
-        "Reflective VPP %s loaded (interval=%d ticks, offset=%d, live_llm=%s)",
+        "Hybrid LLM VPP %s loaded (interval=%d ticks, offset=%d, live_llm=%s)",
         spec.name,
         interval,
         offset,
@@ -243,7 +287,7 @@ def load_my_llm_vpp(sim: Simulator) -> None:
     """Back-compat shim: add the demo LLM VPP when the roster declares none."""
     spec = AgentSpec(
         name="my-llm-vpp",
-        agent="reflective",
+        agent="hybrid",
         seed=77,
         params={
             "pv_kw_peak": 5.0,
@@ -254,14 +298,14 @@ def load_my_llm_vpp(sim: Simulator) -> None:
         },
     )
     shared = SharedLLM.from_settings(get_settings())
-    _add_reflective_vpp(
+    _add_hybrid_vpp(
         sim,
         spec,
         shared=shared,
         use_real_weather=_real_pv_available(),
         default_seed=77,
         offset_index=0,
-        n_reflective=1,
+        n_managed=1,
     )
 
 

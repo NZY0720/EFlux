@@ -14,8 +14,8 @@ starts from a clean book and rebuilds within seconds.
 Optional, for the full LLM story: put the MiMo key in `key.txt` and set
 `EFLUX_REFLECTIVE_ENABLED=true` + `EFLUX_LLM_BASE_URL` + `EFLUX_LLM_MODEL` in
 `config.env` before starting — the *Agent thoughts* panel then fills with live
-reflections (one every ~minute). Without it the panel explains the agent is
-running on its Truthful baseline, which is also fine to show.
+strategy guidance (one refresh every ~minute). Without it the panel explains
+the agent is running on its scripted hybrid baseline, which is also fine to show.
 
 Log in once (any email; the dev magic-link token autofills) so the speed
 control is unlocked and *My VPPs* is ready.
@@ -33,8 +33,8 @@ Open `/`. Talk over the panels top-to-bottom:
   floor. Violet is batteries arbitraging the middle. Red is gas — it tops out
   the stack at its marginal cost, 55–72. The dashed line is demand. Where they
   cross is where trades clear. This rebuilds live every two seconds."
-- **Agent thoughts** — "One participant is steered by an LLM. Every minute it
-  reviews its own PnL and the order book, and nudges its strategy — here's its
+- **Agent thoughts** — "Several participants are coached by an LLM strategist.
+  Every minute it reviews the book and nudges strategy primitives — here's its
   reasoning, live."
 
 ### 2. Participants page (~45s) — "thirty autonomous agents"

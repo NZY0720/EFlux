@@ -65,13 +65,12 @@ class Settings(BaseSettings):
     # Reasoning models (mimo-v2.5-pro) regularly take >30s per completion; the
     # old 30s default made most reflections die with ReadTimeout.
     llm_timeout_sec: float = 120.0
-    # Reflective LLM agent (Phase 6). Off by default so no key/base_url is needed
-    # for default dev runs.
+    # LLM-managed hybrid agents. Off by default so no key/base_url is needed for
+    # default dev runs. Env name kept for compatibility with earlier ReflectiveAgent.
     reflective_enabled: bool = False
     reflective_interval_ticks: int = 60
-    # Per-agent learning memory (JSONL, one file per reflective agent). The
-    # hint→outcome records written here survive restarts and are fed back into
-    # future prompts. Relative paths resolve against the project root.
+    # Legacy ReflectiveAgent learning memory (JSONL). HybridPolicyAgent uses
+    # in-memory guidance audit logs instead. Relative paths resolve against the project root.
     agent_memory_dir: str = "data/agent_memory"
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"

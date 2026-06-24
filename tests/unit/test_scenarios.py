@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from eflux.agents.gas import GasGeneratorAgent
-from eflux.agents.reflective import ReflectiveAgent
+from eflux.agents.hybrid import HybridPolicyAgent
 from eflux.bridge.bus import InMemoryBus
 from eflux.config import get_settings
 from eflux.simulator.runner import Simulator
@@ -33,10 +33,11 @@ def test_load_ppo_scenario_skips_gracefully_on_bad_checkpoint(monkeypatch):
     assert len(sim.vpps) == 0
 
 
-def test_default_scenario_loads_thirty_three_vpps_incl_llm_fleet(monkeypatch):
+def test_default_scenario_loads_full_roster_incl_llm_fleet(monkeypatch):
     sim = _load(monkeypatch)
 
-    assert len(sim.vpps) == 33
+    # 33 baseline entries + the standalone learned PPO StrategyAgent (ppo-primitive-30).
+    assert len(sim.vpps) == 34
     my_vpps = sim.my_managed_vpps()
     assert len(my_vpps) == 4
     assert my_vpps[0].name == "my-llm-vpp"
@@ -46,24 +47,48 @@ def test_default_scenario_loads_thirty_three_vpps_incl_llm_fleet(monkeypatch):
         "llm-wind-conservative",
         "llm-demand-buyer",
     }
-    assert all(isinstance(v.agent, ReflectiveAgent) for v in my_vpps)
-    assert len([v for v in sim.vpps.values() if not v.is_my_vpp]) == 29
+    assert all(isinstance(v.agent, HybridPolicyAgent) for v in my_vpps)
+    assert len([v for v in sim.vpps.values() if not v.is_my_vpp]) == 30
+
+
+def test_ppo_executor_wired_into_roster_when_checkpoint_present(monkeypatch):
+    """The standalone PPO StrategyAgent and the PPO-driven hybrid agent both carry a
+    learned PPOPrimitivePolicy when the checkpoint and 'ai' extras are available."""
+    import pytest
+
+    from eflux.config import PROJECT_ROOT
+
+    if not (PROJECT_ROOT / "checkpoints" / "ppo_primitive").exists():
+        pytest.skip("no ppo_primitive checkpoint on this machine")
+    pytest.importorskip("ray")
+
+    from eflux.agents.hybrid import StrategyAgent
+    from eflux.agents.ppo.primitive_agent import PPOPrimitivePolicy
+
+    sim = _load(monkeypatch)
+    by_name = {v.name: v.agent for v in sim.vpps.values()}
+
+    standalone = by_name["ppo-primitive-30"]
+    assert isinstance(standalone, StrategyAgent)
+    assert isinstance(standalone._policy, PPOPrimitivePolicy)  # learned executor, not scripted
+
+    hybrid = by_name["llm-demand-buyer"]
+    assert isinstance(hybrid, HybridPolicyAgent)
+    assert isinstance(hybrid._executor, PPOPrimitivePolicy)  # PPO inside the hybrid stack
 
 
 def test_llm_fleet_shares_connection_and_staggers_reflections(monkeypatch):
-    """All reflective agents must share one LLM client + gate (single slow
-    endpoint), with distinct evenly-spread reflection offsets so they never
+    """All hybrid LLM agents use distinct evenly-spread strategist offsets so they never
     trigger on the same tick."""
     sim = _load(monkeypatch)
     agents = [v.agent for v in sim.my_managed_vpps()]
 
-    offsets = [a.reflect_offset_ticks for a in agents]
+    offsets = [a.refresh_offset_ticks for a in agents]
     assert len(set(offsets)) == len(agents), f"offsets must be distinct, got {offsets}"
-    assert all(0 <= o < a.reflect_every_n_ticks for o, a in zip(offsets, agents, strict=True))
+    assert all(0 <= o < a.refresh_every_n_ticks for o, a in zip(offsets, agents, strict=True))
 
-    gates = {id(a.llm_gate) for a in agents}
-    assert len(gates) == 1, "all reflective agents must share the same gate"
-    # Reflective disabled in _load → shared client is None everywhere.
+    # Reflective/LLM disabled in _load → no live strategist is attached.
+    assert all(a.strategist is None for a in agents)
     assert all(a.llm_client is None for a in agents)
 
 
@@ -75,8 +100,8 @@ def test_llm_personas_reach_agents(monkeypatch):
     assert "arbitrageur" in by_name["llm-arb-aggressive"].persona_prompt
     assert "wind farm" in by_name["llm-wind-conservative"].persona_prompt
     assert "Minimize cost" in by_name["llm-demand-buyer"].persona_prompt
-    # demand-side personas carry price-responsive inner agents
-    assert by_name["llm-demand-buyer"].inner.demand_beta == 0.5
+    # demand-side personas carry price-responsive hybrid agents
+    assert by_name["llm-demand-buyer"].demand_beta == 0.5
 
 
 def test_default_scenario_has_diverse_vpp_types(monkeypatch):
@@ -99,7 +124,7 @@ def test_default_scenario_has_diverse_vpp_types(monkeypatch):
 
 def test_cost_diversification_spreads_price_ref_excluding_llm(monkeypatch):
     """Non-LLM truthful/ZI agents get a deterministic per-agent price_ref jitter
-    so their cost levels fan out; reflective (LLM) agents are left at the default."""
+    so their cost levels fan out; hybrid LLM agents are left at the default."""
     from eflux.agents.truthful import TruthfulAgent
     from eflux.agents.zi import ZIAgent
 
@@ -115,10 +140,10 @@ def test_cost_diversification_spreads_price_ref_excluding_llm(monkeypatch):
     assert all(46.9 < p < 53.1 for p in price_refs), "stay within ±6% of 50"
     assert any(abs(p - 50.0) > 1e-6 for p in price_refs)
 
-    # LLM (reflective) agents excluded → inner truthful keeps the 50.0 default.
+    # LLM-managed hybrid agents are excluded → their price_ref stays at the default.
     llm = [v.agent for v in sim.my_managed_vpps()]
-    assert llm and all(isinstance(a, ReflectiveAgent) for a in llm)
-    assert all(float(a.inner.price_ref) == 50.0 for a in llm)
+    assert llm and all(isinstance(a, HybridPolicyAgent) for a in llm)
+    assert all(float(a.price_ref) == 50.0 for a in llm)
 
 
 def test_cost_diversification_is_deterministic_across_loads(monkeypatch):

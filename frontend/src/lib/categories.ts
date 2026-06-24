@@ -26,6 +26,7 @@ export function strategyLabel(strategy: string): string {
   if (strategy.startsWith("ZIAgent")) return "Zero-Intelligence (random)";
   if (strategy.startsWith("TruthfulAgent")) return "Truthful (cost-based)";
   if (strategy.startsWith("GasGeneratorAgent")) return "Gas (marginal cost)";
+  if (strategy.startsWith("HybridPolicyAgent")) return "LLM Hybrid Strategist";
   if (strategy.startsWith("ReflectiveAgent")) return "LLM Reflective";
   if (strategy.startsWith("PPOAgent")) return "PPO (trained policy)";
   return strategy;

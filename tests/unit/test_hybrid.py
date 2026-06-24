@@ -11,6 +11,7 @@ import pytest
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.hybrid import HybridPolicyAgent
 from eflux.agents.reflective.strategist import StaticStrategist, StrategyGuidance
+from eflux.agents.strategy.schema import StrategyMode
 from eflux.agents.truthful import TruthfulAgent
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
@@ -49,6 +50,20 @@ def test_hybrid_guidance_scales_order_size():
     ).decide(ctx)
     # risk_budget 0.5 halves the quoted quantity (soft prior), same side/price.
     assert guided[0].side == "sell" and guided[0].qty == Decimal("2.0000")
+
+
+def test_hybrid_guidance_can_bias_preferred_primitive():
+    ctx = _make_ctx(pv_kw=5.0, load_kw=1.0)
+    intents = HybridPolicyAgent(
+        price_ref=Decimal("50.0"),
+        strategist=StaticStrategist(
+            StrategyGuidance(preferred_modes=(StrategyMode.LADDER_SELL,))
+        ),
+    ).decide(ctx)
+
+    assert len(intents) == 3
+    assert {i.side for i in intents} == {"sell"}
+    assert sum(i.qty for i in intents) == Decimal("3.9999")
 
 
 def test_hybrid_exposes_guidance_diagnostics():

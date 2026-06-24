@@ -1,8 +1,37 @@
 {
   "$defs": {
+    "ExecutorSpec": {
+      "additionalProperties": false,
+      "description": "Tactical executor (the policy that selects each StrategyAction) for strategy /\nhybrid agents. `scripted` (default) uses the deterministic baseline; `ppo` loads a\nlearned policy from a checkpoint trained on the structured action space. A missing\ncheckpoint / 'ai' extras falls back to scripted at load (never crashes startup).",
+      "properties": {
+        "kind": {
+          "default": "scripted",
+          "enum": [
+            "scripted",
+            "ppo"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "checkpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checkpoint"
+        }
+      },
+      "title": "ExecutorSpec",
+      "type": "object"
+    },
     "PersonaSpec": {
       "additionalProperties": false,
-      "description": "Strategy persona for LLM-steered (reflective) agents.",
+      "description": "Strategy persona for LLM-managed agents.",
       "properties": {
         "name": {
           "maxLength": 60,
@@ -40,6 +69,8 @@
         "zi",
         "truthful",
         "gas",
+        "strategy",
+        "hybrid",
         "reflective"
       ],
       "title": "Agent",
@@ -182,6 +213,17 @@
       "anyOf": [
         {
           "$ref": "#/$defs/PersonaSpec"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "executor": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ExecutorSpec"
         },
         {
           "type": "null"

@@ -71,6 +71,8 @@ class HybridPolicyAgent(BaseAgent):
     strategist: Strategist | None = None  # slow LLM guidance (off the tick path)
     fallback: BaseAgent | None = None  # safe action when the executor is fully vetoed
     refresh_every_n_ticks: int = 60  # strategist re-query cadence
+    refresh_offset_ticks: int = 0  # stagger LLM calls across a managed fleet
+    persona_prompt: str | None = None  # audit metadata copied from AgentSpec.persona
 
     def __post_init__(self) -> None:
         self._oracle = TruthfulValuationOracle(
@@ -103,7 +105,8 @@ class HybridPolicyAgent(BaseAgent):
         the strategist just keeps serving its cached guidance there."""
         self._ticks += 1
         arefresh = getattr(self.strategist, "arefresh", None)
-        if arefresh is None or self._ticks % max(1, self.refresh_every_n_ticks) != 0:
+        interval = max(1, self.refresh_every_n_ticks)
+        if arefresh is None or self._ticks % interval != self.refresh_offset_ticks % interval:
             return
         if self._reflection_task is not None and not self._reflection_task.done():
             return  # a refresh is already in flight
@@ -138,3 +141,27 @@ class HybridPolicyAgent(BaseAgent):
                 "lesson": g.lesson,
             },
         }
+
+    @property
+    def reflection_log(self):
+        return getattr(self.strategist, "reflection_log", [])
+
+    @property
+    def ok_count(self) -> int:
+        return getattr(self.strategist, "ok_count", 0)
+
+    @property
+    def fail_count(self) -> int:
+        return getattr(self.strategist, "fail_count", 0)
+
+    @property
+    def skipped_count(self) -> int:
+        return getattr(self.strategist, "skipped_count", 0)
+
+    @property
+    def last_ok_ts(self):
+        return getattr(self.strategist, "last_ok_ts", None)
+
+    @property
+    def llm_client(self):
+        return getattr(self.strategist, "client", None)

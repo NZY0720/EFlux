@@ -244,17 +244,24 @@ class MarketReflectionOut(BaseModel):
     health_state: str  # "live" | "degraded" | "offline"
     ts: datetime
     ok: bool
-    price_adjust: float
-    qty_scale: float
-    rationale: str
-    # Persisted takeaway the LLM distilled from its hint→outcome history.
+    # Legacy ReflectiveAgent hint fields; null for HybridPolicyAgent strategist logs.
+    price_adjust: float | None = None
+    qty_scale: float | None = None
+    # HybridPolicyAgent + LLMStrategist guidance fields.
+    preferred_modes: list[str] | None = None
+    avoid_modes: list[str] | None = None
+    risk_budget: float | None = None
+    soc_target: float | None = None
+    execution_style: str | None = None
+    rationale: str = ""
+    # Durable takeaway the LLM distilled from the latest guidance cycle.
     lesson: str | None = None
     error: str | None
 
 
 @router.get("/reflections", response_model=list[MarketReflectionOut])
 def market_reflections(sim: SimulatorDep, limit: int = 20) -> list[MarketReflectionOut]:
-    """LLM reflection feed across all managed agents, newest first. Public so the
+    """LLM guidance feed across all managed agents, newest first. Public so the
     Market page can show what the LLM-steered agent is thinking without a login."""
     from eflux.api.routers.vpps import _llm_health
 

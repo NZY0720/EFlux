@@ -1,10 +1,9 @@
-"""SharedLLM — one LLM connection shared by every reflective agent.
+"""SharedLLM — one LLM connection shared by every LLM-managed agent.
 
-The roster can declare several `agent: reflective` VPPs, but there is a single
-configured endpoint (and it is slow — reasoning models take up to two minutes
-per completion). So the connection is validated once at startup, one client is
-shared, and a Semaphore(1) gate guarantees at most one in-flight call across
-all agents — staggered reflection offsets make gate contention rare.
+The roster can declare several `agent: hybrid` VPPs, but there is a single configured
+endpoint (and it is slow — reasoning models take up to two minutes per completion).
+So the connection is validated once at startup, one client is shared, and a
+Semaphore(1) gate guarantees at most one in-flight strategist call across all agents.
 """
 
 from __future__ import annotations
@@ -54,7 +53,7 @@ class SharedLLM:
                 )
                 return cls(
                     client=client,
-                    status=f"live LLM reflection via {settings.llm_base_url}",
+                    status=f"live LLM strategist via {settings.llm_base_url}",
                     strategy_suffix=f"{settings.llm_provider}:{settings.llm_model}",
                 )
             log.warning("LLM connection check failed: %s", detail)
@@ -75,7 +74,7 @@ class SharedLLM:
             missing.append("missing EFLUX_LLM_MODEL")
         status = "offline fallback: " + ", ".join(missing)
         log.warning(
-            "Reflective agents loaded without live LLM calls (enabled=%s key=%s base_url=%s model=%s)",
+            "LLM-managed agents loaded without live LLM calls (enabled=%s key=%s base_url=%s model=%s)",
             settings.reflective_enabled,
             bool(api_key),
             bool(settings.llm_base_url),

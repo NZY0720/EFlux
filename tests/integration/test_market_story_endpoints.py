@@ -20,7 +20,7 @@ async def test_agents_roster_is_public_and_complete(client):
     r = await client.get("/market/agents")
     assert r.status_code == 200, r.text
     agents = r.json()
-    assert len(agents) == 33  # full YAML roster incl. the 4 LLM-managed VPPs
+    assert len(agents) == 34  # full YAML roster: 4 LLM-managed + the standalone PPO VPP
 
     by_cat: dict[str, int] = {}
     for a in agents:

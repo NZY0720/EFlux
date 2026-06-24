@@ -3,16 +3,16 @@
 #
 # Fields per entry:
 #   name         — shown in the trade tape / participants directory
-#   agent        — zi | truthful | gas | reflective (LLM-steered)
+#   agent        — zi | truthful | gas | strategy | hybrid (LLM-steered)
 #   seed         — optional RNG seed (defaults to 42 + index)
 #   params       — VPPParams fields; unknown keys are ignored.
 #                  pv_lat/pv_lon are SITE coords: they enable real Open-Meteo data
 #                  for both PV (pvlib) and wind (wind_speed_10m). Stripped when
 #                  EFLUX_PV_PHYSICAL=false or the 'data' extras are missing.
-#   agent_params — strategy-class kwargs (for reflective: the inner TruthfulAgent),
+#   agent_params — strategy-class kwargs (for hybrid: HybridPolicyAgent),
 #                  e.g. { demand_beta: 0.5 } for price-responsive bids.
-#   persona      — reflective only: { name, prompt } strategy brief appended to
-#                  the LLM system prompt. Reflection offsets are loader-assigned.
+#   persona      — hybrid only: { name, prompt } strategy brief appended to
+#                  the LLM strategist prompt. Refresh offsets are loader-assigned.
 #
 # Price landscape (price_ref = 50):
 #   renewables surplus  ~ markup_floor * 50 (20 for truthful sellers)
@@ -23,7 +23,7 @@
 # Cost diversification: each non-LLM agent's price_ref is jittered ±6%
 # (EFLUX_PRICE_REF_JITTER_FRAC, deterministic per agent), so the battery band
 # and deficit bids above fan out across a range instead of collapsing onto two
-# discrete prints. LLM/reflective agents are excluded; gas is set per-VPP below.
+# discrete prints. LLM-managed agents are excluded; gas is set per-VPP below.
 
 vpps:
   # --- residential / rooftop solar mix (originals) ------------------------
@@ -137,20 +137,20 @@ vpps:
               load_kw_base: 8.0, load_profile: flat, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
 
-  # --- LLM-managed (reflective) ----------------------------------------------
-  # All share one LLM connection (reflections staggered + serialized by the
-  # loader); offline fallback = plain inner TruthfulAgent. Each agent learns
-  # from its own hint→outcome memory (data/agent_memory/<name>.jsonl), the
-  # market trade tape, and the other LLM agents' published reflections.
+  # --- LLM-managed (hybrid strategist) ----------------------------------------
+  # All share one LLM connection (strategist refreshes staggered + serialized by
+  # the loader); offline fallback = scripted StrategyAgent behaviour with a
+  # Truthful fallback behind the risk gate. The LLM recommends/discourages
+  # strategy primitives and risk posture; it never submits raw orders.
   - name: my-llm-vpp
-    agent: reflective
+    agent: hybrid
     seed: 77
     params: { pv_kw_peak: 5.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 2.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
 
   - name: llm-arb-aggressive
-    agent: reflective
+    agent: hybrid
     seed: 78
     params: { pv_kw_peak: 2.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 0.5,
               markup_floor: 0.4 }
@@ -160,12 +160,13 @@ vpps:
       prompt: >-
         You are an aggressive spread-capture arbitrageur. Your edge is a large
         battery (30 kWh / 8 kW): buy cheap midday solar, sell into evening
-        scarcity. Tolerate risk — prefer larger qty_scale and bolder
-        price_adjust when the gap between recent buy prices and the best ask
-        is wide. Watch your LLM peers and undercut their asks when they get greedy.
+        scarcity. Tolerate risk — prefer higher risk_budget and bolder
+        primitives such as aggressive_taker, ladder_buy, ladder_sell, and
+        battery_arbitrage when spreads are wide. Watch peers and lean maker/taker
+        posture against their stale guidance.
 
   - name: llm-wind-conservative
-    agent: reflective
+    agent: hybrid
     seed: 79
     params: { pv_kw_peak: 0.0, wind_kw_rated: 10.0, wind_mean_speed: 9.0,
               battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 0.4, markup_floor: 0.4 }
@@ -173,24 +174,29 @@ vpps:
       name: conservative-wind-farmer
       prompt: >-
         You manage a wind farm and protect revenue. Never sell below marginal
-        cost; prefer steady fills over occasional big wins. Keep qty_scale near
-        1.0 and use small negative price_adjust only when your asks sit
-        unfilled while peers are trading.
+        cost; prefer steady fills over occasional big wins. Favor passive
+        market making or laddered sells, avoid aggressive_taker unless inventory
+        risk is high, and keep risk_budget moderate when the book is thin.
 
   - name: llm-demand-buyer
-    agent: reflective
+    agent: hybrid
     seed: 80
     params: { pv_kw_peak: 0.0, battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 6.0,
               load_profile: commercial, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
+    # PPO inside the hybrid stack: the learned policy over the structured action space
+    # is the tactical executor; the LLM strategist coaches it (when an endpoint is
+    # configured), the oracle values, the compiler lowers, and the RiskGate guards.
+    # Falls back to the scripted policy if the checkpoint / 'ai' extras are unavailable.
+    executor: { kind: ppo, checkpoint: checkpoints/ppo_primitive }
     persona:
       name: cost-minimizing-buyer
       prompt: >-
         You procure power for a commercial building (6 kW, business hours).
         Minimize cost: charge the battery when prices dip toward the midday
-        solar floor, avoid buying at evening gas-peak prices. Negative
-        price_adjust saves money but risks unserved deficit — balance fill
-        rate against price.
+        solar floor, avoid buying at evening gas-peak prices. Favor cover_deficit
+        only when unserved load is urgent; otherwise prefer hold_energy,
+        ladder_buy, and lower risk_budget to balance fill rate against price.
 
   # --- gas generation (dispatchable, merit-order top) ------------------------
   - name: gas-base-26
@@ -209,3 +215,17 @@ vpps:
     agent: gas
     params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
               gas_kw_max: 10.0, gas_cost_per_kwh: 72.0 }
+
+  # --- learned PPO agent (structured-action policy, M4) -----------------------
+  # A standalone StrategyAgent driven by the trained PPO policy — trades alongside
+  # the scripted/truthful/ZI fleet as a benchmark participant. price_ref and
+  # demand_beta are pinned to the values the checkpoint was trained under (50 / 0.5)
+  # so the live valuation obs match training; price_ref pinned also opts it out of the
+  # cost-diversification jitter. Falls back to scripted if the checkpoint is missing.
+  - name: ppo-primitive-30
+    agent: strategy
+    seed: 88
+    params: { pv_kw_peak: 8.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 4.0,
+              markup_floor: 0.4 }
+    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
+    executor: { kind: ppo, checkpoint: checkpoints/ppo_primitive }

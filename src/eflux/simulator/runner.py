@@ -394,7 +394,7 @@ class Simulator:
         await self._shutdown_reflections()
 
     async def _shutdown_reflections(self) -> None:
-        """Cancel in-flight LLM reflection tasks and close the shared client.
+        """Cancel in-flight LLM guidance/reflection tasks and close the shared client.
 
         An LLM round-trip can take minutes; without this, shutdown mid-call
         leaves a 'Task was destroyed but it is pending!' warning and the shared
@@ -480,7 +480,7 @@ class Simulator:
         return out
 
     def _peer_reflections(self) -> list[dict]:
-        """Each LLM agent's latest successful reflection, for the other LLM
+        """Each LLM agent's latest successful guidance/reflection, for the other LLM
         agents' prompts. Tagged with vpp_id so an agent can drop its own."""
         out: list[dict] = []
         for vpp in self.my_managed_vpps():
@@ -490,15 +490,29 @@ class Simulator:
             last_ok = next((e for e in reversed(entries) if e.get("ok")), None)
             if last_ok is None:
                 continue
-            out.append(
-                {
-                    "vpp_id": vpp.vpp_id,
-                    "name": vpp.name,
-                    "pa": last_ok["price_adjust"],
-                    "qs": last_ok["qty_scale"],
-                    "rationale": last_ok["rationale"],
-                }
-            )
+            entry = {
+                "vpp_id": vpp.vpp_id,
+                "name": vpp.name,
+                "rationale": last_ok.get("rationale", ""),
+            }
+            if "price_adjust" in last_ok or "qty_scale" in last_ok:
+                entry.update(
+                    {
+                        "pa": last_ok.get("price_adjust"),
+                        "qs": last_ok.get("qty_scale"),
+                    }
+                )
+            else:
+                entry.update(
+                    {
+                        "preferred_modes": last_ok.get("preferred_modes", []),
+                        "avoid_modes": last_ok.get("avoid_modes", []),
+                        "risk_budget": last_ok.get("risk_budget"),
+                        "soc_target": last_ok.get("soc_target"),
+                        "execution_style": last_ok.get("execution_style", ""),
+                    }
+                )
+            out.append(entry)
         return out
 
     def _open_orders_net_by_vpp(self) -> dict[int, float]:

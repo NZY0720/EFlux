@@ -14,9 +14,12 @@ ReflectiveAgent.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
-from dataclasses import dataclass, replace
+from collections import deque
+from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
 from eflux.agents.reflective.prompt import _first_json_object
@@ -172,6 +175,17 @@ class LLMStrategist:
     client: object  # duck-typed: async chat(messages, *, temperature) -> str
     persona_prompt: str | None = None
     temperature: float = 0.3
+    hard_timeout_sec: float = 180.0
+    # Shared across all LLM-managed agents: at most one strategist call in flight.
+    llm_gate: asyncio.Semaphore | None = None
+
+    # Audit/health trail, shaped similarly to ReflectiveAgent.reflection_log so
+    # existing API health code can reason about either implementation.
+    reflection_log: deque = field(default_factory=lambda: deque(maxlen=50))
+    ok_count: int = 0
+    fail_count: int = 0
+    skipped_count: int = 0
+    last_ok_ts: datetime | None = None
 
     def __post_init__(self) -> None:
         self._guidance: StrategyGuidance | None = None
@@ -183,6 +197,32 @@ class LLMStrategist:
         self, *, recent_pnl: list[float], soc_frac: float, best_bid: float | None,
         best_ask: float | None, last_price: float | None, regime_note: str = "",
     ) -> StrategyGuidance | None:
+        if self.llm_gate is not None:
+            if self.llm_gate.locked():
+                self.skipped_count += 1
+                return self._guidance
+            async with self.llm_gate:
+                return await self._refresh_once(
+                    recent_pnl=recent_pnl,
+                    soc_frac=soc_frac,
+                    best_bid=best_bid,
+                    best_ask=best_ask,
+                    last_price=last_price,
+                    regime_note=regime_note,
+                )
+        return await self._refresh_once(
+            recent_pnl=recent_pnl,
+            soc_frac=soc_frac,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            last_price=last_price,
+            regime_note=regime_note,
+        )
+
+    async def _refresh_once(
+        self, *, recent_pnl: list[float], soc_frac: float, best_bid: float | None,
+        best_ask: float | None, last_price: float | None, regime_note: str = "",
+    ) -> StrategyGuidance | None:
         messages = [
             {"role": "system", "content": build_strategist_system_prompt(self.persona_prompt)},
             {"role": "user", "content": build_strategist_user_message(
@@ -191,8 +231,45 @@ class LLMStrategist:
             )},
         ]
         try:
-            content = await self.client.chat(messages, temperature=self.temperature)
-            self._guidance = parse_guidance(content)
+            content = await asyncio.wait_for(
+                self.client.chat(messages, temperature=self.temperature),
+                timeout=self.hard_timeout_sec,
+            )
+            content = str(content)
+            if not content.strip():
+                raise RuntimeError("empty LLM response (completion budget exhausted?)")
+            guidance = parse_guidance(content)
+            self._guidance = guidance
+            self.ok_count += 1
+            self.last_ok_ts = datetime.now(UTC)
+            self.reflection_log.append(self._entry(ok=True, guidance=guidance))
         except Exception as e:  # network error or unparseable response — keep prior
+            self.fail_count += 1
+            self.reflection_log.append(
+                self._entry(ok=False, guidance=self._guidance, error=f"{type(e).__name__}: {e}")
+            )
             log.warning("strategist refresh failed (%s); keeping prior guidance", type(e).__name__)
         return self._guidance
+
+    def _entry(
+        self,
+        *,
+        ok: bool,
+        guidance: StrategyGuidance | None,
+        error: str | None = None,
+    ) -> dict:
+        guidance = guidance or StrategyGuidance()
+        ts = self.last_ok_ts if ok and self.last_ok_ts is not None else datetime.now(UTC)
+        return {
+            "ts": ts,
+            "ok": ok,
+            "preferred_modes": [m.value for m in guidance.preferred_modes],
+            "avoid_modes": [m.value for m in guidance.avoid_modes],
+            "risk_budget": guidance.risk_budget,
+            "soc_target": guidance.soc_target,
+            "execution_style": guidance.execution_style,
+            # Keep rationale populated so older UI copy degrades gracefully.
+            "rationale": guidance.execution_style or guidance.lesson,
+            "lesson": guidance.lesson,
+            "error": None if error is None else error[:200],
+        }

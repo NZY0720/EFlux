@@ -60,8 +60,13 @@ export interface ManagedVPP {
 export interface ReflectionEntry {
   ts: string;
   ok: boolean;
-  price_adjust: number;
-  qty_scale: number;
+  price_adjust?: number | null;
+  qty_scale?: number | null;
+  preferred_modes?: string[] | null;
+  avoid_modes?: string[] | null;
+  risk_budget?: number | null;
+  soc_target?: number | null;
+  execution_style?: string | null;
   rationale: string;
   lesson?: string | null;
   error: string | null;
@@ -154,8 +159,13 @@ export interface MarketReflection {
   health_state: "live" | "degraded" | "offline" | string;
   ts: string;
   ok: boolean;
-  price_adjust: number;
-  qty_scale: number;
+  price_adjust?: number | null;
+  qty_scale?: number | null;
+  preferred_modes?: string[] | null;
+  avoid_modes?: string[] | null;
+  risk_budget?: number | null;
+  soc_target?: number | null;
+  execution_style?: string | null;
   rationale: string;
   lesson?: string | null;
   error: string | null;

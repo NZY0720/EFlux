@@ -7,7 +7,7 @@ import {
   listVPPs,
   submitOrder,
 } from "../api/client";
-import type { ManagedVPP, ManagedVPPPerformance, VPP } from "../api/types";
+import type { ManagedVPP, ManagedVPPPerformance, ReflectionEntry, VPP } from "../api/types";
 import { useMarket } from "../state/marketStream";
 
 export default function MyVPPs() {
@@ -430,6 +430,25 @@ function Metric({ label, value, valueClass = "text-white" }: { label: string; va
   );
 }
 
+function guidanceSummary(r: ReflectionEntry): string {
+  if (r.risk_budget !== null && r.risk_budget !== undefined) {
+    const parts = [`risk ${(r.risk_budget * 100).toFixed(0)}%`];
+    if (r.soc_target !== null && r.soc_target !== undefined) {
+      parts.push(`SOC ${(r.soc_target * 100).toFixed(0)}%`);
+    }
+    if (r.preferred_modes?.length) parts.push(`prefer ${r.preferred_modes.slice(0, 2).join(", ")}`);
+    return parts.join(" · ");
+  }
+  if (r.price_adjust !== null && r.price_adjust !== undefined && r.qty_scale !== null && r.qty_scale !== undefined) {
+    return `price ${r.price_adjust >= 0 ? "+" : ""}${(r.price_adjust * 100).toFixed(1)}% · qty ×${r.qty_scale.toFixed(2)}`;
+  }
+  return "guidance updated";
+}
+
+function guidanceText(r: ReflectionEntry): string {
+  return r.execution_style || r.rationale || "(no rationale)";
+}
+
 function ReflectionTimeline({ data }: { data: ManagedVPPPerformance }) {
   const { reflections, llm_health: health } = data;
   if (health === null && reflections.length === 0) return null;
@@ -437,7 +456,7 @@ function ReflectionTimeline({ data }: { data: ManagedVPPPerformance }) {
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between">
-        <h4 className="text-[11px] uppercase tracking-wide text-slate-500">Reflection timeline</h4>
+        <h4 className="text-[11px] uppercase tracking-wide text-slate-500">Guidance timeline</h4>
         {health && (
           <span className="text-[11px] text-slate-500">
             {health.ok_count} ok / {health.fail_count} failed
@@ -449,7 +468,7 @@ function ReflectionTimeline({ data }: { data: ManagedVPPPerformance }) {
       <div className="max-h-56 space-y-1.5 overflow-auto rounded border border-slate-800 bg-slate-950/40 p-2">
         {reflections.length === 0 && (
           <p className="px-1 py-2 text-center text-xs text-slate-500">
-            No reflections yet — the agent consults the LLM every ~minute.
+            No guidance yet — the agent consults the LLM every ~minute.
           </p>
         )}
         {reflections.map((r) => (
@@ -461,17 +480,14 @@ function ReflectionTimeline({ data }: { data: ManagedVPPPerformance }) {
               {r.ok ? (
                 <>
                   <span className="text-emerald-300">ok</span>
-                  <span className="text-sky-300 tabular-nums">
-                    price {r.price_adjust >= 0 ? "+" : ""}
-                    {(r.price_adjust * 100).toFixed(1)}% · qty ×{r.qty_scale.toFixed(2)}
-                  </span>
+                  <span className="text-sky-300 tabular-nums">{guidanceSummary(r)}</span>
                 </>
               ) : (
                 <span className="text-rose-300">failed</span>
               )}
             </div>
             <p className="mt-0.5 text-xs text-slate-300">
-              {r.ok ? r.rationale || "(no rationale)" : r.error}
+              {r.ok ? guidanceText(r) : r.error}
             </p>
           </div>
         ))}

@@ -5,7 +5,7 @@ import { fetchMarketReflections } from "../api/client";
 import type { MarketReflection } from "../api/types";
 
 /**
- * Live LLM reflection feed for the market page — the LLM-steered agents'
+ * Live LLM guidance feed for the market page — the LLM-steered agents'
  * "thoughts" without needing a login. Newest first, polled every 5s.
  * Several agents share the feed; each gets a stable color badge and the
  * list can be filtered per agent.
@@ -26,6 +26,25 @@ function badgeForName(name: string): string {
   let hash = 0;
   for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
   return AGENT_BADGES[Math.abs(hash) % AGENT_BADGES.length];
+}
+
+function guidanceSummary(r: MarketReflection): string {
+  if (r.risk_budget !== null && r.risk_budget !== undefined) {
+    const parts = [`risk ${(r.risk_budget * 100).toFixed(0)}%`];
+    if (r.soc_target !== null && r.soc_target !== undefined) {
+      parts.push(`SOC ${(r.soc_target * 100).toFixed(0)}%`);
+    }
+    if (r.preferred_modes?.length) parts.push(`prefer ${r.preferred_modes.slice(0, 2).join(", ")}`);
+    return parts.join(" · ");
+  }
+  if (r.price_adjust !== null && r.price_adjust !== undefined && r.qty_scale !== null && r.qty_scale !== undefined) {
+    return `price ${r.price_adjust >= 0 ? "+" : ""}${(r.price_adjust * 100).toFixed(1)}% · qty ×${r.qty_scale.toFixed(2)}`;
+  }
+  return "guidance updated";
+}
+
+function guidanceText(r: MarketReflection): string {
+  return r.execution_style || r.rationale || "(no rationale)";
 }
 
 export default function AgentThoughtsFeed() {
@@ -78,7 +97,7 @@ export default function AgentThoughtsFeed() {
       <div className="mb-2 flex items-center justify-between text-xs">
         <span className="text-slate-400">
           <span className="font-medium text-emerald-300">{agents.length || "The"} LLM agents</span>{" "}
-          consult an LLM every ~minute to retune their quotes — and learn from each other
+          consult an LLM strategist every ~minute to bias their trading primitives
         </span>
         {agents.length > 0 && <HealthSummary live={liveCount} total={agents.length} />}
       </div>
@@ -100,8 +119,8 @@ export default function AgentThoughtsFeed() {
         {entries === null && <p className="px-1 py-2 text-center text-xs text-slate-500">Loading…</p>}
         {entries !== null && entries.length === 0 && (
           <p className="px-1 py-4 text-center text-xs text-slate-500">
-            No reflections yet. The agents think every ~minute when the LLM link is live —
-            otherwise they trade on their Truthful baseline. See{" "}
+            No guidance yet. The agents consult the LLM every ~minute when the link is live —
+            otherwise they trade on the scripted hybrid baseline. See{" "}
             <Link to="/vpps" className="text-sky-400 hover:text-sky-300">
               My VPPs
             </Link>{" "}
@@ -118,16 +137,13 @@ export default function AgentThoughtsFeed() {
               {r.ok ? (
                 <>
                   <span className="rounded bg-emerald-950/60 px-1.5 text-emerald-300">ok</span>
-                  <span className="text-sky-300 tabular-nums">
-                    price {r.price_adjust >= 0 ? "+" : ""}
-                    {(r.price_adjust * 100).toFixed(1)}% · qty ×{r.qty_scale.toFixed(2)}
-                  </span>
+                  <span className="text-sky-300 tabular-nums">{guidanceSummary(r)}</span>
                 </>
               ) : (
                 <span className="rounded bg-rose-950/60 px-1.5 text-rose-300">failed</span>
               )}
             </div>
-            <p className="mt-0.5 text-xs text-slate-300">{r.ok ? r.rationale || "(no rationale)" : r.error}</p>
+            <p className="mt-0.5 text-xs text-slate-300">{r.ok ? guidanceText(r) : r.error}</p>
             {r.ok && r.lesson && (
               <p className="mt-0.5 text-[11px] italic text-slate-500">lesson: {r.lesson}</p>
             )}

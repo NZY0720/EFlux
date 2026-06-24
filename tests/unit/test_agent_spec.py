@@ -32,14 +32,18 @@ def test_unknown_top_level_key_rejected():
         AgentSpec.model_validate({"name": "vpp-1", "parms": {"pv_kw_peak": 3.0}})
 
 
-def test_persona_only_valid_for_reflective():
+def test_persona_only_valid_for_llm_managed_agents():
     persona = {"name": "arb", "prompt": "Trade the spread aggressively."}
     with pytest.raises(ValidationError, match="persona"):
         AgentSpec.model_validate({"name": "vpp-1", "agent": "zi", "persona": persona})
     spec = AgentSpec.model_validate(
-        {"name": "vpp-1", "agent": "reflective", "persona": persona}
+        {"name": "vpp-1", "agent": "hybrid", "persona": persona}
     )
     assert spec.persona is not None and spec.persona.name == "arb"
+    legacy = AgentSpec.model_validate(
+        {"name": "vpp-2", "agent": "reflective", "persona": persona}
+    )
+    assert legacy.persona is not None and legacy.persona.name == "arb"
 
 
 def test_bad_params_type_rejected_at_spec_parse():
@@ -163,3 +167,31 @@ def test_json_schema_export_contains_contract_fields():
     # params is expanded to the full VPPParams field schema.
     assert "pv_kw_peak" in schema["properties"]["params"]["properties"]
     assert "gas_cost_per_kwh" in schema["properties"]["params"]["properties"]
+
+
+def test_executor_ppo_requires_checkpoint():
+    with pytest.raises(ValidationError, match="checkpoint"):
+        AgentSpec.model_validate(
+            {"name": "s", "agent": "strategy", "executor": {"kind": "ppo"}}
+        )
+
+
+def test_executor_only_valid_for_strategy_or_hybrid():
+    with pytest.raises(ValidationError, match="executor is only valid"):
+        AgentSpec.model_validate(
+            {"name": "z", "agent": "zi", "executor": {"kind": "ppo", "checkpoint": "ck"}}
+        )
+
+
+def test_executor_ppo_accepted_on_strategy_and_hybrid():
+    for kind in ("strategy", "hybrid"):
+        spec = AgentSpec.model_validate(
+            {"name": f"{kind}-1", "agent": kind, "executor": {"kind": "ppo", "checkpoint": "checkpoints/x"}}
+        )
+        assert spec.executor.kind == "ppo" and spec.executor.checkpoint == "checkpoints/x"
+
+
+def test_executor_defaults_to_scripted_and_is_optional():
+    assert AgentSpec.model_validate({"name": "s", "agent": "strategy"}).executor is None
+    spec = AgentSpec.model_validate({"name": "s", "agent": "strategy", "executor": {}})
+    assert spec.executor.kind == "scripted"

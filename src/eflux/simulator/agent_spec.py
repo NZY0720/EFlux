@@ -42,13 +42,31 @@ def validate_vpp_params(d: dict) -> dict:
 
 
 class PersonaSpec(BaseModel):
-    """Strategy persona for LLM-steered (reflective) agents."""
+    """Strategy persona for LLM-managed agents."""
 
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=60)
-    # Appended to the reflective system prompt; keep it a compact strategy brief.
+    # Appended to the LLM strategist prompt; keep it a compact strategy brief.
     prompt: str = Field(min_length=1, max_length=600)
+
+
+class ExecutorSpec(BaseModel):
+    """Tactical executor (the policy that selects each StrategyAction) for strategy /
+    hybrid agents. `scripted` (default) uses the deterministic baseline; `ppo` loads a
+    learned policy from a checkpoint trained on the structured action space. A missing
+    checkpoint / 'ai' extras falls back to scripted at load (never crashes startup)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["scripted", "ppo"] = "scripted"
+    checkpoint: str | None = None  # required for kind="ppo"
+
+    @model_validator(mode="after")
+    def _check(self) -> ExecutorSpec:
+        if self.kind == "ppo" and not self.checkpoint:
+            raise ValueError("executor kind 'ppo' requires a 'checkpoint' path")
+        return self
 
 
 class AgentSpec(BaseModel):
@@ -57,20 +75,30 @@ class AgentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")  # catch YAML typos loudly
 
     name: str = Field(min_length=1, max_length=100)
-    agent: Literal["zi", "truthful", "gas", "strategy", "reflective"] = "zi"
+    # `reflective` is accepted as a legacy alias; the loader now instantiates the
+    # hybrid LLM strategist stack for both reflective and hybrid entries.
+    agent: Literal["zi", "truthful", "gas", "strategy", "hybrid", "reflective"] = "zi"
     seed: int | None = None
     # DER portfolio — sparse VPPParams fields (see validate_vpp_params).
     params: dict = Field(default_factory=dict)
-    # Constructor kwargs for the strategy class (for "reflective", they go to
-    # the inner TruthfulAgent — e.g. {demand_beta: 0.5}).
+    # Constructor kwargs for the strategy class. For "hybrid" / legacy
+    # "reflective", they go to HybridPolicyAgent — e.g. {demand_beta: 0.5}.
     agent_params: dict = Field(default_factory=dict)
     persona: PersonaSpec | None = None
+    # Tactical policy for strategy/hybrid agents (scripted default, or learned PPO).
+    executor: ExecutorSpec | None = None
 
     @model_validator(mode="after")
     def _check(self) -> AgentSpec:
-        if self.persona is not None and self.agent != "reflective":
+        if self.persona is not None and self.agent not in ("hybrid", "reflective"):
             raise ValueError(
-                f"{self.name!r}: persona is only valid for agent: reflective (got {self.agent!r})"
+                f"{self.name!r}: persona is only valid for agent: hybrid/reflective "
+                f"(got {self.agent!r})"
+            )
+        if self.executor is not None and self.agent not in ("strategy", "hybrid", "reflective"):
+            raise ValueError(
+                f"{self.name!r}: executor is only valid for agent: strategy/hybrid "
+                f"(got {self.agent!r})"
             )
         # Type-check the params block now so a bad roster fails at load, not mid-run.
         validate_vpp_params(self.params)

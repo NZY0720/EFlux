@@ -14,11 +14,11 @@ PYTHONPATH=src .env/bin/python -m eflux.cli agent-spec-schema > docs/agent_spec.
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string (1–100 chars) | yes | Unique display name (trade tape, participants directory). Duplicates are rejected at load. |
-| `agent` | `zi` \| `truthful` \| `gas` \| `reflective` | no (default `zi`) | Strategy kind. `reflective` = LLM-steered (see §3). |
+| `agent` | `zi` \| `truthful` \| `gas` \| `strategy` \| `hybrid` \| `reflective` | no (default `zi`) | Strategy kind. `hybrid` = LLM-steered HybridPolicyAgent (see §3). `reflective` is a legacy alias that loads the hybrid stack. |
 | `seed` | int | no | RNG seed (defaults to `42 + roster index`). |
 | `params` | object | no | DER portfolio — sparse `VPPParams` fields (see the JSON schema for all 19). Unknown keys are rejected (422 from `POST /vpps`, load failure for the YAML roster); known keys are type-checked. |
-| `agent_params` | object | no | Constructor kwargs for the strategy class. For `reflective`, they go to the inner `TruthfulAgent`. |
-| `persona` | `{name, prompt}` | no | **`reflective` only** — strategy brief appended to the LLM system prompt (`prompt` ≤ 600 chars). Rejected on other agent kinds. |
+| `agent_params` | object | no | Constructor kwargs for the strategy class. For `hybrid` / legacy `reflective`, they go to `HybridPolicyAgent`. |
+| `persona` | `{name, prompt}` | no | **`hybrid` / `reflective` only** — strategy brief appended to the LLM strategist prompt (`prompt` ≤ 600 chars). Rejected on other agent kinds. |
 
 Typos in top-level keys fail loudly (`extra="forbid"`), so a misspelled
 `parms:` cannot silently load.
@@ -35,8 +35,8 @@ weather for PV + wind; stripped when `EFLUX_PV_PHYSICAL=false`).
 
 | Kind | Param | Effect |
 |---|---|---|
-| `truthful` / `reflective` | `demand_beta` (float, default 0) | Price-responsive bidding: bid = `price_ref * min(price_cap_mult, 1 + demand_beta * deficit_frac)`. With `0.5`, an urgent deficit bids up to 75 — crossing the gas merit order (55–72). |
-| `truthful` / `reflective` | `price_cap_mult` (default 1.5) | Cap on the demand-responsive bid. |
+| `truthful` / `hybrid` | `demand_beta` (float, default 0) | Price-responsive bidding: bid = `price_ref * min(price_cap_mult, 1 + demand_beta * deficit_frac)`. With `0.5`, an urgent deficit bids up to 75 — crossing the gas merit order (55–72). |
+| `truthful` / `hybrid` | `price_cap_mult` (default 1.5) | Cap on the demand-responsive bid. |
 | `zi` | `spread_frac` (default 0.5) | Half-width of the random price range. |
 | `gas` | `quote_every_n_ticks` (default 30) | Re-quote cadence for the dispatchable ask. |
 
@@ -47,7 +47,7 @@ Each entry under `vpps:` is one AgentSpec. Example:
 ```yaml
 vpps:
   - name: llm-arb-aggressive
-    agent: reflective
+    agent: hybrid
     seed: 78
     params: { pv_kw_peak: 2.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 0.5,
               markup_floor: 0.4 }
@@ -61,27 +61,29 @@ vpps:
 Loaded by `load_default_scenario()`; the roster file is set via
 `EFLUX_SCENARIO_FILE` (default `scenarios/default.yaml`).
 
-## 3. Reflective (LLM-steered) agents
+## 3. Hybrid (LLM-steered) agents
 
-All `agent: reflective` entries share **one** LLM connection (configured via
+All `agent: hybrid` entries share **one** LLM connection (configured via
 `EFLUX_REFLECTIVE_ENABLED`, `EFLUX_LLM_BASE_URL`, `EFLUX_LLM_MODEL`, `key.txt`):
 
-- **Staggering** — the loader assigns each agent a reflection offset
+- **Staggering** — the loader assigns each agent a guidance refresh offset
   (`round(i * interval / n)`), so with 4 agents at a 60-tick interval they
-  reflect at ticks 0/15/30/45. A shared semaphore guarantees at most one
-  in-flight LLM call; a cycle that would overlap is *skipped* (counted on the
-  agent as `skipped_count`), never queued.
-- **Learning loop** — every reflection closes the previous hints' outcome
-  window (PnL delta, trades, SOC over the window) and persists it as one JSONL
-  record under `data/agent_memory/<name>.jsonl`. The last 5 outcomes — plus
-  recent market-wide trades and the *other* LLM agents' latest reflections —
-  are fed into the next prompt. The LLM may also return a `lesson` (≤160
-  chars), a durable rule of thumb that survives backend restarts.
-- **Fallback** — when the LLM is unconfigured or unreachable, reflective
-  agents trade on their inner `TruthfulAgent` baseline and report
+  refresh at ticks 0/15/30/45. A shared semaphore guarantees at most one
+  in-flight LLM strategist call; a cycle that would overlap is *skipped*
+  (counted on the strategist as `skipped_count`), never queued.
+- **Layered control** — `HybridPolicyAgent` estimates value with the shared
+  truthful oracle, a fast tactical policy selects one strategy primitive, the
+  `LLMStrategist` supplies soft guidance (`preferred_modes`, `avoid_modes`,
+  `risk_budget`, `soc_target`), and the compiler lowers the primitive into
+  concrete orders. The LLM never submits raw orders.
+- **Risk gate** — every compiled order still passes through the simulator's
+  `RiskGate`; if a batch is fully vetoed, the hybrid agent exposes a Truthful
+  fallback path for a safe retry.
+- **Fallback** — when the LLM is unconfigured or unreachable, hybrid agents
+  and legacy `reflective` entries trade on the scripted hybrid baseline and report
   `llm_status` accordingly. Nothing else changes.
 
-Reflections are public: `GET /market/reflections` (the "Agent thoughts" panel).
+Guidance/reflections are public: `GET /market/reflections` (the "Agent thoughts" panel).
 
 ## 4. External VPPs — joining over the API
 
@@ -138,7 +140,7 @@ curl -s -X POST $BASE/orders -H "Authorization: Bearer $KEY" \
 | `GET /market/participants` | id → name/kind/strategy directory. |
 | `GET /market/supply_curve` | Resting orders with per-VPP category attribution (merit order). |
 | `GET /market/agents` | Live roster: endowments, PnL, SOC, power flows. |
-| `GET /market/reflections?limit=N` | LLM agents' reflection feed (incl. lessons). |
+| `GET /market/reflections?limit=N` | LLM agents' guidance feed (incl. lessons). |
 
 ### Streaming
 

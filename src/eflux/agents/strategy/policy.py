@@ -47,7 +47,67 @@ class ScriptedStrategyPolicy:
         self, ctx: AgentContext, valuation: ValuationSignal, guidance: object | None = None
     ) -> StrategyAction:
         if valuation.surplus_kwh >= self.min_qty:
-            return StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS)
+            return self._guided(
+                StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS),
+                "sell",
+                guidance,
+            )
         if valuation.deficit_kwh >= self.min_qty:
-            return StrategyAction(mode=StrategyMode.COVER_DEFICIT)
-        return StrategyAction(mode=StrategyMode.NOOP)
+            return self._guided(
+                StrategyAction(mode=StrategyMode.COVER_DEFICIT),
+                "buy",
+                guidance,
+            )
+        return self._guided(StrategyAction(mode=StrategyMode.NOOP), "neutral", guidance)
+
+    def _guided(
+        self,
+        base: StrategyAction,
+        side: str,
+        guidance: object | None,
+    ) -> StrategyAction:
+        """Adopt a preferred primitive only when it is compatible with the current
+        imbalance. The guidance remains soft: incompatible preferences are ignored,
+        and avoided base modes are merely shrunk later by apply_guidance()."""
+        preferred = tuple(getattr(guidance, "preferred_modes", ()) or ())
+        if not preferred:
+            return base
+        compatible = _COMPATIBLE_MODES[side]
+        for mode in preferred:
+            if mode in compatible:
+                return _action_for_preferred(mode)
+        return base
+
+
+_COMPATIBLE_MODES: dict[str, set[StrategyMode]] = {
+    "sell": {
+        StrategyMode.LIQUIDATE_SURPLUS,
+        StrategyMode.LADDER_SELL,
+        StrategyMode.AGGRESSIVE_TAKER,
+        StrategyMode.PASSIVE_MARKET_MAKE,
+        StrategyMode.BATTERY_ARBITRAGE,
+    },
+    "buy": {
+        StrategyMode.COVER_DEFICIT,
+        StrategyMode.LADDER_BUY,
+        StrategyMode.AGGRESSIVE_TAKER,
+        StrategyMode.PASSIVE_MARKET_MAKE,
+        StrategyMode.BATTERY_ARBITRAGE,
+    },
+    "neutral": {
+        StrategyMode.NOOP,
+        StrategyMode.HOLD_ENERGY,
+        StrategyMode.PASSIVE_MARKET_MAKE,
+        StrategyMode.BATTERY_ARBITRAGE,
+    },
+}
+
+
+def _action_for_preferred(mode: StrategyMode) -> StrategyAction:
+    if mode in (StrategyMode.LADDER_SELL, StrategyMode.LADDER_BUY):
+        return StrategyAction(mode=mode, ladder_levels=3, ladder_slope=0.01)
+    if mode == StrategyMode.AGGRESSIVE_TAKER:
+        return StrategyAction(mode=mode, aggressiveness=1.0)
+    if mode == StrategyMode.PASSIVE_MARKET_MAKE:
+        return StrategyAction(mode=mode, qty_fraction=0.5, ladder_slope=0.02)
+    return StrategyAction(mode=mode)

@@ -60,10 +60,17 @@ class ManagedTradeOut(BaseModel):
 class ReflectionEntryOut(BaseModel):
     ts: datetime
     ok: bool
-    price_adjust: float
-    qty_scale: float
-    rationale: str
-    # Persisted takeaway the LLM distilled from its hint→outcome history.
+    # Legacy ReflectiveAgent hint fields; null for HybridPolicyAgent strategist logs.
+    price_adjust: float | None = None
+    qty_scale: float | None = None
+    # HybridPolicyAgent + LLMStrategist guidance fields.
+    preferred_modes: list[str] | None = None
+    avoid_modes: list[str] | None = None
+    risk_budget: float | None = None
+    soc_target: float | None = None
+    execution_style: str | None = None
+    rationale: str = ""
+    # Durable takeaway the LLM distilled from the latest guidance/reflection cycle.
     # None for entries recorded before lessons existed.
     lesson: str | None = None
     error: str | None
@@ -85,7 +92,7 @@ class ManagedVPPPerformanceOut(BaseModel):
     soc_kwh: float
     soc_frac: float
     recent_trades: list[ManagedTradeOut]
-    # LLM reflection audit trail, newest first. Empty for non-reflective agents.
+    # LLM guidance/reflection audit trail, newest first. Empty for non-LLM agents.
     reflections: list[ReflectionEntryOut]
     llm_health: LLMHealthOut | None
 
