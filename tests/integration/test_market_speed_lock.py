@@ -19,8 +19,9 @@ async def test_external_order_rejected_at_fast_speed(monkeypatch, db_session):
     get_engine.cache_clear()
     get_sessionmaker.cache_clear()
 
-    from eflux.api.main import create_app
     from httpx import ASGITransport, AsyncClient
+
+    from eflux.api.main import create_app
 
     app = create_app()
     async with app.router.lifespan_context(app):

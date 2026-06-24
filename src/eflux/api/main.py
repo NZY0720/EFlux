@@ -8,6 +8,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+# Ensure all models are imported before create_all.
+import eflux.db.models  # noqa: F401
 from eflux import __version__
 from eflux.api.routers import auth, health, market, orders, vpps
 from eflux.api.ws import market as market_ws
@@ -18,9 +20,6 @@ from eflux.db.base import Base
 from eflux.db.session import get_engine
 from eflux.simulator.runner import Simulator
 from eflux.simulator.scenarios import load_default_scenario
-
-# Ensure all models are imported before create_all.
-import eflux.db.models  # noqa: F401
 
 log = logging.getLogger(__name__)
 

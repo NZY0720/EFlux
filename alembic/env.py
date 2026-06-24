@@ -5,16 +5,14 @@ from __future__ import annotations
 import asyncio
 from logging.config import fileConfig
 
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 from sqlalchemy.engine import Connection
-from sqlalchemy.ext.asyncio import AsyncEngine
-
-from eflux.config import get_settings
-from eflux.db.base import Base
 
 # Importing models registers them on Base.metadata so autogenerate sees them.
 import eflux.db.models  # noqa: F401
+from alembic import context
+from eflux.config import get_settings
+from eflux.db.base import Base
 
 config = context.config
 if config.config_file_name is not None:

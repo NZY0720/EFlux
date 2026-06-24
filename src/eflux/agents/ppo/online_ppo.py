@@ -17,7 +17,6 @@ from __future__ import annotations
 import copy
 import logging
 from dataclasses import dataclass, field
-from decimal import Decimal
 
 import numpy as np
 import torch
@@ -126,7 +125,7 @@ class OnlineLearner:
     value_coef: float = 0.5
     entropy_coef: float = 0.01
     max_grad_norm: float = 0.5
-    kl_target: float = 0.02   # early-stop the epoch loop past 1.5×; 0 disables
+    kl_target: float = 0.02   # early-stop the epoch loop past 1.5x; 0 disables
     update_every: int = 64    # segment length (transitions) before an update fires
     min_update_size: int = 16
     mode_reg_coef: float = 0.0

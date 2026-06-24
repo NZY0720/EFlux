@@ -14,11 +14,7 @@ import numpy as np
 import torch
 
 from eflux.agents.base import BaseAgent, MarketSnapshot, OrderIntent
-from eflux.bridge.bus import InMemoryBus
-from eflux.simulator.runner import Simulator
-from eflux.vpp.base import VPPParams
-
-from eflux.agents.ppo.bc import BCNet, BCPolicy
+from eflux.agents.ppo.bc import BCNet
 from eflux.agents.ppo.online_buffer import RolloutBuffer
 from eflux.agents.ppo.online_net import (
     ActorCriticNet,
@@ -44,6 +40,9 @@ from eflux.agents.ppo.primitive_encoding import (
 )
 from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 from eflux.agents.strategy.schema import StrategyMode
+from eflux.bridge.bus import InMemoryBus
+from eflux.simulator.runner import Simulator
+from eflux.vpp.base import VPPParams
 
 
 # -- M1: net + warm-start ----------------------------------------------------------------
@@ -95,7 +94,7 @@ def test_gae_matches_manual_computation():
     buf = RolloutBuffer()
     rewards = [1.0, 0.0, 2.0, -1.0]
     values = [0.5, 0.4, 0.3, 0.2]
-    for r, v in zip(rewards, values):
+    for r, v in zip(rewards, values, strict=True):
         buf.add(np.zeros(OBS_DIM), np.zeros(ACTION_DIM), logprob=0.0, value=v, reward=r)
     gamma, lam, last_value = 0.99, 0.95, 0.1
     out = buf.compute_gae(last_value=last_value, gamma=gamma, lam=lam)
@@ -349,7 +348,7 @@ def test_persist_online_weights(tmp_path, monkeypatch):
 
 def test_hybrid_offtick_update_sync_fallback_without_loop():
     from eflux.agents.hybrid import HybridPolicyAgent
-    from eflux.agents.ppo.online_ppo import OnlineLearner, OnlinePPOPolicy
+    from eflux.agents.ppo.online_ppo import OnlineLearner
 
     learner = OnlineLearner(update_every=8, min_update_size=4, seed=0)
     policy = OnlinePPOPolicy(learner=learner, learning=True, auto_update=False)  # async mode

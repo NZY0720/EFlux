@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 class PV:
     kw_peak: float
     noise_std: float = 0.1
-    physical_model: "PVPhysicalModel | None" = field(default=None, repr=False)
+    physical_model: PVPhysicalModel | None = field(default=None, repr=False)
     _fallback_warned: bool = field(default=False, repr=False)
 
     def output_kw(self, sim_ts: datetime, rng: random.Random) -> float:

@@ -31,5 +31,5 @@ async def market_stream(ws: WebSocket) -> None:
         log.exception("WS market stream error")
         try:
             await ws.close()
-        except Exception:  # noqa: BLE001
+        except Exception:
             pass

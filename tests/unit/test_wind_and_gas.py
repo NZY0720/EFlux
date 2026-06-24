@@ -11,7 +11,6 @@ from eflux.agents.gas import GasGeneratorAgent
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad, WindTurbine
 
-
 # --- WindTurbine ------------------------------------------------------------
 
 def test_power_curve_regions():

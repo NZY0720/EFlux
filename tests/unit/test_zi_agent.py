@@ -9,7 +9,7 @@ from decimal import Decimal
 from eflux.agents.base import AgentContext, MarketSnapshot, OrderIntent
 from eflux.agents.zi import ZIAgent
 from eflux.vpp.base import VPPParams, VPPState
-from eflux.vpp.der import Battery, FlexibleLoad, PV
+from eflux.vpp.der import PV, Battery, FlexibleLoad
 
 
 def _make_ctx(*, pv_kw: float, load_kw: float, soc_kwh: float = 5.0) -> AgentContext:
@@ -56,7 +56,6 @@ def test_zi_outputs_buy_when_load_exceeds_pv():
 
 
 def test_zi_price_within_rational_range():
-    agent = ZIAgent(price_ref=Decimal("50.0"), spread_frac=0.5)
     # Repeat a few times — random draws should all be in [25, 75]
     for _ in range(20):
         intents = ZIAgent(price_ref=Decimal("50.0"), spread_frac=0.5).decide(

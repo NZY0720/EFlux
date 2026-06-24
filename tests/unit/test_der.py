@@ -14,7 +14,7 @@ from eflux.vpp.der import PV
 class _PhysicalModelWithoutWeather:
     weather = None
 
-    def output_kw(self, sim_ts: datetime) -> float:  # noqa: ARG002
+    def output_kw(self, sim_ts: datetime) -> float:
         return 0.0
 
 

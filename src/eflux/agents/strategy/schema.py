@@ -15,12 +15,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from enum import Enum
+from enum import StrEnum
 
 from eflux.agents.base import CancelIntent, OrderIntent, ReplaceIntent
 
 
-class StrategyMode(str, Enum):
+class StrategyMode(StrEnum):
     """The initial structured action library (design note §4). A str-Enum so it
     serializes cleanly into LLM/PPO I/O and audit records."""
 

@@ -8,11 +8,11 @@ from decimal import Decimal
 
 from sqlalchemy import (
     JSON,
-    Integer,
     DateTime,
     Enum,
     ForeignKey,
     Index,
+    Integer,
     Numeric,
     String,
     UniqueConstraint,
@@ -22,12 +22,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from eflux.db.base import Base, utcnow
 
 
-class OrderSide(str, enum.Enum):
+class OrderSide(enum.StrEnum):
     BUY = "buy"
     SELL = "sell"
 
 
-class OrderStatus(str, enum.Enum):
+class OrderStatus(enum.StrEnum):
     OPEN = "open"
     PARTIALLY_FILLED = "partially_filled"
     FILLED = "filled"
@@ -44,11 +44,11 @@ class User(Base):
         DateTime(timezone=True), default=utcnow, nullable=False
     )
 
-    vpps: Mapped[list["VPP"]] = relationship(back_populates="owner", cascade="all, delete-orphan")
-    api_keys: Mapped[list["ApiKey"]] = relationship(
+    vpps: Mapped[list[VPP]] = relationship(back_populates="owner", cascade="all, delete-orphan")
+    api_keys: Mapped[list[ApiKey]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
-    sessions: Mapped[list["Session"]] = relationship(
+    sessions: Mapped[list[Session]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -121,7 +121,7 @@ class VPP(Base):
     )
 
     owner: Mapped[User] = relationship(back_populates="vpps")
-    orders: Mapped[list["Order"]] = relationship(back_populates="vpp")
+    orders: Mapped[list[Order]] = relationship(back_populates="vpp")
 
 
 class Order(Base):

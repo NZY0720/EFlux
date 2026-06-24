@@ -13,7 +13,7 @@ pd = pytest.importorskip("pandas")
 pytest.importorskip("pvlib")
 
 
-def _synthetic_weather(ts: datetime) -> "pd.DataFrame":
+def _synthetic_weather(ts: datetime) -> pd.DataFrame:
     """One-hour DataFrame with a bright-noon row at the requested timestamp."""
     floored = ts.replace(minute=0, second=0, microsecond=0)
     return pd.DataFrame(
