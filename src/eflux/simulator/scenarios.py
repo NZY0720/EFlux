@@ -68,27 +68,57 @@ def _validate_agent_params(name: str, agent_params: dict, factory: type) -> None
         )
 
 
-def _build_executor(name: str, executor):
+def _resolve_checkpoint(ckpt: str | None) -> Path | None:
+    """Resolve a (possibly relative) checkpoint path against the project root; None if it
+    is unset or does not exist."""
+    if not ckpt:
+        return None
+    path = Path(ckpt)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path if path.exists() else None
+
+
+def _build_executor(name: str, executor, *, seed: int = 0, auto_update: bool = True):
     """Build the tactical policy for a strategy/hybrid entry from its ExecutorSpec.
 
     None / scripted → None (the agent uses its own ScriptedStrategyPolicy default).
-    ppo → a PPOPrimitivePolicy over the structured action space, loaded lazily from the
-    checkpoint. Any failure (missing 'ai' extras or checkpoint, load error) falls back to
-    scripted with a warning — a bad executor must not take down startup."""
+    ppo → a frozen PPOPrimitivePolicy (RLlib checkpoint) over the structured action space.
+    ppo_online → a custom live-learning OnlinePPOPolicy (warm-started from a BC/online
+    checkpoint when present, else a fresh net). Any failure (missing 'ai' extras or
+    checkpoint, load error) falls back to scripted with a warning — a bad executor must not
+    take down startup."""
     if executor is None or executor.kind == "scripted":
         return None
+
+    if executor.kind == "ppo_online":
+        try:
+            from eflux.agents.ppo.online_ppo import build_online_policy
+        except ImportError as e:
+            log.warning("%s: ppo_online executor needs the 'ai' extras (%s) — using scripted", name, e)
+            return None
+        path = _resolve_checkpoint(executor.checkpoint)
+        if executor.checkpoint and path is None:
+            log.warning("%s: ppo_online warm-start %r missing — starting from a fresh net",
+                        name, executor.checkpoint)
+        learning = executor.online_learning and get_settings().online_learning_enabled
+        try:
+            return build_online_policy(
+                str(path) if path else None, learning=learning, auto_update=auto_update, seed=seed
+            )
+        except Exception:
+            log.exception("%s: ppo_online executor failed to build — using scripted", name)
+            return None
+
     if executor.kind == "ppo":
         try:
             from eflux.agents.ppo.primitive_agent import PPOPrimitivePolicy
         except ImportError as e:
             log.warning("%s: PPO executor needs the 'ai' extras (%s) — using scripted", name, e)
             return None
-        ckpt = executor.checkpoint
-        path = Path(ckpt)
-        if not path.is_absolute():
-            path = PROJECT_ROOT / path
-        if not path.exists():
-            log.warning("%s: PPO executor checkpoint %r missing — using scripted", name, ckpt)
+        path = _resolve_checkpoint(executor.checkpoint)
+        if path is None:
+            log.warning("%s: PPO executor checkpoint %r missing — using scripted", name, executor.checkpoint)
             return None
         try:
             return PPOPrimitivePolicy(str(path))
@@ -145,6 +175,9 @@ def load_default_scenario(sim: Simulator) -> None:
                 n_managed=len(managed_specs),
             )
             managed_index += 1
+            if spec.mirror:
+                _add_mirror_vpp(sim, spec, use_real_weather=use_real_weather, default_seed=42 + i)
+                counts["mirror"] = counts.get("mirror", 0) + 1
         else:
             factory = AGENT_FACTORIES[spec.agent]
             _validate_agent_params(spec.name, spec.agent_params, factory)
@@ -152,7 +185,9 @@ def load_default_scenario(sim: Simulator) -> None:
             agent_params = _diversify_cost(spec, seed, settings.price_ref_jitter_frac, factory)
             # A `strategy` entry may carry a learned executor (the standalone PPO VPP).
             if spec.agent == "strategy" and spec.executor is not None:
-                agent_params["policy"] = _build_executor(spec.name, spec.executor)
+                agent_params["policy"] = _build_executor(
+                    spec.name, spec.executor, seed=seed, auto_update=True
+                )
             sim.add_builtin_vpp(
                 name=spec.name,
                 params=_build_params(spec, use_real_weather),
@@ -256,9 +291,12 @@ def _add_hybrid_vpp(
         if shared.client is not None
         else None
     )
+    seed = spec.seed if spec.seed is not None else default_seed
     agent = HybridPolicyAgent(
         **spec.agent_params,
-        executor=_build_executor(spec.name, spec.executor),
+        executor=_build_executor(
+            spec.name, spec.executor, seed=seed, auto_update=not settings.online_update_async
+        ),
         strategist=strategist,
         refresh_every_n_ticks=interval,
         refresh_offset_ticks=offset,
@@ -268,7 +306,7 @@ def _add_hybrid_vpp(
         name=spec.name,
         params=_build_params(spec, use_real_weather),
         agent=agent,
-        seed=spec.seed if spec.seed is not None else default_seed,
+        seed=seed,
         strategy=f"HybridPolicyAgent ({shared.strategy_suffix})",
         is_my_vpp=True,
         llm_live=shared.live,
@@ -281,6 +319,30 @@ def _add_hybrid_vpp(
         offset,
         shared.live,
     )
+
+
+def _add_mirror_vpp(
+    sim: Simulator, spec: AgentSpec, *, use_real_weather: bool, default_seed: int
+) -> None:
+    """Add the strategist-less PPO twin of a hybrid entry: a StrategyAgent with the *same*
+    executor (a fresh policy instance, warm-started from the same checkpoint), params, and
+    seed — so it sees the identical DER trajectory and only the LLM meta-control distinguishes
+    it. Name suffix '-ppo-mirror'. The twin learns online too (auto_update), just without any
+    LLM steer, isolating exactly one variable for the A/B."""
+    seed = spec.seed if spec.seed is not None else default_seed
+    name = f"{spec.name}-ppo-mirror"
+    policy = _build_executor(name, spec.executor, seed=seed, auto_update=True)
+    # agent_params validated for HybridPolicyAgent share StrategyAgent's fields (price_ref,
+    # demand_beta, min_qty, price_cap_mult) — pass them straight through.
+    agent = StrategyAgent(**spec.agent_params, policy=policy)
+    sim.add_builtin_vpp(
+        name=name,
+        params=_build_params(spec, use_real_weather),
+        agent=agent,
+        seed=seed,
+        strategy="StrategyAgent (PPO mirror)",
+    )
+    log.info("PPO mirror VPP %s loaded (twin of %s, seed=%d)", name, spec.name, seed)
 
 
 def load_my_llm_vpp(sim: Simulator) -> None:

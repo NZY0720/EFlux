@@ -36,45 +36,52 @@ def test_load_ppo_scenario_skips_gracefully_on_bad_checkpoint(monkeypatch):
 def test_default_scenario_loads_full_roster_incl_llm_fleet(monkeypatch):
     sim = _load(monkeypatch)
 
-    # 33 baseline entries + the standalone learned PPO StrategyAgent (ppo-primitive-30).
-    assert len(sim.vpps) == 34
+    # 36 declared entries (4 zi + 20 truthful + 2 gas + 6 hybrid + 4 standalone PPO) plus
+    # 6 auto-spawned PPO mirrors (one per hybrid) = 42 live VPPs.
+    assert len(sim.vpps) == 42
     my_vpps = sim.my_managed_vpps()
-    assert len(my_vpps) == 4
+    assert len(my_vpps) == 6
     assert my_vpps[0].name == "my-llm-vpp"
     assert {v.name for v in my_vpps} == {
         "my-llm-vpp",
         "llm-arb-aggressive",
         "llm-wind-conservative",
         "llm-demand-buyer",
+        "llm-solar-trader",
+        "llm-balanced-mm",
     }
     assert all(isinstance(v.agent, HybridPolicyAgent) for v in my_vpps)
-    assert len([v for v in sim.vpps.values() if not v.is_my_vpp]) == 30
+    # One strategist-less PPO twin per hybrid, into the same market.
+    mirrors = [v for v in sim.vpps.values() if v.name.endswith("-ppo-mirror")]
+    assert len(mirrors) == 6
+    assert len([v for v in sim.vpps.values() if not v.is_my_vpp]) == 36
 
 
-def test_ppo_executor_wired_into_roster_when_checkpoint_present(monkeypatch):
-    """The standalone PPO StrategyAgent and the PPO-driven hybrid agent both carry a
-    learned PPOPrimitivePolicy when the checkpoint and 'ai' extras are available."""
+def test_ppo_online_executor_wired_into_roster(monkeypatch):
+    """The standalone PPO StrategyAgents, the PPO-driven hybrids, and the auto-spawned
+    mirrors all carry a live-learning OnlinePPOPolicy when torch is available."""
     import pytest
 
-    from eflux.config import PROJECT_ROOT
-
-    if not (PROJECT_ROOT / "checkpoints" / "ppo_primitive").exists():
-        pytest.skip("no ppo_primitive checkpoint on this machine")
-    pytest.importorskip("ray")
+    pytest.importorskip("torch")
 
     from eflux.agents.hybrid import StrategyAgent
-    from eflux.agents.ppo.primitive_agent import PPOPrimitivePolicy
+    from eflux.agents.ppo.online_ppo import OnlinePPOPolicy
 
     sim = _load(monkeypatch)
     by_name = {v.name: v.agent for v in sim.vpps.values()}
 
     standalone = by_name["ppo-primitive-30"]
     assert isinstance(standalone, StrategyAgent)
-    assert isinstance(standalone._policy, PPOPrimitivePolicy)  # learned executor, not scripted
+    assert isinstance(standalone._policy, OnlinePPOPolicy)  # online learner, not scripted
 
     hybrid = by_name["llm-demand-buyer"]
     assert isinstance(hybrid, HybridPolicyAgent)
-    assert isinstance(hybrid._executor, PPOPrimitivePolicy)  # PPO inside the hybrid stack
+    assert isinstance(hybrid._executor, OnlinePPOPolicy)  # online PPO inside the hybrid stack
+
+    mirror = by_name["llm-demand-buyer-ppo-mirror"]
+    assert isinstance(mirror, StrategyAgent)
+    assert isinstance(mirror._policy, OnlinePPOPolicy)  # twin runs the same machinery, no LLM
+    assert not hasattr(mirror, "strategist")
 
 
 def test_llm_fleet_shares_connection_and_staggers_reflections(monkeypatch):
@@ -116,7 +123,7 @@ def test_default_scenario_has_diverse_vpp_types(monkeypatch):
 
     assert len(wind) >= 5, "expected several wind farms"
     assert all(v.wind is not None for v in wind), "wind VPPs must carry a WindTurbine"
-    assert len(gas) >= 3, "expected several gas generators"
+    assert len(gas) >= 2, "expected the gas merit-order anchors"
     assert all(v.params.gas_kw_max > 0 for v in gas)
     assert len(industrial) >= 4, "expected several factories"
     assert commercial and flat

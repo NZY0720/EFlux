@@ -1,131 +1,136 @@
 # EFlux default scenario — every built-in VPP, validated entry-by-entry as an
 # AgentSpec (src/eflux/simulator/agent_spec.py; JSON Schema: eflux agent-spec-schema).
 #
+# Roster mix (declared entries): 4 zi · 20 truthful · 2 gas · 6 hybrid · 4 standalone PPO.
+# Each `hybrid` entry sets `mirror: true`, so the loader also spawns a strategist-less PPO
+# twin ("<name>-ppo-mirror") into the same market — the LLM-coached agent and its PPO-only
+# control trade side-by-side, isolating the LLM's marginal contribution. Live total = 42 VPPs
+# (36 declared + 6 mirrors → 10 PPO learners: 4 standalone + 6 mirrored).
+#
 # Fields per entry:
 #   name         — shown in the trade tape / participants directory
 #   agent        — zi | truthful | gas | strategy | hybrid (LLM-steered)
 #   seed         — optional RNG seed (defaults to 42 + index)
-#   params       — VPPParams fields; unknown keys are ignored.
+#   params       — VPPParams fields; unknown keys are rejected.
 #                  pv_lat/pv_lon are SITE coords: they enable real Open-Meteo data
 #                  for both PV (pvlib) and wind (wind_speed_10m). Stripped when
 #                  EFLUX_PV_PHYSICAL=false or the 'data' extras are missing.
 #   agent_params — strategy-class kwargs (for hybrid: HybridPolicyAgent),
 #                  e.g. { demand_beta: 0.5 } for price-responsive bids.
-#   persona      — hybrid only: { name, prompt } strategy brief appended to
-#                  the LLM strategist prompt. Refresh offsets are loader-assigned.
+#   executor     — strategy/hybrid only: { kind: scripted|ppo|ppo_online, checkpoint }.
+#                  ppo_online = custom live-learning PPO (warm-started from the BC checkpoint),
+#                  which the LLM strategist meta-controls (reward weights / lr / mode bias).
+#   persona      — hybrid only: { name, prompt } strategy brief appended to the LLM prompt.
+#   mirror       — hybrid only: also spawn the PPO-only twin (see above).
 #
-# Price landscape (price_ref = 50):
-#   renewables surplus  ~ markup_floor * 50 (20 for truthful sellers)
-#   battery band        ~ 52.7 sell / 47.4 buy
-#   gas marginal cost   ~ 55-72 (soft price cap, merit order top)
-#   urgent demand bids  ~ up to 75 (demand_beta: bids rise with deficit, so
-#                         scarcity hours actually clear the gas ladder)
-# Cost diversification: each non-LLM agent's price_ref is jittered ±6%
-# (EFLUX_PRICE_REF_JITTER_FRAC, deterministic per agent), so the battery band
-# and deficit bids above fan out across a range instead of collapsing onto two
-# discrete prints. LLM-managed agents are excluded; gas is set per-VPP below.
+# Price landscape (price_ref = 50): renewables surplus ~20 (truthful sellers); battery band
+# ~52.7 sell / 47.4 buy; gas marginal cost ~55-68; urgent demand bids up to ~75 (demand_beta).
+# Cost diversification (EFLUX_PRICE_REF_JITTER_FRAC) jitters each non-LLM agent's price_ref
+# ±6% so the band/deficit prices fan out; LLM agents are excluded; gas is set per-VPP.
 
 vpps:
-  # --- residential / rooftop solar mix (originals) ------------------------
+  # ===================== ZERO-INTELLIGENCE noise cohort (4) =====================
+  # One per archetype — a thin baseline of random-but-rational traders for liquidity.
   - name: ordinary-zi-solar-01
     agent: zi
     params: { pv_kw_peak: 10.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 1.2,
               pv_lat: 22.28, pv_lon: 114.13, pv_tilt: 22.0, pv_azimuth: 180.0 }
-  - name: ordinary-truthful-batt-02
-    agent: truthful
-    params: { pv_kw_peak: 6.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 2.0, markup_floor: 0.4 }
-    agent_params: { demand_beta: 0.5 }
-  - name: ordinary-zi-load-03
-    agent: zi
-    params: { pv_kw_peak: 0.5, battery_kwh: 5.0, battery_kw_max: 2.0, load_kw_base: 5.0 }
-  - name: ordinary-zi-rooftop-04
-    agent: zi
-    params: { pv_kw_peak: 8.0, battery_kwh: 12.0, battery_kw_max: 3.0, load_kw_base: 1.5 }
-  - name: ordinary-truthful-flex-05
-    agent: truthful
-    params: { pv_kw_peak: 4.0, battery_kwh: 18.0, battery_kw_max: 5.0, load_kw_base: 3.0, markup_floor: 0.4 }
-    agent_params: { demand_beta: 0.5 }
-  - name: ordinary-zi-battery-06
-    agent: zi
-    params: { pv_kw_peak: 2.0, battery_kwh: 28.0, battery_kw_max: 8.0, load_kw_base: 2.5 }
-  - name: ordinary-truthful-solar-07
-    agent: truthful
-    params: { pv_kw_peak: 9.0, battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 1.0, markup_floor: 0.4 }
-  - name: ordinary-zi-commercial-load-08
-    agent: zi
-    params: { pv_kw_peak: 1.0, battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 6.0 }
-  - name: ordinary-truthful-mixed-09
-    agent: truthful
-    params: { pv_kw_peak: 6.0, battery_kwh: 20.0, battery_kw_max: 6.0, load_kw_base: 2.8, markup_floor: 0.4 }
-    agent_params: { demand_beta: 0.5 }
-  - name: ordinary-zi-evening-load-10
-    agent: zi
-    params: { pv_kw_peak: 1.5, battery_kwh: 6.0, battery_kw_max: 2.5, load_kw_base: 4.5 }
-
-  # --- wind farms ----------------------------------------------------------
-  # Coastal farms use real Open-Meteo wind speed (site coords); the rest run
-  # the AR(1) gust stub around wind_mean_speed.
-  - name: wind-coastal-11
-    agent: truthful
-    params: { pv_kw_peak: 0.0, wind_kw_rated: 12.0, wind_mean_speed: 9.0,
-              battery_kwh: 10.0, battery_kw_max: 4.0,
-              load_kw_base: 0.4, markup_floor: 0.4, pv_lat: 22.28, pv_lon: 114.13 }
   - name: wind-coastal-12
     agent: zi
     params: { pv_kw_peak: 0.0, wind_kw_rated: 8.0, wind_mean_speed: 8.5,
               battery_kwh: 5.0, battery_kw_max: 2.0,
               load_kw_base: 0.3, pv_lat: 22.20, pv_lon: 114.02 }
+  - name: factory-textile-18
+    agent: zi
+    params: { pv_kw_peak: 1.0, battery_kwh: 6.0, battery_kw_max: 3.0,
+              load_kw_base: 8.0, load_profile: industrial }
+  - name: mall-harbour-23
+    agent: zi
+    params: { pv_kw_peak: 4.0, battery_kwh: 8.0, battery_kw_max: 3.0,
+              load_kw_base: 10.0, load_profile: commercial }
+
+  # ===================== TRUTHFUL cost-based cohort (20) =====================
+  # --- residential / rooftop solar mix ---
+  - name: ordinary-truthful-batt-02
+    agent: truthful
+    params: { pv_kw_peak: 6.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 2.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+  - name: ordinary-truthful-load-03
+    agent: truthful
+    params: { pv_kw_peak: 0.5, battery_kwh: 5.0, battery_kw_max: 2.0, load_kw_base: 5.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+  - name: ordinary-truthful-rooftop-04
+    agent: truthful
+    params: { pv_kw_peak: 8.0, battery_kwh: 12.0, battery_kw_max: 3.0, load_kw_base: 1.5, markup_floor: 0.4 }
+  - name: ordinary-truthful-flex-05
+    agent: truthful
+    params: { pv_kw_peak: 4.0, battery_kwh: 18.0, battery_kw_max: 5.0, load_kw_base: 3.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+  - name: ordinary-truthful-battery-06
+    agent: truthful
+    params: { pv_kw_peak: 2.0, battery_kwh: 28.0, battery_kw_max: 8.0, load_kw_base: 2.5, markup_floor: 0.4 }
+  - name: ordinary-truthful-solar-07
+    agent: truthful
+    params: { pv_kw_peak: 9.0, battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 1.0, markup_floor: 0.4 }
+  - name: ordinary-truthful-commercial-load-08
+    agent: truthful
+    params: { pv_kw_peak: 1.0, battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 6.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+  - name: ordinary-truthful-mixed-09
+    agent: truthful
+    params: { pv_kw_peak: 6.0, battery_kwh: 20.0, battery_kw_max: 6.0, load_kw_base: 2.8, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+  - name: ordinary-truthful-evening-load-10
+    agent: truthful
+    params: { pv_kw_peak: 1.5, battery_kwh: 6.0, battery_kw_max: 2.5, load_kw_base: 4.5, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+
+  # --- wind farms (coastal use real Open-Meteo wind speed; rest run the AR(1) gust stub) ---
+  - name: wind-coastal-11
+    agent: truthful
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 12.0, wind_mean_speed: 9.0,
+              battery_kwh: 10.0, battery_kw_max: 4.0,
+              load_kw_base: 0.4, markup_floor: 0.4, pv_lat: 22.28, pv_lon: 114.13 }
   - name: wind-hilltop-13
     agent: truthful
     params: { pv_kw_peak: 0.0, wind_kw_rated: 10.0, wind_mean_speed: 9.0,
               battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 0.3, markup_floor: 0.4 }
   - name: wind-small-14
-    agent: zi
+    agent: truthful
     params: { pv_kw_peak: 0.0, wind_kw_rated: 5.0, wind_mean_speed: 8.0,
-              battery_kwh: 6.0, battery_kw_max: 2.0, load_kw_base: 0.2 }
+              battery_kwh: 6.0, battery_kw_max: 2.0, load_kw_base: 0.2, markup_floor: 0.4 }
   - name: wind-urban-15
-    agent: zi
+    agent: truthful
     params: { pv_kw_peak: 0.0, wind_kw_rated: 3.0, wind_mean_speed: 7.0,
-              battery_kwh: 4.0, battery_kw_max: 1.5, load_kw_base: 0.3 }
+              battery_kwh: 4.0, battery_kw_max: 1.5, load_kw_base: 0.3, markup_floor: 0.4 }
   - name: wind-offshore-16
     agent: truthful
     params: { pv_kw_peak: 0.0, wind_kw_rated: 15.0, wind_mean_speed: 9.5,
               battery_kwh: 12.0, battery_kw_max: 5.0, load_kw_base: 0.5, markup_floor: 0.4 }
 
-  # --- factories (industrial shift loads) ----------------------------------
+  # --- factories (industrial shift loads) ---
   - name: factory-electronics-17
     agent: truthful
     params: { pv_kw_peak: 3.0, battery_kwh: 20.0, battery_kw_max: 6.0,
               load_kw_base: 12.0, load_profile: industrial, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-  - name: factory-textile-18
-    agent: zi
-    params: { pv_kw_peak: 1.0, battery_kwh: 6.0, battery_kw_max: 3.0,
-              load_kw_base: 8.0, load_profile: industrial }
   - name: factory-food-processing-19
     agent: truthful
     params: { pv_kw_peak: 2.0, battery_kwh: 30.0, battery_kw_max: 8.0,
               load_kw_base: 10.0, load_profile: industrial, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
   - name: factory-metalworks-20
-    agent: zi
+    agent: truthful
     params: { pv_kw_peak: 0.0, battery_kwh: 10.0, battery_kw_max: 5.0,
-              load_kw_base: 14.0, load_profile: industrial }
-  - name: factory-assembly-21
-    agent: zi
-    params: { pv_kw_peak: 1.5, battery_kwh: 4.0, battery_kw_max: 2.0,
-              load_kw_base: 7.0, load_profile: industrial }
+              load_kw_base: 14.0, load_profile: industrial, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
   - name: factory-chemicals-22
     agent: truthful
     params: { pv_kw_peak: 0.0, battery_kwh: 12.0, battery_kw_max: 4.0,
               load_kw_base: 9.0, load_profile: flat, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
 
-  # --- commercial buildings -------------------------------------------------
-  - name: mall-harbour-23
-    agent: zi
-    params: { pv_kw_peak: 4.0, battery_kwh: 8.0, battery_kw_max: 3.0,
-              load_kw_base: 10.0, load_profile: commercial }
+  # --- commercial buildings ---
   - name: office-tower-24
     agent: truthful
     params: { pv_kw_peak: 2.5, battery_kwh: 5.0, battery_kw_max: 2.0,
@@ -137,17 +142,31 @@ vpps:
               load_kw_base: 8.0, load_profile: flat, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
 
-  # --- LLM-managed (hybrid strategist) ----------------------------------------
-  # All share one LLM connection (strategist refreshes staggered + serialized by
-  # the loader); offline fallback = scripted StrategyAgent behaviour with a
-  # Truthful fallback behind the risk gate. The LLM recommends/discourages
-  # strategy primitives and risk posture; it never submits raw orders.
+  # ===================== GAS generation (dispatchable, merit-order top) (2) =====================
+  - name: gas-base-26
+    agent: gas
+    params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
+              gas_kw_max: 20.0, gas_cost_per_kwh: 55.0 }
+  - name: gas-peaker-28
+    agent: gas
+    params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
+              gas_kw_max: 15.0, gas_cost_per_kwh: 68.0 }
+
+  # ===================== HYBRID LLM strategists (6, each mirrored) =====================
+  # Online-learning PPO executor (warm-started from the BC checkpoint) coached by the LLM
+  # strategist: the LLM emits SOFT guidance (preferred modes / risk budget) AND a clamped
+  # MetaControl that steers the live PPO update (reward weights, lr/entropy/KL, mode bias).
+  # `mirror: true` spawns a strategist-less PPO twin for A/B attribution. With no LLM endpoint
+  # configured, the executor still learns online from a baseline (no-op) meta — the twin and
+  # the hybrid then behave alike until an endpoint is set.
   - name: my-llm-vpp
     agent: hybrid
     seed: 77
     params: { pv_kw_peak: 5.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 2.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    mirror: true
 
   - name: llm-arb-aggressive
     agent: hybrid
@@ -155,6 +174,8 @@ vpps:
     params: { pv_kw_peak: 2.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 0.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    mirror: true
     persona:
       name: aggressive-arbitrageur
       prompt: >-
@@ -162,21 +183,24 @@ vpps:
         battery (30 kWh / 8 kW): buy cheap midday solar, sell into evening
         scarcity. Tolerate risk — prefer higher risk_budget and bolder
         primitives such as aggressive_taker, ladder_buy, ladder_sell, and
-        battery_arbitrage when spreads are wide. Watch peers and lean maker/taker
-        posture against their stale guidance.
+        battery_arbitrage when spreads are wide. When the policy is learning well
+        you may raise its exploration (entropy) and lean its reward toward fill.
 
   - name: llm-wind-conservative
     agent: hybrid
     seed: 79
     params: { pv_kw_peak: 0.0, wind_kw_rated: 10.0, wind_mean_speed: 9.0,
               battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 0.4, markup_floor: 0.4 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    mirror: true
     persona:
       name: conservative-wind-farmer
       prompt: >-
         You manage a wind farm and protect revenue. Never sell below marginal
         cost; prefer steady fills over occasional big wins. Favor passive
         market making or laddered sells, avoid aggressive_taker unless inventory
-        risk is high, and keep risk_budget moderate when the book is thin.
+        risk is high, keep risk_budget moderate, and keep the learner cautious
+        (small kl_target, protect the battery SOC band) when the book is thin.
 
   - name: llm-demand-buyer
     agent: hybrid
@@ -184,11 +208,8 @@ vpps:
     params: { pv_kw_peak: 0.0, battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 6.0,
               load_profile: commercial, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    # PPO inside the hybrid stack: the learned policy over the structured action space
-    # is the tactical executor; the LLM strategist coaches it (when an endpoint is
-    # configured), the oracle values, the compiler lowers, and the RiskGate guards.
-    # Falls back to the scripted policy if the checkpoint / 'ai' extras are unavailable.
-    executor: { kind: ppo, checkpoint: checkpoints/ppo_primitive }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    mirror: true
     persona:
       name: cost-minimizing-buyer
       prompt: >-
@@ -198,34 +219,68 @@ vpps:
         only when unserved load is urgent; otherwise prefer hold_energy,
         ladder_buy, and lower risk_budget to balance fill rate against price.
 
-  # --- gas generation (dispatchable, merit-order top) ------------------------
-  - name: gas-base-26
-    agent: gas
-    params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
-              gas_kw_max: 20.0, gas_cost_per_kwh: 55.0 }
-  - name: gas-chp-27
-    agent: gas
-    params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
-              gas_kw_max: 15.0, gas_cost_per_kwh: 58.0 }
-  - name: gas-peaker-28
-    agent: gas
-    params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
-              gas_kw_max: 15.0, gas_cost_per_kwh: 68.0 }
-  - name: gas-backup-29
-    agent: gas
-    params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
-              gas_kw_max: 10.0, gas_cost_per_kwh: 72.0 }
+  - name: llm-solar-trader
+    agent: hybrid
+    seed: 81
+    params: { pv_kw_peak: 9.0, battery_kwh: 18.0, battery_kw_max: 5.0, load_kw_base: 1.5,
+              markup_floor: 0.4, pv_lat: 22.28, pv_lon: 114.13 }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    mirror: true
+    persona:
+      name: solar-prosumer
+      prompt: >-
+        You run a large rooftop solar prosumer. Sell the midday surplus into the
+        best bids and time-shift with the battery toward the evening peak. Prefer
+        ladder_sell and liquidate_surplus; avoid dumping all surplus at once.
+        Keep soc_target moderate so there is headroom for the evening sell.
 
-  # --- learned PPO agent (structured-action policy, M4) -----------------------
-  # A standalone StrategyAgent driven by the trained PPO policy — trades alongside
-  # the scripted/truthful/ZI fleet as a benchmark participant. price_ref and
-  # demand_beta are pinned to the values the checkpoint was trained under (50 / 0.5)
-  # so the live valuation obs match training; price_ref pinned also opts it out of the
-  # cost-diversification jitter. Falls back to scripted if the checkpoint is missing.
+  - name: llm-balanced-mm
+    agent: hybrid
+    seed: 82
+    params: { pv_kw_peak: 3.0, battery_kwh: 22.0, battery_kw_max: 6.0, load_kw_base: 3.0,
+              markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    mirror: true
+    persona:
+      name: balanced-market-maker
+      prompt: >-
+        You are a balanced two-sided market maker. Quote both sides around fair
+        value with passive_market_make, capture the spread, and keep inventory
+        near neutral. Avoid aggressive_taker; keep risk_budget moderate and the
+        learner stable (modest lr, protect the SOC band).
+
+  # ===================== STANDALONE learned PPO agents (4) =====================
+  # agent: strategy + a learned executor — online-learning PPO baselines (no LLM) trading
+  # alongside the fleet. price_ref / demand_beta pinned to the training config (50 / 0.5) so
+  # the live valuation obs match the warm-start; pinning price_ref also opts out of the
+  # cost-diversification jitter. Falls back to scripted if the 'ai' extras are missing.
   - name: ppo-primitive-30
     agent: strategy
     seed: 88
     params: { pv_kw_peak: 8.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 4.0,
               markup_floor: 0.4 }
     agent_params: { price_ref: 50.0, demand_beta: 0.5 }
-    executor: { kind: ppo, checkpoint: checkpoints/ppo_primitive }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+  - name: ppo-primitive-31
+    agent: strategy
+    seed: 89
+    params: { pv_kw_peak: 4.0, battery_kwh: 20.0, battery_kw_max: 6.0, load_kw_base: 6.0,
+              markup_floor: 0.4 }
+    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+  - name: ppo-primitive-32
+    agent: strategy
+    seed: 90
+    params: { pv_kw_peak: 2.0, battery_kwh: 10.0, battery_kw_max: 3.0, load_kw_base: 3.0,
+              markup_floor: 0.4 }
+    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+  - name: ppo-primitive-33
+    agent: strategy
+    seed: 91
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 8.0, wind_mean_speed: 8.5,
+              battery_kwh: 16.0, battery_kw_max: 5.0, load_kw_base: 1.0, markup_floor: 0.4 }
+    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }

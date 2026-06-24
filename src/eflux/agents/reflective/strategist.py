@@ -56,6 +56,73 @@ class StrategyGuidance:
         )
 
 
+def _clamp(x: float, lo: float, hi: float, default: float) -> float:
+    try:
+        return max(lo, min(hi, float(x)))
+    except (TypeError, ValueError):
+        return default
+
+
+@dataclass(frozen=True)
+class MetaControl:
+    """The LLM's *constrained* meta-control over an online PPO learner (Part C).
+
+    Distinct from `StrategyGuidance` (which biases execution): this steers *learning* —
+    what the reward optimizes (weight multipliers), how the optimizer updates
+    (lr / entropy / KL), and a pull toward preferred modes (mode_reg_coef). Every field is
+    a safe no-op at its default and hard-clamped via `clamped()`, so a missing or malformed
+    LLM response can only ever leave the learner at its baseline."""
+
+    # Reward-weight multipliers — WHAT the learner optimizes (applied on the policy).
+    w_imbalance_mult: float = 1.0  # [0.5, 2.0]
+    w_soc_mult: float = 1.0        # [0.5, 2.0]
+    w_degrade_mult: float = 1.0    # [0.5, 2.0]
+    # Optimizer levers — HOW the learner updates.
+    lr: float = 3e-4               # [1e-5, 1e-3]
+    entropy_coef: float = 0.01     # [0, 0.05]
+    kl_target: float = 0.02        # [0.005, 0.05]
+    # Pull the policy's mode distribution toward preferred/avoid modes.
+    mode_reg_coef: float = 0.0     # [0, 1.0]
+
+    def clamped(self) -> MetaControl:
+        return MetaControl(
+            w_imbalance_mult=_clamp(self.w_imbalance_mult, 0.5, 2.0, 1.0),
+            w_soc_mult=_clamp(self.w_soc_mult, 0.5, 2.0, 1.0),
+            w_degrade_mult=_clamp(self.w_degrade_mult, 0.5, 2.0, 1.0),
+            lr=_clamp(self.lr, 1e-5, 1e-3, 3e-4),
+            entropy_coef=_clamp(self.entropy_coef, 0.0, 0.05, 0.01),
+            kl_target=_clamp(self.kl_target, 0.005, 0.05, 0.02),
+            mode_reg_coef=_clamp(self.mode_reg_coef, 0.0, 1.0, 0.0),
+        )
+
+
+def parse_meta_control(content: str) -> MetaControl:
+    """Extract a `meta_control` object from the strategist response and clamp it. Tolerant
+    by design: anything missing or unparseable yields a no-op `MetaControl` rather than
+    raising — meta-control must never be able to break the (already-parsed) guidance path."""
+    text = content.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text.lower().startswith("json"):
+            text = text[4:].lstrip("\n")
+    data = _first_json_object(text)
+    if not isinstance(data, dict):
+        return MetaControl()
+    block = data.get("meta_control")
+    if not isinstance(block, dict):
+        return MetaControl()
+    d = MetaControl()
+    return MetaControl(
+        w_imbalance_mult=block.get("w_imbalance_mult", d.w_imbalance_mult),
+        w_soc_mult=block.get("w_soc_mult", d.w_soc_mult),
+        w_degrade_mult=block.get("w_degrade_mult", d.w_degrade_mult),
+        lr=block.get("lr", d.lr),
+        entropy_coef=block.get("entropy_coef", d.entropy_coef),
+        kl_target=block.get("kl_target", d.kl_target),
+        mode_reg_coef=block.get("mode_reg_coef", d.mode_reg_coef),
+    ).clamped()
+
+
 STRATEGIST_SYSTEM_PROMPT = """\
 You are the slow strategist for a Virtual Power Plant trading in a continuous double
 auction electricity market. A fast tactical policy chooses one trading PRIMITIVE each
@@ -72,9 +139,20 @@ Return ONLY a JSON object (no markdown, no commentary):
     "risk_budget":     <float in [0,1]; 1 = full size, lower = more cautious>,
     "soc_target":      <float in [0,1]; desired battery state of charge>,
     "execution_style": "<short maker-vs-taker preference, <=120 chars>",
-    "lesson":          "<one durable takeaway from the last window, <=200 chars>"
+    "lesson":          "<one durable takeaway from the last window, <=200 chars>",
+    "meta_control": {
+      "w_imbalance_mult": <float in [0.5,2]; >1 punishes leaving energy unserved harder>,
+      "w_soc_mult":       <float in [0.5,2]; >1 protects the battery SOC band harder>,
+      "w_degrade_mult":   <float in [0.5,2]; >1 discourages battery cycling harder>,
+      "lr":               <float in [1e-5,1e-3]; learning rate of the policy>,
+      "entropy_coef":     <float in [0,0.05]; higher = explore more>,
+      "kl_target":        <float in [0.005,0.05]; smaller = more cautious updates>,
+      "mode_reg_coef":    <float in [0,1]; >0 pulls the learner toward preferred_modes>
+    }
   }
-Your advice is a SOFT prior — the tactical policy may override it. Stay within bounds."""
+If the policy is learning well, omit "meta_control" or leave it at the defaults. Your
+advice and meta-control are SOFT, clamped priors — the tactical policy may override the
+advice, and out-of-range knobs are clipped. Stay within bounds."""
 
 
 def build_strategist_system_prompt(persona_prompt: str | None = None) -> str:
@@ -160,9 +238,13 @@ class StaticStrategist:
     behind an async LLM refresh."""
 
     guidance: StrategyGuidance | None = None
+    meta: MetaControl | None = None
 
     def current_guidance(self) -> StrategyGuidance | None:
         return self.guidance
+
+    def current_meta(self) -> MetaControl | None:
+        return self.meta
 
 
 @dataclass
@@ -189,9 +271,15 @@ class LLMStrategist:
 
     def __post_init__(self) -> None:
         self._guidance: StrategyGuidance | None = None
+        self._meta: MetaControl | None = None
 
     def current_guidance(self) -> StrategyGuidance | None:
         return self._guidance
+
+    def current_meta(self) -> MetaControl | None:
+        """The latest constrained meta-control (None until a refresh succeeds). Read
+        non-blocking off the tick path, exactly like current_guidance (principle #1)."""
+        return self._meta
 
     async def arefresh(
         self, *, recent_pnl: list[float], soc_frac: float, best_bid: float | None,
@@ -240,6 +328,7 @@ class LLMStrategist:
                 raise RuntimeError("empty LLM response (completion budget exhausted?)")
             guidance = parse_guidance(content)
             self._guidance = guidance
+            self._meta = parse_meta_control(content)  # tolerant — never raises
             self.ok_count += 1
             self.last_ok_ts = datetime.now(UTC)
             self.reflection_log.append(self._entry(ok=True, guidance=guidance))

@@ -88,16 +88,59 @@ class HybridPolicyAgent(BaseAgent):
         self._ticks = 0
         # Named so the runner's existing _shutdown_reflections cancels it on stop.
         self._reflection_task: asyncio.Task | None = None
+        # Off-tick PPO update future (online executor + async mode only).
+        self._online_task: object | None = None
 
     def decide(self, ctx: AgentContext) -> list[OrderIntent]:
         self._maybe_refresh_guidance(ctx)
         guidance = self.strategist.current_guidance() if self.strategist is not None else None
         self._last_guidance = guidance
+        self._push_meta_and_modes(guidance)
         valuation = self._oracle.estimate(ctx)
         action = self._executor.select_action(ctx, valuation, guidance)
         action = apply_guidance(action, guidance)
         compiled = self._compiler.compile(ctx, action, valuation)
+        self._maybe_online_update(ctx)
         return compiled.order_intents
+
+    def _push_meta_and_modes(self, guidance: StrategyGuidance | None) -> None:
+        """Steer an online PPO executor with the strategist's cached, clamped MetaControl
+        (reward weights + learning levers) and preferred/avoid modes. All values are read
+        non-blocking off the tick path (principle #1); a non-online executor has no
+        apply_meta and is left untouched."""
+        apply_meta = getattr(self._executor, "apply_meta", None)
+        if apply_meta is None:
+            return
+        meta = None
+        current_meta = getattr(self.strategist, "current_meta", None)
+        if callable(current_meta):
+            meta = current_meta()
+        apply_meta(meta)
+        set_modes = getattr(self._executor, "set_guidance_modes", None)
+        if set_modes is not None and guidance is not None:
+            set_modes(guidance.preferred_modes, guidance.avoid_modes)
+
+    def _maybe_online_update(self, ctx: AgentContext) -> None:
+        """Schedule a PPO update off the tick path when the executor learns online in async
+        mode. The buffer snapshot + GAE happen synchronously (cheap); the gradient work runs
+        on a worker thread and atomically swaps the policy net in. With no running loop
+        (bench/tests) it falls back to a synchronous update, keeping those paths deterministic.
+        In the default (sync inline) mode the policy updates itself, so this is a no-op."""
+        take = getattr(self._executor, "take_update_batch", None)
+        learner = getattr(self._executor, "learner", None)
+        if take is None or learner is None or getattr(self._executor, "auto_update", True):
+            return
+        if self._online_task is not None and not self._online_task.done():
+            return  # an update is already in flight; let the buffer keep filling
+        batch = take()
+        if batch is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            learner.optimize(batch)
+            return
+        self._online_task = loop.run_in_executor(None, learner.optimize, batch)
 
     def _maybe_refresh_guidance(self, ctx: AgentContext) -> None:
         """Schedule a background strategist refresh on the cadence — never blocking the

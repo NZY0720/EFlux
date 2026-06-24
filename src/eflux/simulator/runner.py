@@ -399,13 +399,17 @@ class Simulator:
         An LLM round-trip can take minutes; without this, shutdown mid-call
         leaves a 'Task was destroyed but it is pending!' warning and the shared
         httpx client's connections leak."""
-        pending: list[asyncio.Task] = []
+        pending: list = []
         clients = set()
         for vpp in self.my_managed_vpps():
             task = getattr(vpp.agent, "_reflection_task", None)
             if task is not None and not task.done():
                 task.cancel()
                 pending.append(task)
+            online = getattr(vpp.agent, "_online_task", None)
+            if online is not None and not online.done():
+                online.cancel()
+                pending.append(online)
             client = getattr(vpp.agent, "llm_client", None)
             if client is not None:
                 clients.add(client)
@@ -418,6 +422,35 @@ class Simulator:
                     await aclose()
                 except Exception:
                     log.exception("LLM client close failed during shutdown")
+        self._persist_online_weights()
+
+    def _persist_online_weights(self) -> None:
+        """Save each live-learning policy's weights to settings.online_learning_save_dir
+        (one file per VPP) so a later run resumes from where learning left off. Off by
+        default (empty dir); best-effort — a save failure is logged, never fatal."""
+        from pathlib import Path
+
+        from eflux.config import PROJECT_ROOT, get_settings
+
+        save_dir = get_settings().online_learning_save_dir
+        if not save_dir:
+            return
+        out = Path(save_dir)
+        if not out.is_absolute():
+            out = PROJECT_ROOT / out
+        try:
+            out.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            log.exception("could not create online weight dir %s", out)
+            return
+        for vpp in self.vpps.values():
+            policy = _online_policy_of(vpp.agent)
+            if policy is None:
+                continue
+            try:
+                policy.save(str(out / f"{vpp.name}.pt"))
+            except Exception:
+                log.exception("failed saving online weights for %s", vpp.name)
 
     async def _run(self) -> None:
         log.info("Simulator loop started (speed=%sx, tick=%ss)", self.clock.speed, self.clock.tick_sim_sec)
@@ -582,6 +615,7 @@ class Simulator:
             rng=vpp.rng,
             tick_duration_h=tick_h,
             open_orders_net_kwh=open_orders_net_kwh,
+            risk_rejections_total=float(self.risk_rejections_by_vpp.get(vpp.vpp_id, 0)),
         )
         intents = vpp.agent.decide(ctx)
         self._gate_and_submit(vpp, ctx, intents, sim_ts, open_order_count)
@@ -735,6 +769,17 @@ class Simulator:
         record_trade = getattr(vpp.agent, "record_trade", None)
         if callable(record_trade):
             record_trade(record)
+
+
+def _online_policy_of(agent: BaseAgent):
+    """The agent's live-learning policy (something with a `.save`), if any: hybrid agents
+    hold it as `_executor`, StrategyAgent (incl. the PPO mirror) as `_policy`. Returns None
+    for non-online agents — used only for opt-in weight persistence."""
+    for attr in ("_executor", "_policy"):
+        policy = getattr(agent, attr, None)
+        if policy is not None and hasattr(policy, "save"):
+            return policy
+    return None
 
 
 def _log_unexpected_loop_exit(task: asyncio.Task) -> None:

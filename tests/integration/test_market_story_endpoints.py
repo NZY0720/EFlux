@@ -20,7 +20,7 @@ async def test_agents_roster_is_public_and_complete(client):
     r = await client.get("/market/agents")
     assert r.status_code == 200, r.text
     agents = r.json()
-    assert len(agents) == 34  # full YAML roster: 4 LLM-managed + the standalone PPO VPP
+    assert len(agents) == 42  # 36 declared roster entries + 6 auto-spawned PPO mirrors
 
     by_cat: dict[str, int] = {}
     for a in agents:
@@ -29,9 +29,9 @@ async def test_agents_roster_is_public_and_complete(client):
         assert 0.0 <= a["soc_frac"] <= 1.0
         float(a["pnl"])  # parseable decimal string
     # The default roster spans the whole merit order.
-    assert by_cat.get("gas") == 4
-    assert by_cat.get("wind") == 6
-    assert by_cat.get("llm") == 4
+    assert by_cat.get("gas") == 2
+    assert by_cat.get("wind") == 8
+    assert by_cat.get("llm") == 6
 
     llm = next(a for a in agents if a["is_llm"])
     assert llm["name"] == "my-llm-vpp"

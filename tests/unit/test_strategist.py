@@ -7,9 +7,11 @@ import pytest
 from eflux.agents.reflective.strategist import (
     GuidanceParseError,
     LLMStrategist,
+    MetaControl,
     StrategyGuidance,
     apply_guidance,
     parse_guidance,
+    parse_meta_control,
 )
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 
@@ -63,17 +65,34 @@ def test_apply_guidance_none_is_identity():
     assert apply_guidance(a, None) == a
 
 
+def test_parse_meta_control_extracts_and_clamps():
+    raw = """{"risk_budget": 0.5,
+      "meta_control": {"w_soc_mult": 5.0, "w_imbalance_mult": 0.1, "lr": 1e-2,
+                       "entropy_coef": 0.2, "kl_target": 0.001, "mode_reg_coef": 2.0}}"""
+    m = parse_meta_control(raw)
+    assert m.w_soc_mult == 2.0 and m.w_imbalance_mult == 0.5  # clamped to [0.5,2]
+    assert m.lr == 1e-3 and m.entropy_coef == 0.05            # clamped to ceilings
+    assert m.kl_target == 0.005 and m.mode_reg_coef == 1.0    # clamped to bounds
+
+
+def test_parse_meta_control_defaults_when_absent_or_garbage():
+    assert parse_meta_control('{"risk_budget": 0.7}') == MetaControl()  # no meta block
+    assert parse_meta_control("not json at all") == MetaControl()       # tolerant, no raise
+
+
 @pytest.mark.asyncio
 async def test_llm_strategist_refresh_parses_and_caches():
     class FakeClient:
         async def chat(self, messages, *, temperature=0.2):
-            return '{"risk_budget": 0.3, "soc_target": 0.45, "avoid_modes": ["aggressive_taker"]}'
+            return ('{"risk_budget": 0.3, "soc_target": 0.45, "avoid_modes": ["aggressive_taker"],'
+                    ' "meta_control": {"w_soc_mult": 1.5}}')
 
     s = LLMStrategist(client=FakeClient())
-    assert s.current_guidance() is None
+    assert s.current_guidance() is None and s.current_meta() is None
     g = await s.arefresh(recent_pnl=[1.0, -0.5], soc_frac=0.5, best_bid=49.0, best_ask=51.0, last_price=50.0)
     assert g.risk_budget == 0.3
     assert s.current_guidance() is g
+    assert s.current_meta().w_soc_mult == 1.5  # meta cached alongside guidance
 
 
 @pytest.mark.asyncio

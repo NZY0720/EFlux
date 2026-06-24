@@ -73,6 +73,19 @@ class Settings(BaseSettings):
     # in-memory guidance audit logs instead. Relative paths resolve against the project root.
     agent_memory_dir: str = "data/agent_memory"
 
+    # --- Online PPO (live learning) ----------------------------------------------------
+    # Global kill-switch for the custom online PPO learner. When False, a `ppo_online`
+    # executor is built frozen (serve-only, no live updates) — useful to A/B a learning vs
+    # static policy without editing the roster.
+    online_learning_enabled: bool = True
+    # Run the hybrid agent's PPO update off the tick path (worker thread) instead of
+    # synchronously inline. Inline (default) is the conservative, deterministic path; the
+    # net is tiny so an inline update is sub-millisecond.
+    online_update_async: bool = False
+    # If set, live-updated online policy weights are saved here (one file per VPP) on
+    # shutdown, so a session resumes from where learning left off. Empty disables it.
+    online_learning_save_dir: str = ""
+
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 
     @field_validator("market_speed")

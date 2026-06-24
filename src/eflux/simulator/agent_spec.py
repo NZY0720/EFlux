@@ -54,13 +54,17 @@ class PersonaSpec(BaseModel):
 class ExecutorSpec(BaseModel):
     """Tactical executor (the policy that selects each StrategyAction) for strategy /
     hybrid agents. `scripted` (default) uses the deterministic baseline; `ppo` loads a
-    learned policy from a checkpoint trained on the structured action space. A missing
-    checkpoint / 'ai' extras falls back to scripted at load (never crashes startup)."""
+    frozen learned policy from an RLlib checkpoint; `ppo_online` loads a custom live-learning
+    PPO policy (warm-started from a BC/online checkpoint) that updates during the sim. A
+    missing checkpoint / 'ai' extras falls back to scripted at load (never crashes startup)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["scripted", "ppo"] = "scripted"
-    checkpoint: str | None = None  # required for kind="ppo"
+    kind: Literal["scripted", "ppo", "ppo_online"] = "scripted"
+    checkpoint: str | None = None  # required for kind="ppo"; optional warm-start for ppo_online
+    # ppo_online only: whether the policy updates live. False = serve the warm-started net
+    # frozen (still the custom torch policy, just no gradient steps).
+    online_learning: bool = True
 
     @model_validator(mode="after")
     def _check(self) -> ExecutorSpec:
@@ -87,12 +91,21 @@ class AgentSpec(BaseModel):
     persona: PersonaSpec | None = None
     # Tactical policy for strategy/hybrid agents (scripted default, or learned PPO).
     executor: ExecutorSpec | None = None
+    # Hybrid only: also spawn a strategist-less PPO twin (a StrategyAgent with the same
+    # executor/params/seed, name suffix "-ppo-mirror") into the same market, so the
+    # LLM-coached agent and its PPO-only control trade side-by-side for A/B attribution.
+    mirror: bool = False
 
     @model_validator(mode="after")
     def _check(self) -> AgentSpec:
         if self.persona is not None and self.agent not in ("hybrid", "reflective"):
             raise ValueError(
                 f"{self.name!r}: persona is only valid for agent: hybrid/reflective "
+                f"(got {self.agent!r})"
+            )
+        if self.mirror and self.agent not in ("hybrid", "reflective"):
+            raise ValueError(
+                f"{self.name!r}: mirror is only valid for agent: hybrid/reflective "
                 f"(got {self.agent!r})"
             )
         if self.executor is not None and self.agent not in ("strategy", "hybrid", "reflective"):

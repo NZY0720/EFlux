@@ -32,7 +32,7 @@ async def test_magic_link_consume_then_session_protected_route(client):
     r = await client.get("/vpps/managed", headers={"Authorization": f"Bearer {sess_token}"})
     assert r.status_code == 200, r.text
     managed = r.json()
-    assert len(managed) == 4
+    assert len(managed) == 6
     assert managed[0]["name"] == "my-llm-vpp"
     assert all(m["agent_kind"] == "HybridPolicyAgent" for m in managed)
     r = await client.get(

@@ -75,9 +75,9 @@ async def test_participants_directory_lists_builtin_and_external(client):
     parts = r.json()
     by_id = {p["id"]: p for p in parts}
 
-    # All builtin VPPs present (33 baseline + the standalone PPO StrategyAgent).
+    # All builtin VPPs present (36 declared roster entries + 6 auto-spawned PPO mirrors).
     builtin = [p for p in parts if p["kind"] == "builtin"]
-    assert len(builtin) == 34
+    assert len(builtin) == 42
     llm = next(p for p in builtin if p["name"] == "my-llm-vpp")
     assert llm["strategy"]
     assert any(p["name"].startswith("wind-") for p in builtin)
