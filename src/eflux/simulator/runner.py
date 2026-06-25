@@ -68,6 +68,10 @@ class Simulator:
             tick_sim_sec=settings.market_tick_sec,
         )
         self.vpps: dict[int, SimulatorVPP] = {}
+        # "p2p" = peer-to-peer CDA (agents trade each other; CAISO is reference-only).
+        # "realprice" = pure price-taking against the live CAISO price (orders settle
+        # vs the grid, no peer matching). Selected per launch via EFLUX_MARKET_MODE.
+        self.market_mode: str = settings.market_mode
         self.order_ttl_sec: float = settings.order_ttl_sec
         # Single hard-constraint authority every order (built-in, learned, fallback,
         # external) passes through before the engine — see agents/hybrid/risk.py.
@@ -569,6 +573,9 @@ class Simulator:
                     sim_ts,
                     snapshot,
                     external_market=self._external_market_quote,
+                    # Both live markets price freely off own marginal cost — CAISO is a
+                    # reference (p2p) / the clearing price (realprice), never a valuation cap.
+                    anchor_to_external=False,
                 )
                 market_snap.recent_trades = self._recent_market_trades()
                 market_snap.peer_reflections = self._peer_reflections()
@@ -834,8 +841,12 @@ class Simulator:
         }
 
     def _submit_intent(self, vpp: SimulatorVPP, intent: OrderIntent, sim_ts: datetime) -> None:
+        if self.market_mode == "realprice":
+            self._submit_intent_realprice(vpp, intent, sim_ts)
+            return
+        # Pure P2P: agents trade only with each other through the CDA. CAISO never
+        # settles trades here (it is a reference signal only), so unfilled orders rest.
         try:
-            external_quote = self._external_quote_for_intent(intent)
             result = self.engine.submit(
                 vpp_id=vpp.vpp_id,
                 side=intent.side,
@@ -845,7 +856,7 @@ class Simulator:
                 wall_ts=datetime.now(UTC),
                 ttl_sec=self.order_ttl_sec or None,
                 dispatched=intent.dispatched,
-                rest_unfilled=external_quote is None,
+                rest_unfilled=True,
             )
             # Debit the untraded balance for the quoted quantity — the agent has
             # now "spoken for" that energy, whether or not the order fills.
@@ -854,23 +865,47 @@ class Simulator:
             if not intent.dispatched:
                 signed = -float(intent.qty) if intent.side == "sell" else float(intent.qty)
                 vpp.state.pending_net_kwh += signed
-            if external_quote is not None and result.order.remaining_qty > 0:
-                self._settle_external_trade(
-                    vpp,
-                    side=intent.side,
-                    qty=result.order.remaining_qty,
-                    quote=external_quote,
-                    sim_ts=sim_ts,
-                )
-                result.order.remaining_qty = Decimal("0")
             if result.order.remaining_qty > 0:
                 vpp.open_order_ids.append(result.order.order_id)
             self._record_trades(result.trades)
         except ValueError:
             log.exception("VPP %s submitted an invalid order", vpp.vpp_id)
 
-    def _external_quote_for_intent(self, intent: OrderIntent) -> ExternalMarketQuote | None:
-        if intent.dispatched:
+    def _submit_intent_realprice(
+        self, vpp: SimulatorVPP, intent: OrderIntent, sim_ts: datetime
+    ) -> None:
+        """Real-time price market: agents are pure price-takers against the live CAISO
+        price. An order settles in full against the grid when it crosses the grid's
+        import/export quote; otherwise nothing happens (no peer matching, no resting —
+        the agent simply re-quotes next tick). Battery (dispatched) orders trade too,
+        so battery arbitrage against the grid works. Agent volume never moves the price:
+        that is the point — a clean testbed for strategy P&L against a real price curve.
+        """
+        quote = self._external_quote_for_intent(intent, include_dispatched=True)
+        if quote is None:
+            return  # no live grid price, or the order does not cross the grid spread
+        try:
+            self._settle_external_trade(
+                vpp,
+                side=intent.side,
+                qty=intent.qty,
+                quote=quote,
+                sim_ts=sim_ts,
+            )
+        except Exception:
+            log.exception("VPP %s grid settlement failed", vpp.vpp_id)
+            return
+        # Mirror the P2P balance debit, but only on an actual fill (nothing rests).
+        # Battery-band (dispatched) quotes settle through the battery, not the PV-load
+        # imbalance, so they leave the accumulator alone.
+        if not intent.dispatched:
+            signed = -float(intent.qty) if intent.side == "sell" else float(intent.qty)
+            vpp.state.pending_net_kwh += signed
+
+    def _external_quote_for_intent(
+        self, intent: OrderIntent, *, include_dispatched: bool = False
+    ) -> ExternalMarketQuote | None:
+        if intent.dispatched and not include_dispatched:
             return None
         quote = self._external_market_quote
         if not quote.external_trading_enabled:

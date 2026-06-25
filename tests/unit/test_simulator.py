@@ -260,38 +260,67 @@ def test_market_balance_reports_aggregates():
     )
 
 
-def test_external_market_settles_remainder_after_p2p_priority():
+def test_realprice_market_settles_full_qty_against_grid_no_p2p_matching():
+    """Real-price market: every built-in order is a pure price-taker. A crossing
+    order settles in full against the grid at import/export, and P2P matching never
+    happens — even a resting peer order that would cross in a P2P market is ignored."""
     sim = Simulator(bus=InMemoryBus())
+    sim.market_mode = "realprice"
     seller = sim.add_builtin_vpp("seller", VPPParams(), ZIAgent())
     buyer = sim.add_builtin_vpp("buyer", VPPParams(), ZIAgent())
     sim._external_market_quote = synthetic_quote(price=Decimal("40"), status="real", source="CAISO OASIS RTM")
     sim_ts = sim.clock.now_sim()
     sim._current_tick_h = 1.0
 
-    # Resting P2P bid is cheaper than CAISO but crosses the seller's ask. It
-    # must fill first; only the seller's residual goes to the external market.
+    # A resting peer bid that WOULD cross the seller's ask in a P2P market.
     sim.engine.submit(
         vpp_id=buyer.vpp_id,
         side="buy",
-        price=Decimal("38"),
+        price=Decimal("45"),
         qty=Decimal("0.5"),
         sim_ts=sim_ts,
         wall_ts=sim_ts,
     )
     seller.state.pending_net_kwh = 1.0
 
+    # Ask 35 crosses the grid export price (40), so the full 1.0 kWh sells to CAISO.
     sim._submit_intent(
         seller,
         OrderIntent(side="sell", price=Decimal("35"), qty=Decimal("1.0")),
         sim_ts,
     )
 
-    assert sim.engine.last_price == Decimal("38")
+    # No P2P trade happened: the peer bid still rests and no ask was booked.
+    assert sim.engine.book.best_bid() is not None
+    assert sim.engine.book.best_bid().price == Decimal("45")
     assert sim.engine.snapshot()["asks"] == []
+    # Full quantity settled against the grid at the export price (40, fee 0).
     assert seller.state.pending_net_kwh == pytest.approx(0.0)
-    assert seller.state.pnl == Decimal("39.0")
+    assert seller.state.pnl == Decimal("40.0")
     assert seller.state.cumulative_energy_sold_kwh == pytest.approx(1.0)
     assert any(e.kind == "external.trade" for e in sim.trade_log)
+
+
+def test_p2p_market_never_settles_against_grid():
+    """P2P market (default): CAISO is reference-only. An order that would cross the
+    grid import/export price just rests in the book — no external trade is made."""
+    sim = Simulator(bus=InMemoryBus())  # default market_mode == "p2p"
+    seller = sim.add_builtin_vpp("seller", VPPParams(), ZIAgent())
+    sim._external_market_quote = synthetic_quote(price=Decimal("40"), status="real", source="CAISO OASIS RTM")
+    sim_ts = sim.clock.now_sim()
+    seller.state.pending_net_kwh = 1.0
+
+    # Ask 35 crosses the grid export price (40), but in p2p mode it must rest.
+    sim._submit_intent(
+        seller,
+        OrderIntent(side="sell", price=Decimal("35"), qty=Decimal("1.0")),
+        sim_ts,
+    )
+
+    assert sim.engine.book.best_ask() is not None
+    assert sim.engine.book.best_ask().price == Decimal("35")
+    assert not any(e.kind == "external.trade" for e in sim.trade_log)
+    assert seller.state.cumulative_energy_sold_kwh == pytest.approx(0.0)
 
 
 def test_truthful_vpp_trades_within_seconds_via_accumulator():

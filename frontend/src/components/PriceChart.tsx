@@ -1,7 +1,8 @@
 import ReactECharts from "echarts-for-react";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
 import type { MarketEvent } from "../api/types";
+import { FULL_ZOOM, readZoomEvent, timeZoom, type ZoomWindow } from "./chartZoom";
 
 interface PricePoint {
   ts: number; // ms
@@ -25,29 +26,57 @@ const INTERVALS = [
 
 interface Props {
   events: MarketEvent[];
-  windowMs?: number;
   initialPrice?: number | null;
   initialExternalPrice?: number | null;
+  /**
+   * "p2p" (default): blue emergent P2P line + dashed CAISO reference, with an
+   * optional OHLC candle view.
+   * "realprice": the CAISO grid price is the primary (and only) line — there is
+   * no P2P book in that market, so last_price never updates and candles are hidden.
+   */
+  variant?: "p2p" | "realprice";
 }
 
 const fmtTime = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour12: false });
 
 /**
- * Streaming price view with two modes:
+ * Streaming price view that retains all history since the session started and
+ * exposes a draggable time-zoom axis to inspect any window:
  *  - Line: raw price over time (last_price from tick events + each trade price).
- *  - Candles: OHLC aggregated into 10s / 30s / 1m buckets — smooths the bid-ask
- *    bounce of a thin book into readable open/high/low/close bars.
+ *  - Candles (p2p only): OHLC aggregated into 10s / 30s / 1m buckets.
  *
- * Points are derived purely from the (already deduped) provider buffer on every
- * render — no incremental state — so route remounts rebuild full history rather
- * than wiping the chart.
+ * Points are derived from the (already deduped) provider buffer on every render —
+ * no incremental state — so route remounts rebuild full history rather than
+ * wiping the chart.
  */
-export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPrice, initialExternalPrice }: Props) {
+export default function PriceChart({ events, initialPrice, initialExternalPrice, variant = "p2p" }: Props) {
   const [mode, setMode] = useState<Mode>("line");
   const [intervalSec, setIntervalSec] = useState<number>(30);
+  const allowCandles = variant === "p2p";
+  const effectiveMode: Mode = allowCandles ? mode : "line";
+
+  // Persist the user's zoom window (absolute time) across streaming rebuilds.
+  // Mutated on the echarts "datazoom" event and re-applied to the option each
+  // render, so a 1Hz data tick (notMerge) doesn't snap the view back to full range.
+  const zoomRef = useRef<ZoomWindow>(FULL_ZOOM);
+  const onEvents = useMemo(
+    () => ({
+      datazoom: (params: {
+        start?: number;
+        end?: number;
+        startValue?: number;
+        endValue?: number;
+        batch?: Array<{ start?: number; end?: number; startValue?: number; endValue?: number }>;
+      }) => {
+        const w = readZoomEvent(params);
+        if (w) zoomRef.current = w;
+      },
+    }),
+    [],
+  );
 
   // All price points in the buffer (oldest first): trade prints + per-tick
-  // last_price. Candles aggregate these; the line view trims to windowMs.
+  // last_price. Full session history — the time-zoom slider trims the view.
   const points = useMemo(() => {
     const pts: PricePoint[] = [];
     for (const e of events) {
@@ -77,30 +106,30 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
   }, [events]);
 
   const linePoints = useMemo(() => {
-    const cutoff = Date.now() - windowMs;
-    const trimmed = points.filter((p) => p.ts >= cutoff);
-    if (trimmed.length === 0 && initialPrice !== null && initialPrice !== undefined) {
-      trimmed.push({ ts: Date.now(), price: initialPrice });
+    if (points.length === 0 && initialPrice !== null && initialPrice !== undefined) {
+      return [{ ts: Date.now(), price: initialPrice }];
     }
-    return trimmed;
-  }, [points, windowMs, initialPrice]);
+    return points;
+  }, [points, initialPrice]);
 
   const lineExternalPoints = useMemo(() => {
-    const cutoff = Date.now() - windowMs;
-    const trimmed = externalPoints.filter((p) => p.ts >= cutoff);
-    if (trimmed.length === 0 && initialExternalPrice !== null && initialExternalPrice !== undefined) {
-      trimmed.push({ ts: Date.now(), price: initialExternalPrice });
+    if (externalPoints.length === 0 && initialExternalPrice !== null && initialExternalPrice !== undefined) {
+      return [{ ts: Date.now(), price: initialExternalPrice }];
     }
-    return trimmed;
-  }, [externalPoints, windowMs, initialExternalPrice]);
+    return externalPoints;
+  }, [externalPoints, initialExternalPrice]);
+
+  // Which series the candles/line treat as primary. The real-price market has no
+  // P2P book, so its primary price is the CAISO (external) feed.
+  const primaryPoints = variant === "realprice" ? externalPoints : points;
 
   // OHLC buckets. Points are sorted ascending, so the first in a bucket is the
-  // open and the last is the close. Show the most recent ~80 candles.
+  // open and the last is the close. Keep the full session; the zoom slider trims.
   const candles = useMemo(() => {
-    if (mode !== "candles") return [] as Candle[];
+    if (effectiveMode !== "candles") return [] as Candle[];
     const bucketMs = intervalSec * 1000;
     const byBucket = new Map<number, Candle>();
-    for (const p of points) {
+    for (const p of primaryPoints) {
       const t = Math.floor(p.ts / bucketMs) * bucketMs;
       const cur = byBucket.get(t);
       if (!cur) {
@@ -111,8 +140,8 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
         cur.c = p.price;
       }
     }
-    return [...byBucket.values()].sort((a, b) => a.t - b.t).slice(-80);
-  }, [points, mode, intervalSec]);
+    return [...byBucket.values()].sort((a, b) => a.t - b.t);
+  }, [primaryPoints, effectiveMode, intervalSec]);
 
   const baseAxis = {
     axisLabel: { color: "#94a3b8" },
@@ -122,7 +151,7 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
   const lineOption = {
     backgroundColor: "transparent",
     legend: { top: 0, right: 12, textStyle: { color: "#94a3b8" } },
-    grid: { left: 50, right: 20, top: 32, bottom: 30 },
+    grid: { left: 50, right: 20, top: 32, bottom: 56 },
     xAxis: { type: "time", ...baseAxis },
     yAxis: {
       type: "value",
@@ -132,32 +161,50 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
       ...baseAxis,
     },
     tooltip: { trigger: "axis", backgroundColor: "#1e293b", borderWidth: 0, textStyle: { color: "#e2e8f0" } },
-    series: [
-      {
-        type: "line",
-        name: "P2P",
-        showSymbol: false,
-        smooth: false,
-        sampling: "lttb",
-        data: linePoints.map((p) => [p.ts, p.price]),
-        lineStyle: { color: "#38bdf8", width: 1.5 },
-        areaStyle: { color: "rgba(56, 189, 248, 0.1)" },
-      },
-      {
-        type: "line",
-        name: "CAISO SP15",
-        showSymbol: false,
-        smooth: false,
-        data: lineExternalPoints.map((p) => [p.ts, p.price]),
-        lineStyle: { color: "#f59e0b", width: 1.5, type: "dashed" },
-      },
-    ],
+    dataZoom: timeZoom(zoomRef.current),
+    series:
+      variant === "realprice"
+        ? [
+            // Real-price market: the live CAISO price IS the market — make it primary.
+            {
+              type: "line",
+              name: "CAISO (grid price)",
+              showSymbol: false,
+              smooth: false,
+              sampling: "lttb",
+              data: lineExternalPoints.map((p) => [p.ts, p.price]),
+              lineStyle: { color: "#f59e0b", width: 1.5 },
+              areaStyle: { color: "rgba(245, 158, 11, 0.1)" },
+            },
+          ]
+        : [
+            {
+              type: "line",
+              name: "P2P",
+              showSymbol: false,
+              smooth: false,
+              sampling: "lttb",
+              data: linePoints.map((p) => [p.ts, p.price]),
+              lineStyle: { color: "#38bdf8", width: 1.5 },
+              areaStyle: { color: "rgba(56, 189, 248, 0.1)" },
+            },
+            {
+              // Reference only — does not drive P2P prices (free price discovery).
+              type: "line",
+              name: "CAISO (reference)",
+              showSymbol: false,
+              smooth: false,
+              sampling: "lttb",
+              data: lineExternalPoints.map((p) => [p.ts, p.price]),
+              lineStyle: { color: "#f59e0b", width: 1.5, type: "dashed" },
+            },
+          ],
     animation: false,
   };
 
   const candleOption = {
     backgroundColor: "transparent",
-    grid: { left: 50, right: 20, top: 16, bottom: 40 },
+    grid: { left: 50, right: 20, top: 16, bottom: 64 },
     xAxis: {
       type: "category",
       data: candles.map((c) => fmtTime(c.t)),
@@ -179,6 +226,7 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
       borderWidth: 0,
       textStyle: { color: "#e2e8f0" },
     },
+    dataZoom: timeZoom(zoomRef.current),
     series: [
       {
         type: "candlestick",
@@ -204,38 +252,49 @@ export default function PriceChart({ events, windowMs = 5 * 60 * 1000, initialPr
 
   return (
     <div className="space-y-2">
-      <div className="flex items-center justify-end gap-2">
-        {mode === "candles" && (
+      {allowCandles && (
+        <div className="flex items-center justify-end gap-2">
+          {effectiveMode === "candles" && (
+            <div className="inline-flex overflow-hidden rounded border border-slate-700">
+              {INTERVALS.map((iv) => (
+                <button key={iv.sec} onClick={() => setIntervalSec(iv.sec)} className={segBtn(intervalSec === iv.sec)}>
+                  {iv.label}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="inline-flex overflow-hidden rounded border border-slate-700">
-            {INTERVALS.map((iv) => (
-              <button
-                key={iv.sec}
-                onClick={() => setIntervalSec(iv.sec)}
-                className={segBtn(intervalSec === iv.sec)}
-              >
-                {iv.label}
-              </button>
-            ))}
+            <button
+              onClick={() => {
+                setMode("line");
+                zoomRef.current = FULL_ZOOM; // line uses a time axis; reset the category-axis zoom
+              }}
+              className={segBtn(effectiveMode === "line")}
+            >
+              Line
+            </button>
+            <button
+              onClick={() => {
+                setMode("candles");
+                zoomRef.current = FULL_ZOOM; // candles use a category axis; reset the time-axis zoom
+              }}
+              className={segBtn(effectiveMode === "candles")}
+            >
+              Candles
+            </button>
           </div>
-        )}
-        <div className="inline-flex overflow-hidden rounded border border-slate-700">
-          <button onClick={() => setMode("line")} className={segBtn(mode === "line")}>
-            Line
-          </button>
-          <button onClick={() => setMode("candles")} className={segBtn(mode === "candles")}>
-            Candles
-          </button>
         </div>
-      </div>
-      <div className="h-64 w-full">
-        {mode === "candles" && !hasCandles ? (
+      )}
+      <div className="h-72 w-full">
+        {effectiveMode === "candles" && !hasCandles ? (
           <div className="flex h-full items-center justify-center text-sm text-slate-500">
             Waiting for trades to aggregate…
           </div>
         ) : (
           <ReactECharts
-            option={mode === "candles" ? candleOption : lineOption}
+            option={effectiveMode === "candles" ? candleOption : lineOption}
             style={{ height: "100%", width: "100%" }}
+            onEvents={onEvents}
             notMerge
             lazyUpdate
           />

@@ -7,6 +7,7 @@ import MarketOverview from "./pages/MarketOverview";
 import MyVPPs from "./pages/MyVPPs";
 import Participants from "./pages/Participants";
 import { AuthProvider, useAuth } from "./state/auth";
+import { MarketModeProvider } from "./state/marketMode";
 import { MarketStreamProvider } from "./state/marketStream";
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
@@ -44,9 +45,11 @@ function Shell() {
 export default function App() {
   return (
     <AuthProvider>
-      <MarketStreamProvider>
-        <Shell />
-      </MarketStreamProvider>
+      <MarketModeProvider>
+        <MarketStreamProvider>
+          <Shell />
+        </MarketStreamProvider>
+      </MarketModeProvider>
     </AuthProvider>
   );
 }

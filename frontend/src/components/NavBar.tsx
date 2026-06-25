@@ -1,6 +1,7 @@
 import { Link, useLocation } from "react-router-dom";
 
 import { useAuth } from "../state/auth";
+import { useMarketMode } from "../state/marketMode";
 import { useMarket } from "../state/marketStream";
 import BrandLogo from "./BrandLogo";
 import { MarketIcon, ParticipantsIcon, VppIcon, type IconProps } from "./icons";
@@ -8,7 +9,14 @@ import { MarketIcon, ParticipantsIcon, VppIcon, type IconProps } from "./icons";
 export default function NavBar() {
   const { email, logout } = useAuth();
   const { state: wsState } = useMarket();
+  const { mode } = useMarketMode();
   const loc = useLocation();
+
+  const modeLabel = mode === "realprice" ? "Real-Time Price" : "P2P Market";
+  const modeClass =
+    mode === "realprice"
+      ? "border-amber-700 bg-amber-950/40 text-amber-300"
+      : "border-sky-800 bg-sky-950/40 text-sky-300";
 
   const link = (to: string, label: string, Icon: (p: IconProps) => React.ReactElement) => {
     const active = loc.pathname === to;
@@ -33,10 +41,11 @@ export default function NavBar() {
   return (
     <nav className="sticky top-0 z-20 flex items-center justify-between border-b border-slate-800/80 bg-slate-950/70 px-6 py-2.5 backdrop-blur-md">
       <div className="flex items-center gap-3">
-        <Link to="/" className="flex items-center gap-2 pr-2">
+        <Link to="/" className="flex items-center gap-2 pr-1">
           <BrandLogo size={30} />
           <span className="eflux-wordmark text-lg font-bold">EFlux</span>
         </Link>
+        <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${modeClass}`}>{modeLabel}</span>
         <div className="flex items-center gap-1">
           {link("/", "Market", MarketIcon)}
           {link("/participants", "Participants", ParticipantsIcon)}

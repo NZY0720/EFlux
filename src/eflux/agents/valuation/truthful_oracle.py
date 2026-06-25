@@ -67,7 +67,7 @@ class TruthfulValuationOracle:
         fair_buy_price = pr * min(self.price_cap_mult, 1.0 + self.demand_beta * deficit_frac)
 
         external = ctx.market.external_market
-        if external is not None and external.is_real_price:
+        if external is not None and external.is_real_price and ctx.market.anchor_to_external:
             anchor = float(external.p2p_anchor_price)
             fair_buy_price = min(fair_buy_price, anchor)
             fair_sell_price = max(fair_sell_price, anchor)

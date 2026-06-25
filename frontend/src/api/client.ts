@@ -150,13 +150,18 @@ export async function setMarketSpeed(speed: number): Promise<{ speed: number; is
 
 // --- Health / meta ---
 
-export async function fetchMeta(): Promise<{
+export type MarketMode = "p2p" | "realprice";
+
+export interface MetaInfo {
   name: string;
   version: string;
   env: string;
+  market_mode: MarketMode;
   market_speed: number;
   vpps_builtin: number;
-}> {
-  const { data } = await api.get("/");
+}
+
+export async function fetchMeta(): Promise<MetaInfo> {
+  const { data } = await api.get<MetaInfo>("/");
   return data;
 }

@@ -46,7 +46,7 @@ class ZIAgent(BaseAgent):
         external = ctx.market.external_market
         ref = (
             float(external.p2p_anchor_price)
-            if external is not None and external.is_real_price
+            if external is not None and external.is_real_price and ctx.market.anchor_to_external
             else float(self.price_ref)
         )
         spread = ref * self.spread_frac

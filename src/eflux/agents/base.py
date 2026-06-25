@@ -75,6 +75,12 @@ class MarketSnapshot:
     recent_trades: list[dict] = field(default_factory=list)
     peer_reflections: list[dict] = field(default_factory=list)
     external_market: ExternalMarketQuote | None = None
+    # Whether cost-based agents (truthful/ZI) should cap/floor their fair prices to
+    # the live CAISO anchor. Both live markets set this False: P2P treats CAISO as a
+    # reference line only (free price discovery), and the real-price market would
+    # never cross the grid spread if valuations were pinned to the lmp. Defaults True
+    # so unit-test snapshots keep the legacy anchoring behavior.
+    anchor_to_external: bool = True
 
     @classmethod
     def from_engine(
@@ -83,6 +89,7 @@ class MarketSnapshot:
         snapshot: dict,
         *,
         external_market: ExternalMarketQuote | None = None,
+        anchor_to_external: bool = True,
     ) -> MarketSnapshot:
         bb = Decimal(snapshot["best_bid"]) if snapshot.get("best_bid") else None
         ba = Decimal(snapshot["best_ask"]) if snapshot.get("best_ask") else None
@@ -95,6 +102,7 @@ class MarketSnapshot:
             last_price=last,
             mid_price=mid,
             external_market=external_market,
+            anchor_to_external=anchor_to_external,
         )
 
 

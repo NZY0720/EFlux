@@ -8,6 +8,8 @@ import { BoltIcon, GaugeIcon, ScaleIcon, TrendDownIcon, TrendUpIcon, VppIcon, ty
 interface Props {
   snapshot: MarketSnapshot | null;
   builtinVpps: number;
+  /** "p2p" (default) shows P2P price/book KPIs; "realprice" shows grid-price KPIs. */
+  variant?: "p2p" | "realprice";
 }
 
 const SPEEDS = [1, 10, 100];
@@ -82,7 +84,7 @@ function SpeedCell({ snapshot }: { snapshot: MarketSnapshot | null }) {
   );
 }
 
-export default function KpiBar({ snapshot, builtinVpps }: Props) {
+export default function KpiBar({ snapshot, builtinVpps, variant = "p2p" }: Props) {
   const fmt = (v: string | null | undefined) => (v === null || v === undefined ? "—" : Number(v).toFixed(2));
   const balance = snapshot?.balance;
   const external = snapshot?.external_market;
@@ -93,6 +95,48 @@ export default function KpiBar({ snapshot, builtinVpps }: Props) {
     snapshot?.last_price && externalLive && external?.raw_lmp
       ? Number(snapshot.last_price) - Number(external.raw_lmp)
       : null;
+
+  if (variant === "realprice") {
+    // The market clears at the live CAISO price; agents are price-takers, so the
+    // grid quote and its bid-ask spread are the KPIs that matter here.
+    const spread =
+      externalLive && external ? Number(external.import_price) - Number(external.export_price) : null;
+    return (
+      <div className="flex flex-wrap gap-3">
+        <Cell
+          label="CAISO grid price"
+          value={externalLive ? fmt(external?.raw_lmp) : "—"}
+          sub={
+            externalLive && external
+              ? `buy ${Number(external.import_price).toFixed(2)} / sell ${Number(external.export_price).toFixed(2)} $/MWh`
+              : external
+                ? `${external.status} — no live feed`
+                : "external market"
+          }
+          icon={BoltIcon}
+        />
+        <Cell
+          label="Grid spread"
+          value={spread == null ? "—" : spread.toFixed(2)}
+          sub="import minus export ($/MWh)"
+          icon={ScaleIcon}
+        />
+        <Cell
+          label="Supply / demand"
+          value={balance?.supply_demand_ratio != null ? `${balance.supply_demand_ratio.toFixed(2)}x` : "—"}
+          sub={
+            balance
+              ? `${balance.renewable_kw.toFixed(0)} kW renew vs ${balance.load_kw.toFixed(0)} kW load`
+              : "live capacity vs load"
+          }
+          icon={ScaleIcon}
+        />
+        <SpeedCell snapshot={snapshot} />
+        <Cell label="Strategies" value={String(builtinVpps)} sub="price-taking agents" icon={VppIcon} />
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-wrap gap-3">
       <Cell label="Last price" value={fmt(snapshot?.last_price)} sub="last P2P trade ($/MWh)" icon={BoltIcon} />

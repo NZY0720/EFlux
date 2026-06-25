@@ -5,7 +5,10 @@ import type { MarketEvent, MarketSnapshot } from "../api/types";
 import { useMarketStream } from "../ws/useMarketStream";
 import type { ConnectionState } from "../ws/useMarketStream";
 
-const MAX_BUFFER = 1000;
+// Retain a long event history so the price chart can zoom back to the session
+// start. The buffer holds ticks/trades (and, in p2p, order events); bounded only
+// as a memory safety net — the time-zoom slider navigates within it.
+const MAX_BUFFER = 50_000;
 
 interface MarketStreamValue {
   /** WS connection state. */

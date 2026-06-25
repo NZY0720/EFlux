@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     order_ttl_sec: float = 180.0
     site_timezone: str = "America/Los_Angeles"
     market_region: str = "caiso_sp15"
+    # Which market this process runs (one market per launch — see the two .command
+    # launchers). "p2p" = peer-to-peer continuous double auction; CAISO is a
+    # reference line only and never anchors agent prices. "realprice" = pure
+    # price-taking against the live CAISO price (every order settles vs the grid at
+    # import/export; agents never trade each other and don't move the price).
+    market_mode: Literal["p2p", "realprice"] = "p2p"
     external_market_enabled: bool = True
     external_market_poll_sec: float = 60.0
     external_market_node: str = "TH_SP15_GEN-APND"

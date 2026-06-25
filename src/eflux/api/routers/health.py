@@ -23,6 +23,7 @@ def root(request: Request) -> dict:
         "name": "EFlux",
         "version": __version__,
         "env": settings.env,
+        "market_mode": settings.market_mode,
         "market_speed": settings.market_speed,
         "vpps_builtin": len(sim.vpps) if sim else 0,
         "docs": "/docs",
