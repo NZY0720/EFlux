@@ -43,6 +43,9 @@ COUNTERPARTY_ORDERS_PER_TICK = 4
 ORDER_TTL_TICKS = 3
 VPP_ID = 1
 COUNTERPARTY_ID = 999
+# Fixed reference day for synthetic episodes — a deterministic (seed-offset) start so
+# training/eval never depend on wall-clock time. Summer solstice = a strong solar signal.
+_SYNTHETIC_EPOCH = datetime(2024, 6, 21, tzinfo=UTC)
 
 # Reward weights (§7). Realized cash is the primary term; the rest shape behaviour.
 W_INVENTORY = 0.1     # mark-to-market value of unsettled energy
@@ -73,6 +76,9 @@ class VPPPrimitiveEnv(gym.Env):
             VPPParams(pv_kw_peak=4.0, battery_kwh=20.0, battery_kw_max=6.0, load_kw_base=6.0, markup_floor=0.4),
             VPPParams(pv_kw_peak=2.0, battery_kwh=10.0, battery_kw_max=3.0, load_kw_base=3.0, markup_floor=0.4),
         ]
+        # Optional RealMarketData (eflux.agents.ppo.training_data): when present the env
+        # replays real CAISO price + real weather-driven PV instead of the synthetic walk.
+        self._real_data = cfg.get("real_data")
         self._oracle = TruthfulValuationOracle(price_ref=Decimal(str(PRICE_REF)), demand_beta=0.5)
         self._compiler = OrderProgramCompiler()
         self._risk_gate = RiskGate()
@@ -94,9 +100,10 @@ class VPPPrimitiveEnv(gym.Env):
         rseed = seed if seed is not None else (self._seed if self._seed is not None else random.randint(0, 1 << 30))
         self._rng = random.Random(rseed)
         self._np_rng = np.random.default_rng(rseed)
+        self._rseed = rseed
 
         self._params = self._rng.choice(self._params_pool)
-        self._sim_ts = datetime.now(UTC).replace(microsecond=0)
+        self._sim_ts = self._pick_start()
         self._state = VPPState(sim_ts=self._sim_ts, soc_kwh=self._params.battery_kwh * 0.5)
         self._pv = PV(kw_peak=self._params.pv_kw_peak)
         self._battery = Battery(
@@ -244,17 +251,39 @@ class VPPPrimitiveEnv(gym.Env):
                 net += float(o.remaining_qty) if o.side == "sell" else -float(o.remaining_qty)
         return net
 
+    def _pick_start(self) -> datetime:
+        """Episode start time. Real-data mode samples a random window inside the fetched
+        month (so episodes see diverse real price/weather). Synthetic mode uses a fixed
+        reference day offset by the seed — reproducible (no wall-clock dependence) while
+        still spanning different hours of day across episodes."""
+        if self._real_data is None:
+            return _SYNTHETIC_EPOCH + timedelta(hours=self._rseed % 24)
+        span_h = max(1, self._real_data.hours - self._episode_ticks)
+        offset = self._rng.randint(0, span_h)
+        return (self._real_data.start + timedelta(hours=offset)).replace(minute=0, second=0, microsecond=0)
+
     def _step_der(self) -> None:
         self._state.sim_ts = self._sim_ts
-        self._state.pv_kw = self._pv.output_kw(self._sim_ts, self._rng)
+        if self._real_data is not None:
+            # Real irradiance drives PV: 1000 W/m² ≈ nameplate (small headroom for cool/clear).
+            ghi = self._real_data.ghi_at(self._sim_ts)
+            self._state.pv_kw = max(0.0, self._params.pv_kw_peak * min(1.2, ghi / 1000.0))
+        else:
+            self._state.pv_kw = self._pv.output_kw(self._sim_ts, self._rng)
         self._state.load_kw = self._load.draw_kw(self._sim_ts, self._rng)
         self._state.update_net()
 
     def _seed_counterparty(self) -> None:
-        drift = self._np_rng.normal(0.0, 1.0)
-        revert = 0.05 * (PRICE_REF - self._last_price_ref)
-        self._last_price_ref = max(5.0, self._last_price_ref + drift + revert)
-        ref = self._last_price_ref
+        if self._real_data is not None:
+            # Center the counter-party book on the real LMP for this hour, so the agent
+            # trades against the actual price curve (its own price_ref stays fixed).
+            ref = max(5.0, self._real_data.price_at(self._sim_ts))
+            self._last_price_ref = ref
+        else:
+            drift = self._np_rng.normal(0.0, 1.0)
+            revert = 0.05 * (PRICE_REF - self._last_price_ref)
+            self._last_price_ref = max(5.0, self._last_price_ref + drift + revert)
+            ref = self._last_price_ref
         for _ in range(COUNTERPARTY_ORDERS_PER_TICK):
             side = self._rng.choice(["buy", "sell"])
             jitter = self._np_rng.normal(0.0, 0.05 * ref)

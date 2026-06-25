@@ -4,6 +4,7 @@ import { fetchMarketAgents } from "../api/client";
 import type { MarketAgent } from "../api/types";
 import { CategoryIcon } from "../components/icons";
 import { CATEGORY_ORDER, categoryMeta, strategyLabel } from "../lib/categories";
+import { formatCompactCount } from "../lib/format";
 
 type SortKey = "name" | "category" | "pnl" | "soc" | "net" | "trades";
 
@@ -53,7 +54,7 @@ export default function Participants() {
         case "net":
           return a.net_kw;
         case "trades":
-          return a.recent_trade_count;
+          return a.trade_count;
       }
     };
     const out = [...agents].sort((a, b) => {
@@ -204,7 +205,9 @@ function AgentRow({ agent: a }: { agent: MarketAgent }) {
       <td className={`px-3 py-2 text-right tabular-nums ${pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
         {pnl.toFixed(2)}
       </td>
-      <td className="px-3 py-2 text-right text-slate-300 tabular-nums">{a.recent_trade_count}</td>
+      <td className="px-3 py-2 text-right text-slate-300 tabular-nums" title={`${a.trade_count} trades`}>
+        {formatCompactCount(a.trade_count)}
+      </td>
     </tr>
   );
 }

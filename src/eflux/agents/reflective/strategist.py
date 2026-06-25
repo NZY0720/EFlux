@@ -18,7 +18,7 @@ import asyncio
 import json
 import logging
 from collections import deque
-from dataclasses import dataclass, field, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
@@ -154,18 +154,67 @@ If the policy is learning well, omit "meta_control" or leave it at the defaults.
 advice and meta-control are SOFT, clamped priors — the tactical policy may override the
 advice, and out-of-range knobs are clipped. Stay within bounds."""
 
+REALPRICE_STRATEGIST_SYSTEM_PROMPT = """\
+You are the slow strategist for a Virtual Power Plant trading in a real-time grid
+price market. There is no peer order book: every accepted order settles against the
+CAISO grid quote, and the VPP cannot move the price. A fast tactical policy chooses
+one trading PRIMITIVE each tick; your job is to advise timing, SOC posture, risk, and
+learning meta-control over the current grid-price regime — never to place orders
+yourself.
 
-def build_strategist_system_prompt(persona_prompt: str | None = None) -> str:
+Primitives the policy can use: noop, hold_energy, liquidate_surplus, cover_deficit,
+aggressive_taker, battery_arbitrage. Book-specific primitives may exist in the shared
+action vocabulary, but they are not useful here and should not be preferred.
+
+Return ONLY a JSON object (no markdown, no commentary):
+  {
+    "preferred_modes": [<primitive names to favour>],
+    "avoid_modes":     [<primitive names to discourage>],
+    "risk_budget":     <float in [0,1]; 1 = full size, lower = more cautious>,
+    "soc_target":      <float in [0,1]; desired battery state of charge>,
+    "execution_style": "<short grid-price timing preference, <=120 chars>",
+    "lesson":          "<one durable takeaway from the last window, <=200 chars>",
+    "meta_control": {
+      "w_imbalance_mult": <float in [0.5,2]; >1 punishes leaving energy unserved harder>,
+      "w_soc_mult":       <float in [0.5,2]; >1 protects the battery SOC band harder>,
+      "w_degrade_mult":   <float in [0.5,2]; >1 discourages battery cycling harder>,
+      "lr":               <float in [1e-5,1e-3]; learning rate of the policy>,
+      "entropy_coef":     <float in [0,0.05]; higher = explore more>,
+      "kl_target":        <float in [0.005,0.05]; smaller = more cautious updates>,
+      "mode_reg_coef":    <float in [0,1]; >0 pulls the learner toward preferred_modes>
+    }
+  }
+If the policy is learning well, omit "meta_control" or leave it at the defaults. Treat
+null best_bid/best_ask as normal in this market. Your advice and meta-control are SOFT,
+clamped priors — the tactical policy may override the advice, and out-of-range knobs
+are clipped. Stay within bounds."""
+
+_REALPRICE_DISALLOWED_PREFERRED = {
+    StrategyMode.PASSIVE_MARKET_MAKE,
+    StrategyMode.LADDER_SELL,
+    StrategyMode.LADDER_BUY,
+    StrategyMode.CANCEL_REPRICE,
+}
+
+
+def build_strategist_system_prompt(
+    persona_prompt: str | None = None, *, market_mode: str = "p2p"
+) -> str:
+    base = REALPRICE_STRATEGIST_SYSTEM_PROMPT if market_mode == "realprice" else STRATEGIST_SYSTEM_PROMPT
     if not persona_prompt:
-        return STRATEGIST_SYSTEM_PROMPT
-    return f"{STRATEGIST_SYSTEM_PROMPT}\nPersona / standing brief:\n{persona_prompt.strip()}\n"
+        return base
+    return f"{base}\nPersona / standing brief:\n{persona_prompt.strip()}\n"
 
 
 def build_strategist_user_message(
     *, recent_pnl: list[float], soc_frac: float, best_bid: float | None,
     best_ask: float | None, last_price: float | None, regime_note: str = "",
+    market_mode: str = "p2p", grid_raw_lmp: float | None = None,
+    grid_import_price: float | None = None, grid_export_price: float | None = None,
+    grid_status: str | None = None,
 ) -> str:
     payload = {
+        "market_mode": market_mode,
         "recent_pnl": [round(float(x), 4) for x in recent_pnl[-20:]],
         "soc_frac": round(float(soc_frac), 3),
         "best_bid": None if best_bid is None else round(float(best_bid), 4),
@@ -173,6 +222,15 @@ def build_strategist_user_message(
         "last_price": None if last_price is None else round(float(last_price), 4),
         "regime_note": regime_note[:200],
     }
+    if market_mode == "realprice":
+        payload.update(
+            {
+                "grid_raw_lmp": None if grid_raw_lmp is None else round(float(grid_raw_lmp), 4),
+                "grid_import_price": None if grid_import_price is None else round(float(grid_import_price), 4),
+                "grid_export_price": None if grid_export_price is None else round(float(grid_export_price), 4),
+                "grid_status": grid_status,
+            }
+        )
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -187,7 +245,14 @@ def _parse_modes(value) -> tuple[StrategyMode, ...]:
     return tuple(out)
 
 
-def parse_guidance(content: str) -> StrategyGuidance:
+def _sanitize_guidance_for_market(guidance: StrategyGuidance, market_mode: str) -> StrategyGuidance:
+    if market_mode != "realprice":
+        return guidance
+    preferred = tuple(m for m in guidance.preferred_modes if m not in _REALPRICE_DISALLOWED_PREFERRED)
+    return replace(guidance, preferred_modes=preferred)
+
+
+def parse_guidance(content: str, *, market_mode: str = "p2p") -> StrategyGuidance:
     """Extract the first JSON object and coerce it into clamped StrategyGuidance.
     Tolerant of prose/fences (same scanner as the reflective hint parser); raises
     GuidanceParseError when nothing usable is found so the caller logs a failure."""
@@ -200,7 +265,7 @@ def parse_guidance(content: str) -> StrategyGuidance:
     if data is None:
         raise GuidanceParseError(f"no JSON object in strategist response: {content[:160]!r}")
     try:
-        return StrategyGuidance(
+        guidance = StrategyGuidance(
             preferred_modes=_parse_modes(data.get("preferred_modes")),
             avoid_modes=_parse_modes(data.get("avoid_modes")),
             risk_budget=float(data.get("risk_budget", 1.0)),
@@ -208,6 +273,7 @@ def parse_guidance(content: str) -> StrategyGuidance:
             execution_style=str(data.get("execution_style", "")),
             lesson=str(data.get("lesson", "")),
         ).clamped()
+        return _sanitize_guidance_for_market(guidance, market_mode)
     except (TypeError, ValueError) as e:
         raise GuidanceParseError(f"guidance object has non-numeric fields: {data!r}") from e
 
@@ -284,6 +350,9 @@ class LLMStrategist:
     async def arefresh(
         self, *, recent_pnl: list[float], soc_frac: float, best_bid: float | None,
         best_ask: float | None, last_price: float | None, regime_note: str = "",
+        market_mode: str = "p2p", grid_raw_lmp: float | None = None,
+        grid_import_price: float | None = None, grid_export_price: float | None = None,
+        grid_status: str | None = None,
     ) -> StrategyGuidance | None:
         if self.llm_gate is not None:
             if self.llm_gate.locked():
@@ -297,6 +366,11 @@ class LLMStrategist:
                     best_ask=best_ask,
                     last_price=last_price,
                     regime_note=regime_note,
+                    market_mode=market_mode,
+                    grid_raw_lmp=grid_raw_lmp,
+                    grid_import_price=grid_import_price,
+                    grid_export_price=grid_export_price,
+                    grid_status=grid_status,
                 )
         return await self._refresh_once(
             recent_pnl=recent_pnl,
@@ -305,17 +379,33 @@ class LLMStrategist:
             best_ask=best_ask,
             last_price=last_price,
             regime_note=regime_note,
+            market_mode=market_mode,
+            grid_raw_lmp=grid_raw_lmp,
+            grid_import_price=grid_import_price,
+            grid_export_price=grid_export_price,
+            grid_status=grid_status,
         )
 
     async def _refresh_once(
         self, *, recent_pnl: list[float], soc_frac: float, best_bid: float | None,
         best_ask: float | None, last_price: float | None, regime_note: str = "",
+        market_mode: str = "p2p", grid_raw_lmp: float | None = None,
+        grid_import_price: float | None = None, grid_export_price: float | None = None,
+        grid_status: str | None = None,
     ) -> StrategyGuidance | None:
         messages = [
-            {"role": "system", "content": build_strategist_system_prompt(self.persona_prompt)},
+            {
+                "role": "system",
+                "content": build_strategist_system_prompt(
+                    self.persona_prompt, market_mode=market_mode
+                ),
+            },
             {"role": "user", "content": build_strategist_user_message(
                 recent_pnl=recent_pnl, soc_frac=soc_frac, best_bid=best_bid,
                 best_ask=best_ask, last_price=last_price, regime_note=regime_note,
+                market_mode=market_mode, grid_raw_lmp=grid_raw_lmp,
+                grid_import_price=grid_import_price, grid_export_price=grid_export_price,
+                grid_status=grid_status,
             )},
         ]
         try:
@@ -326,16 +416,22 @@ class LLMStrategist:
             content = str(content)
             if not content.strip():
                 raise RuntimeError("empty LLM response (completion budget exhausted?)")
-            guidance = parse_guidance(content)
+            guidance = parse_guidance(content, market_mode=market_mode)
+            meta = parse_meta_control(content)  # tolerant — never raises
             self._guidance = guidance
-            self._meta = parse_meta_control(content)  # tolerant — never raises
+            self._meta = meta
             self.ok_count += 1
             self.last_ok_ts = datetime.now(UTC)
-            self.reflection_log.append(self._entry(ok=True, guidance=guidance))
+            self.reflection_log.append(self._entry(ok=True, guidance=guidance, meta=meta))
         except Exception as e:  # network error or unparseable response — keep prior
             self.fail_count += 1
             self.reflection_log.append(
-                self._entry(ok=False, guidance=self._guidance, error=f"{type(e).__name__}: {e}")
+                self._entry(
+                    ok=False,
+                    guidance=self._guidance,
+                    meta=self._meta,
+                    error=f"{type(e).__name__}: {e}",
+                )
             )
             log.warning("strategist refresh failed (%s); keeping prior guidance", type(e).__name__)
         return self._guidance
@@ -345,9 +441,11 @@ class LLMStrategist:
         *,
         ok: bool,
         guidance: StrategyGuidance | None,
+        meta: MetaControl | None = None,
         error: str | None = None,
     ) -> dict:
         guidance = guidance or StrategyGuidance()
+        meta_dict = None if meta is None else {k: float(v) for k, v in asdict(meta).items()}
         ts = self.last_ok_ts if ok and self.last_ok_ts is not None else datetime.now(UTC)
         return {
             "ts": ts,
@@ -360,5 +458,6 @@ class LLMStrategist:
             # Keep rationale populated so older UI copy degrades gracefully.
             "rationale": guidance.execution_style or guidance.lesson,
             "lesson": guidance.lesson,
+            "meta_control": meta_dict,
             "error": None if error is None else error[:200],
         }

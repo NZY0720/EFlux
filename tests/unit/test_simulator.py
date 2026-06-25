@@ -323,6 +323,19 @@ def test_p2p_market_never_settles_against_grid():
     assert seller.state.cumulative_energy_sold_kwh == pytest.approx(0.0)
 
 
+def test_vpp_trade_count_is_cumulative_not_recent_buffer_length():
+    sim = Simulator(bus=InMemoryBus())
+    vpp = sim.add_builtin_vpp("counter", VPPParams(), ZIAgent())
+
+    for i in range(55):
+        sim._push_recent_trade(vpp, {"trade_id": i})
+
+    assert vpp.trade_count == 55
+    assert len(vpp.recent_trades) == 50
+    assert vpp.recent_trades[0]["trade_id"] == 54
+    assert vpp.recent_trades[-1]["trade_id"] == 5
+
+
 def test_truthful_vpp_trades_within_seconds_via_accumulator():
     """Regression for the dimension bug: with a 1-second tick, per-tick net energy
     (~1e-3 kWh) never cleared min_qty, so Truthful (and the LLM-wrapped Truthful)

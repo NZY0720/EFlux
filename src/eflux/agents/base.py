@@ -68,6 +68,7 @@ class MarketSnapshot:
     best_ask: Decimal | None
     last_price: Decimal | None
     mid_price: Decimal | None
+    market_mode: str = "p2p"
     # Market-wide context for learning agents, populated once per tick by the
     # runner (empty for unit-test snapshots): recent fills with party names,
     # and each LLM agent's latest successful reflection (tagged with vpp_id so
@@ -90,6 +91,7 @@ class MarketSnapshot:
         *,
         external_market: ExternalMarketQuote | None = None,
         anchor_to_external: bool = True,
+        market_mode: str = "p2p",
     ) -> MarketSnapshot:
         bb = Decimal(snapshot["best_bid"]) if snapshot.get("best_bid") else None
         ba = Decimal(snapshot["best_ask"]) if snapshot.get("best_ask") else None
@@ -101,6 +103,7 @@ class MarketSnapshot:
             best_ask=ba,
             last_price=last,
             mid_price=mid,
+            market_mode=market_mode,
             external_market=external_market,
             anchor_to_external=anchor_to_external,
         )

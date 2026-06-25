@@ -148,6 +148,30 @@ export async function setMarketSpeed(speed: number): Promise<{ speed: number; is
   return data;
 }
 
+// --- PPO renew (retrain on latest real data + hot-reload) ---
+
+export type PpoRenewState = "idle" | "training" | "reloading" | "done" | "error";
+
+export interface PpoStatus {
+  state: PpoRenewState | string;
+  started_at: string | null;
+  finished_at: string | null;
+  detail: string;
+  reloaded: number;
+  error: string | null;
+  metrics: Record<string, unknown> | null;
+}
+
+export async function fetchPpoStatus(): Promise<PpoStatus> {
+  const { data } = await api.get<PpoStatus>("/market/ppo/status");
+  return data;
+}
+
+export async function renewPpos(days = 30): Promise<PpoStatus & { status: string }> {
+  const { data } = await api.post("/market/ppo/renew", null, { params: { days } });
+  return data;
+}
+
 // --- Health / meta ---
 
 export type MarketMode = "p2p" | "realprice";

@@ -91,10 +91,6 @@ export default function KpiBar({ snapshot, builtinVpps, variant = "p2p" }: Props
   // Only treat the CAISO price as live (and comparable) when it comes from a
   // real/fallback feed; synthetic/disabled is just the configured placeholder.
   const externalLive = external?.status === "real" || external?.status === "fallback";
-  const p2pBasis =
-    snapshot?.last_price && externalLive && external?.raw_lmp
-      ? Number(snapshot.last_price) - Number(external.raw_lmp)
-      : null;
 
   if (variant === "realprice") {
     // The market clears at the live CAISO price; agents are price-takers, so the
@@ -140,24 +136,6 @@ export default function KpiBar({ snapshot, builtinVpps, variant = "p2p" }: Props
   return (
     <div className="flex flex-wrap gap-3">
       <Cell label="Last price" value={fmt(snapshot?.last_price)} sub="last P2P trade ($/MWh)" icon={BoltIcon} />
-      <Cell
-        label="CAISO SP15"
-        value={externalLive ? fmt(external?.raw_lmp) : "—"}
-        sub={
-          externalLive && external
-            ? `buy ${Number(external.import_price).toFixed(2)} / sell ${Number(external.export_price).toFixed(2)} $/MWh`
-            : external
-              ? `${external.status} — no live feed`
-              : "external market"
-        }
-        icon={BoltIcon}
-      />
-      <Cell
-        label="P2P basis"
-        value={p2pBasis == null ? "—" : p2pBasis.toFixed(2)}
-        sub="P2P last minus CAISO ($/MWh)"
-        icon={ScaleIcon}
-      />
       <Cell label="Best bid" value={fmt(snapshot?.best_bid)} sub="$/MWh" icon={TrendDownIcon} />
       <Cell label="Best ask" value={fmt(snapshot?.best_ask)} sub="$/MWh" icon={TrendUpIcon} />
       <Cell

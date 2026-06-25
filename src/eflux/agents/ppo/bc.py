@@ -61,18 +61,24 @@ class BCNet(nn.Module):
 
 
 def collect_demonstrations(
-    expert: StrategyPolicy, *, n_episodes: int = 40, seed: int = 0, demand_beta: float = _DEMO_DEMAND_BETA
+    expert: StrategyPolicy,
+    *,
+    n_episodes: int = 40,
+    seed: int = 0,
+    demand_beta: float = _DEMO_DEMAND_BETA,
+    env_config: dict | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Roll the expert through VPPPrimitiveEnv, recording (obs, encoded-action) pairs.
 
     Obs and the expert's decision are computed with our own oracle at `demand_beta` (so
     they match the serving config), independent of the env's internal stepping oracle —
-    the env only supplies a diverse DER/market state trajectory to clone over."""
+    the env only supplies a diverse DER/market state trajectory to clone over. `env_config`
+    is passed to the env (e.g. {"real_data": ...} to clone over real price/weather)."""
     from decimal import Decimal
 
     from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 
-    env = VPPPrimitiveEnv({})
+    env = VPPPrimitiveEnv(env_config or {})
     oracle = TruthfulValuationOracle(price_ref=Decimal(str(PRICE_REF)), demand_beta=demand_beta)
     obs_rows: list[np.ndarray] = []
     act_rows: list[np.ndarray] = []
@@ -133,12 +139,14 @@ def trade_mode_accuracy(net: BCNet, obs: np.ndarray, acts: np.ndarray) -> float:
     return float((pred[mask] == true[mask]).mean())
 
 
-def mean_episode_reward(policy: StrategyPolicy, *, n_episodes: int = 8, seed: int = 0) -> float:
+def mean_episode_reward(
+    policy: StrategyPolicy, *, n_episodes: int = 8, seed: int = 0, env_config: dict | None = None
+) -> float:
     """Mean total VPPPrimitiveEnv reward when `policy` drives it — the warm-start
     metric (how competent a starting point the policy gives PPO, in PPO's own env)."""
     from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 
-    env = VPPPrimitiveEnv({})
+    env = VPPPrimitiveEnv(env_config or {})
     totals: list[float] = []
     for ep in range(n_episodes):
         env.reset(seed=seed + ep)
@@ -152,11 +160,11 @@ def mean_episode_reward(policy: StrategyPolicy, *, n_episodes: int = 8, seed: in
     return float(np.mean(totals))
 
 
-def mean_random_reward(*, n_episodes: int = 8, seed: int = 0) -> float:
+def mean_random_reward(*, n_episodes: int = 8, seed: int = 0, env_config: dict | None = None) -> float:
     """Mean total reward of a uniformly-random policy — the warm-start floor."""
     from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 
-    env = VPPPrimitiveEnv({})
+    env = VPPPrimitiveEnv(env_config or {})
     rng = np.random.default_rng(seed)
     totals: list[float] = []
     for ep in range(n_episodes):

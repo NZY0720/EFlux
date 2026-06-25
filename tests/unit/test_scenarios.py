@@ -19,20 +19,6 @@ def _load(monkeypatch) -> Simulator:
     return sim
 
 
-def test_load_ppo_scenario_skips_gracefully_on_bad_checkpoint(monkeypatch):
-    """A bogus EFLUX_PPO_CHECKPOINT must not crash startup — whether the 'ai'
-    extras are missing (ImportError) or the checkpoint fails to load."""
-    from eflux.simulator.scenarios import load_ppo_scenario
-
-    monkeypatch.setenv("EFLUX_PV_PHYSICAL", "false")
-    get_settings.cache_clear()
-    sim = Simulator(bus=InMemoryBus())
-
-    load_ppo_scenario(sim, "/nonexistent/checkpoint/path")
-
-    assert len(sim.vpps) == 0
-
-
 def test_default_scenario_loads_full_roster_incl_llm_fleet(monkeypatch):
     sim = _load(monkeypatch)
 
@@ -82,6 +68,35 @@ def test_ppo_online_executor_wired_into_roster(monkeypatch):
     assert isinstance(mirror, StrategyAgent)
     assert isinstance(mirror._policy, OnlinePPOPolicy)  # twin runs the same machinery, no LLM
     assert not hasattr(mirror, "strategist")
+
+
+def test_realprice_mirrors_point_to_llm_twins(monkeypatch):
+    import pytest
+
+    pytest.importorskip("torch")
+
+    from eflux.agents.hybrid import StrategyAgent
+    from eflux.agents.ppo.online_ppo import OnlinePPOPolicy
+
+    monkeypatch.setenv("EFLUX_SCENARIO_FILE", "scenarios/realprice.yaml")
+    monkeypatch.setenv("EFLUX_MARKET_MODE", "realprice")
+    monkeypatch.setenv("EFLUX_PV_PHYSICAL", "false")
+    monkeypatch.setenv("EFLUX_REFLECTIVE_ENABLED", "false")
+    get_settings.cache_clear()
+    sim = Simulator(bus=InMemoryBus())
+    load_default_scenario(sim)
+
+    mirrors = [v for v in sim.vpps.values() if v.mirror_of is not None]
+    assert len(mirrors) == 6
+    by_name = {v.name: v for v in sim.vpps.values()}
+    for mirror in mirrors:
+        llm = by_name[mirror.mirror_of]
+        assert mirror.name == f"{llm.name}-ppo-mirror"
+        assert mirror.params == llm.params
+        assert mirror.rng.random() == llm.rng.random()
+        assert isinstance(mirror.agent, StrategyAgent)
+        assert isinstance(mirror.agent._policy, OnlinePPOPolicy)
+        assert isinstance(llm.agent._executor, OnlinePPOPolicy)
 
 
 def test_llm_fleet_shares_connection_and_staggers_reflections(monkeypatch):

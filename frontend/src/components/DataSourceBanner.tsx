@@ -3,6 +3,8 @@ import type { DataSourceEntry } from "../api/types";
 
 interface Props {
   dataSource?: DataSourceStatus;
+  /** Show the external (CAISO) price source. False for the pure-P2P market, which doesn't use CAISO. */
+  showExternalPrice?: boolean;
 }
 
 function statusClasses(status: string): string {
@@ -15,12 +17,12 @@ function isSource(source: DataSourceEntry | undefined): source is DataSourceEntr
   return source !== undefined;
 }
 
-export default function DataSourceBanner({ dataSource }: Props) {
+export default function DataSourceBanner({ dataSource, showExternalPrice = true }: Props) {
   const checkedAt = dataSource
     ? new Date(dataSource.checked_at).toLocaleTimeString("en-GB", { hour12: false })
     : "checking";
   const weather = dataSource?.sources.find((s) => !s.component.includes("CAISO")) ?? dataSource?.sources[0];
-  const price = dataSource?.sources.find((s) => s.component.includes("CAISO"));
+  const price = showExternalPrice ? dataSource?.sources.find((s) => s.component.includes("CAISO")) : undefined;
   const visibleSources =
     weather && price && weather.component === price.component ? [price] : [weather, price].filter(isSource);
 

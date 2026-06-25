@@ -169,26 +169,27 @@ def test_json_schema_export_contains_contract_fields():
     assert "gas_cost_per_kwh" in schema["properties"]["params"]["properties"]
 
 
-def test_executor_ppo_requires_checkpoint():
-    with pytest.raises(ValidationError, match="checkpoint"):
+def test_executor_legacy_ppo_kind_rejected():
+    # The legacy RLlib `ppo` executor was removed; only scripted / ppo_online remain.
+    with pytest.raises(ValidationError):
         AgentSpec.model_validate(
-            {"name": "s", "agent": "strategy", "executor": {"kind": "ppo"}}
+            {"name": "s", "agent": "strategy", "executor": {"kind": "ppo", "checkpoint": "ck"}}
         )
 
 
 def test_executor_only_valid_for_strategy_or_hybrid():
     with pytest.raises(ValidationError, match="executor is only valid"):
         AgentSpec.model_validate(
-            {"name": "z", "agent": "zi", "executor": {"kind": "ppo", "checkpoint": "ck"}}
+            {"name": "z", "agent": "zi", "executor": {"kind": "ppo_online", "checkpoint": "ck"}}
         )
 
 
-def test_executor_ppo_accepted_on_strategy_and_hybrid():
+def test_executor_ppo_online_accepted_on_strategy_and_hybrid():
     for kind in ("strategy", "hybrid"):
         spec = AgentSpec.model_validate(
-            {"name": f"{kind}-1", "agent": kind, "executor": {"kind": "ppo", "checkpoint": "checkpoints/x"}}
+            {"name": f"{kind}-1", "agent": kind, "executor": {"kind": "ppo_online", "checkpoint": "checkpoints/x"}}
         )
-        assert spec.executor.kind == "ppo" and spec.executor.checkpoint == "checkpoints/x"
+        assert spec.executor.kind == "ppo_online" and spec.executor.checkpoint == "checkpoints/x"
 
 
 def test_executor_defaults_to_scripted_and_is_optional():

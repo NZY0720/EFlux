@@ -158,6 +158,7 @@ class HybridPolicyAgent(BaseAgent):
         except RuntimeError:
             return
         m = ctx.market
+        grid = m.external_market
         self._reflection_task = loop.create_task(
             arefresh(
                 recent_pnl=[float(ctx.state.pnl)],
@@ -165,6 +166,11 @@ class HybridPolicyAgent(BaseAgent):
                 best_bid=float(m.best_bid) if m.best_bid is not None else None,
                 best_ask=float(m.best_ask) if m.best_ask is not None else None,
                 last_price=float(m.last_price) if m.last_price is not None else None,
+                market_mode=m.market_mode,
+                grid_raw_lmp=float(grid.raw_lmp) if grid is not None else None,
+                grid_import_price=float(grid.import_price) if grid is not None else None,
+                grid_export_price=float(grid.export_price) if grid is not None else None,
+                grid_status=grid.status if grid is not None else None,
             )
         )
 

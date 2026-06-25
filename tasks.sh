@@ -44,9 +44,9 @@ Tasks: start | stop | dev | sync | run | smoke | ws | clean | openapi | fe-dev |
   migrate        - apply pending alembic migrations (= alembic upgrade head)
   makemigration  - autogenerate a new alembic migration; usage: ./tasks.sh makemigration "<message>"
   test           - run pytest suite (tests/)
-  train-ppo      - train PPO (needs 'ai' extras); --env single|primitive (structured StrategyAction space)
+  train-ppo      - train the live torch PPO policy (BC warm-start; needs 'ai' extras) → checkpoints/bc_primitive.pt
   bench          - score candidate agents vs a fixed counter-roster (leaderboard)
-  eval-ppo       - score a trained primitive checkpoint vs the benchmark baselines (--checkpoint DIR)
+  eval-ppo       - score a trained torch checkpoint vs the benchmark baselines (--checkpoint FILE.pt)
 EOF
     ;;
 

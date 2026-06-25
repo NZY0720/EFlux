@@ -53,24 +53,18 @@ class PersonaSpec(BaseModel):
 
 class ExecutorSpec(BaseModel):
     """Tactical executor (the policy that selects each StrategyAction) for strategy /
-    hybrid agents. `scripted` (default) uses the deterministic baseline; `ppo` loads a
-    frozen learned policy from an RLlib checkpoint; `ppo_online` loads a custom live-learning
-    PPO policy (warm-started from a BC/online checkpoint) that updates during the sim. A
-    missing checkpoint / 'ai' extras falls back to scripted at load (never crashes startup)."""
+    hybrid agents. `scripted` (default) uses the deterministic baseline; `ppo_online` loads
+    the custom live-learning torch PPO policy (warm-started from a BC/online checkpoint) that
+    updates during the sim. A missing checkpoint / 'ai' extras falls back to scripted at load
+    (never crashes startup)."""
 
     model_config = ConfigDict(extra="forbid")
 
-    kind: Literal["scripted", "ppo", "ppo_online"] = "scripted"
-    checkpoint: str | None = None  # required for kind="ppo"; optional warm-start for ppo_online
+    kind: Literal["scripted", "ppo_online"] = "scripted"
+    checkpoint: str | None = None  # optional warm-start for ppo_online
     # ppo_online only: whether the policy updates live. False = serve the warm-started net
     # frozen (still the custom torch policy, just no gradient steps).
     online_learning: bool = True
-
-    @model_validator(mode="after")
-    def _check(self) -> ExecutorSpec:
-        if self.kind == "ppo" and not self.checkpoint:
-            raise ValueError("executor kind 'ppo' requires a 'checkpoint' path")
-        return self
 
 
 class AgentSpec(BaseModel):

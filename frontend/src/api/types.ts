@@ -87,6 +87,7 @@ export interface ReflectionEntry {
   execution_style?: string | null;
   rationale: string;
   lesson?: string | null;
+  meta_control?: PpoMetaControl | null;
   error: string | null;
 }
 
@@ -154,6 +155,7 @@ export interface MarketAgent {
   strategy: string;
   category: AgentCategory | string;
   is_llm: boolean;
+  mirror_of: string | null;
   llm_health_state: "live" | "degraded" | "offline" | null;
   pv_kw_peak: number;
   wind_kw_rated: number;
@@ -171,6 +173,7 @@ export interface MarketAgent {
   net_kw: number;
   energy_bought_kwh: number;
   energy_sold_kwh: number;
+  trade_count: number;
   recent_trade_count: number;
 }
 
@@ -189,7 +192,18 @@ export interface MarketReflection {
   execution_style?: string | null;
   rationale: string;
   lesson?: string | null;
+  meta_control?: PpoMetaControl | null;
   error: string | null;
+}
+
+export interface PpoMetaControl {
+  w_imbalance_mult?: number;
+  w_soc_mult?: number;
+  w_degrade_mult?: number;
+  lr?: number;
+  entropy_coef?: number;
+  kl_target?: number;
+  mode_reg_coef?: number;
 }
 
 export interface SessionInfo {

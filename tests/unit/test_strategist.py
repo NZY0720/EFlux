@@ -10,6 +10,8 @@ from eflux.agents.reflective.strategist import (
     MetaControl,
     StrategyGuidance,
     apply_guidance,
+    build_strategist_system_prompt,
+    build_strategist_user_message,
     parse_guidance,
     parse_meta_control,
 )
@@ -38,6 +40,65 @@ def test_parse_guidance_clamps_out_of_range_and_drops_unknown_modes():
 def test_parse_guidance_handles_code_fences():
     g = parse_guidance('```json\n{"risk_budget": 0.7}\n```')
     assert g.risk_budget == 0.7
+
+
+def test_realprice_prompt_uses_grid_price_taker_context():
+    prompt = build_strategist_system_prompt(market_mode="realprice").lower()
+    assert "no peer order book" in prompt
+    assert "caiso" in prompt and "grid" in prompt
+    assert "continuous double auction" not in prompt
+    assert "order book depth" not in prompt
+    assert "maker" not in prompt
+
+
+def test_realprice_user_message_carries_grid_fields():
+    import json
+
+    msg = build_strategist_user_message(
+        recent_pnl=[1.23456],
+        soc_frac=0.42,
+        best_bid=None,
+        best_ask=None,
+        last_price=None,
+        market_mode="realprice",
+        grid_raw_lmp=37.8912,
+        grid_import_price=39.8912,
+        grid_export_price=35.8912,
+        grid_status="real",
+    )
+    data = json.loads(msg)
+    assert data["market_mode"] == "realprice"
+    assert data["best_bid"] is None and data["best_ask"] is None
+    assert data["grid_raw_lmp"] == 37.8912
+    assert data["grid_import_price"] == 39.8912
+    assert data["grid_export_price"] == 35.8912
+    assert data["grid_status"] == "real"
+
+
+def test_p2p_user_message_keeps_book_fields_without_grid_fields():
+    import json
+
+    msg = build_strategist_user_message(
+        recent_pnl=[],
+        soc_frac=0.5,
+        best_bid=48.0,
+        best_ask=52.0,
+        last_price=50.0,
+        market_mode="p2p",
+    )
+    data = json.loads(msg)
+    assert data["market_mode"] == "p2p"
+    assert data["best_bid"] == 48.0 and data["best_ask"] == 52.0
+    assert "grid_raw_lmp" not in data
+
+
+def test_realprice_guidance_drops_book_specific_preferred_modes():
+    raw = """{"preferred_modes": ["passive_market_make", "ladder_sell", "cancel_reprice",
+      "battery_arbitrage"], "avoid_modes": ["ladder_buy"]}"""
+    g = parse_guidance(raw, market_mode="realprice")
+    assert g.preferred_modes == (StrategyMode.BATTERY_ARBITRAGE,)
+    # Avoid modes are still useful as soft "do not lean this way" explanations.
+    assert g.avoid_modes == (StrategyMode.LADDER_BUY,)
 
 
 def test_parse_guidance_raises_on_garbage():
@@ -93,6 +154,7 @@ async def test_llm_strategist_refresh_parses_and_caches():
     assert g.risk_budget == 0.3
     assert s.current_guidance() is g
     assert s.current_meta().w_soc_mult == 1.5  # meta cached alongside guidance
+    assert s.reflection_log[-1]["meta_control"]["w_soc_mult"] == 1.5
 
 
 @pytest.mark.asyncio

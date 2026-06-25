@@ -42,6 +42,7 @@ class SimulatorVPP:
     agent: BaseAgent
     strategy: str
     is_my_vpp: bool
+    mirror_of: str | None
     llm_live: bool
     llm_status: str
     state: VPPState
@@ -52,6 +53,7 @@ class SimulatorVPP:
     rng: random.Random = field(default_factory=random.Random)
     open_order_ids: list[int] = field(default_factory=list)
     recent_trades: list[dict] = field(default_factory=list)
+    trade_count: int = 0
 
 
 class Simulator:
@@ -100,6 +102,17 @@ class Simulator:
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._external_market_task: asyncio.Task | None = None
+        # Background "renew PPOs" (retrain on latest real data + hot-reload) state.
+        self._ppo_renew_task: asyncio.Task | None = None
+        self._ppo_renew: dict = {
+            "state": "idle",  # idle | training | reloading | done | error
+            "started_at": None,
+            "finished_at": None,
+            "detail": "",
+            "reloaded": 0,
+            "error": None,
+            "metrics": None,
+        }
         self._data_source_status: dict | None = None
         fallback_price = Decimal(str(settings.external_market_fallback_price))
         if settings.external_market_enabled:
@@ -132,6 +145,7 @@ class Simulator:
         seed: int = 0,
         strategy: str | None = None,
         is_my_vpp: bool = False,
+        mirror_of: str | None = None,
         llm_live: bool = False,
         llm_status: str = "",
     ) -> SimulatorVPP:
@@ -153,6 +167,7 @@ class Simulator:
             agent=agent,
             strategy=strategy or agent.__class__.__name__,
             is_my_vpp=is_my_vpp,
+            mirror_of=mirror_of,
             llm_live=llm_live,
             llm_status=llm_status,
             state=VPPState(sim_ts=self.clock.now_sim(), soc_kwh=params.battery_kwh * 0.5),
@@ -461,7 +476,14 @@ class Simulator:
         if self._task is not None:
             return
         settings = get_settings()
-        if settings.external_market_enabled and self._external_market_task is None:
+        # CAISO only matters in the real-price market (it is the clearing price). The
+        # pure-P2P market neither trades against the grid nor displays it, so skip the
+        # poll there to avoid needless external calls.
+        if (
+            settings.external_market_enabled
+            and self.market_mode == "realprice"
+            and self._external_market_task is None
+        ):
             self._external_market_task = asyncio.create_task(
                 self._run_external_market_poll(), name="external-market-loop"
             )
@@ -481,6 +503,10 @@ class Simulator:
             self._external_market_task.cancel()
             await asyncio.gather(self._external_market_task, return_exceptions=True)
             self._external_market_task = None
+        if self._ppo_renew_task is not None:
+            self._ppo_renew_task.cancel()
+            await asyncio.gather(self._ppo_renew_task, return_exceptions=True)
+            self._ppo_renew_task = None
         await self._shutdown_reflections()
 
     async def _run_external_market_poll(self) -> None:
@@ -562,6 +588,77 @@ class Simulator:
             except Exception:
                 log.exception("failed saving online weights for %s", vpp.name)
 
+    # -- renew PPOs (retrain on latest real data + hot-reload) ----------------------------
+    def ppo_renew_status(self) -> dict:
+        return dict(self._ppo_renew)
+
+    def start_ppo_renew(self, *, days: int = 30, episodes: int = 40, epochs: int = 300) -> bool:
+        """Kick off a background retrain on the latest `days` of real data, then hot-reload
+        every live online policy. Returns False if a renew is already in flight."""
+        if self._ppo_renew["state"] in ("training", "reloading"):
+            return False
+        from eflux.config import PROJECT_ROOT
+
+        checkpoint = str(PROJECT_ROOT / "checkpoints" / "bc_primitive.pt")
+        self._ppo_renew_task = asyncio.create_task(
+            self._run_ppo_renew(days=days, episodes=episodes, epochs=epochs, checkpoint_path=checkpoint),
+            name="ppo-renew",
+        )
+        self._ppo_renew_task.add_done_callback(_log_unexpected_loop_exit)
+        return True
+
+    async def _run_ppo_renew(self, *, days: int, episodes: int, epochs: int, checkpoint_path: str) -> None:
+        self._ppo_renew.update(
+            state="training",
+            started_at=datetime.now(UTC).isoformat(),
+            finished_at=None,
+            error=None,
+            reloaded=0,
+            metrics=None,
+            detail=f"training on ~{days}d of real CAISO price + weather",
+        )
+        try:
+            from eflux.agents.ppo.train import run_training
+
+            # Training fetches real data (network) + runs torch — keep it off the event loop.
+            metrics = await asyncio.to_thread(
+                run_training, checkpoint_path, real_data=True, days=days, episodes=episodes, epochs=epochs
+            )
+            self._ppo_renew.update(state="reloading", metrics=metrics, detail="hot-reloading live policies")
+            n = await self.reload_online_policies(checkpoint_path)
+            self._ppo_renew.update(
+                state="done",
+                finished_at=datetime.now(UTC).isoformat(),
+                reloaded=n,
+                detail=f"renewed and reloaded {n} PPO policies",
+            )
+            log.info("PPO renew complete: reloaded %d policies from %s", n, checkpoint_path)
+        except Exception as e:
+            log.exception("PPO renew failed")
+            self._ppo_renew.update(
+                state="error",
+                finished_at=datetime.now(UTC).isoformat(),
+                error=f"{type(e).__name__}: {e}",
+            )
+
+    async def reload_online_policies(self, checkpoint_path: str) -> int:
+        """Hot-swap weights into every live online policy — standalone PPO StrategyAgents,
+        the PPO mirrors, and the hybrid agents' online executors — under the tick lock so a
+        reload can't race a tick."""
+        count = 0
+        async with self._lock:
+            for vpp in self.vpps.values():
+                policy = _online_policy_of(vpp.agent)
+                reload = getattr(policy, "reload_weights", None)
+                if policy is None or not callable(reload):
+                    continue
+                try:
+                    reload(checkpoint_path)
+                    count += 1
+                except Exception:
+                    log.exception("reload weights failed for %s", vpp.name)
+        return count
+
     async def _run(self) -> None:
         log.info("Simulator loop started (speed=%sx, tick=%ss)", self.clock.speed, self.clock.tick_sim_sec)
         tick_h = self.clock.tick_sim_sec / 3600.0
@@ -576,6 +673,7 @@ class Simulator:
                     # Both live markets price freely off own marginal cost — CAISO is a
                     # reference (p2p) / the clearing price (realprice), never a valuation cap.
                     anchor_to_external=False,
+                    market_mode=self.market_mode,
                 )
                 market_snap.recent_trades = self._recent_market_trades()
                 market_snap.peer_reflections = self._peer_reflections()
@@ -1043,6 +1141,7 @@ class Simulator:
             vpp.battery.discharge(power_kw=qty_f / max(1e-9, tick_h), duration_h=tick_h)
 
     def _push_recent_trade(self, vpp: SimulatorVPP, record: dict) -> None:
+        vpp.trade_count += 1
         vpp.recent_trades.insert(0, record)
         vpp.recent_trades = vpp.recent_trades[:50]
         record_trade = getattr(vpp.agent, "record_trade", None)

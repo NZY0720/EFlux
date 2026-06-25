@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import time
 import zipfile
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
@@ -223,6 +224,51 @@ class CaisoOasisClient:
         resp.raise_for_status()
         payload = resp.content
         return parse_oasis_zip(payload, source=f"CAISO OASIS {market_run_id}")
+
+    def fetch_lmp_history_sync(
+        self,
+        *,
+        node: str = DEFAULT_NODE,
+        start: datetime,
+        end: datetime,
+        market_run_id: str = "DAM",
+        queryname: str = "PRC_LMP",
+        version: str = "12",
+        chunk_days: int = 7,
+        pause_sec: float = 1.0,
+    ) -> list[_PriceRow]:
+        """Fetch a historical LMP series over [start, end] (UTC), chunked to respect OASIS
+        per-request range caps. DAM/hourly by default (~720 rows for a month, a handful of
+        requests). Synchronous — meant to run off the event loop (PPO training thread).
+        Rows are deduped by interval_start and sorted ascending; failed chunks are skipped
+        with a warning rather than aborting the whole fetch."""
+        rows: list[_PriceRow] = []
+        with httpx.Client(timeout=self.timeout_sec) as client:
+            cur = start
+            first = True
+            while cur < end:
+                chunk_end = min(end, cur + timedelta(days=chunk_days))
+                if not first and pause_sec > 0:
+                    time.sleep(pause_sec)  # be gentle with OASIS rate limits
+                first = False
+                params = {
+                    "resultformat": "6",
+                    "queryname": queryname,
+                    "startdatetime": _oasis_ts(cur),
+                    "enddatetime": _oasis_ts(chunk_end),
+                    "version": version,
+                    "market_run_id": market_run_id,
+                    "node": node,
+                }
+                try:
+                    resp = client.get(self.base_url, params=params)
+                    resp.raise_for_status()
+                    rows.extend(parse_oasis_zip(resp.content, source=f"CAISO OASIS {market_run_id}"))
+                except Exception as exc:
+                    log.warning("CAISO history chunk %s..%s failed: %s", cur, chunk_end, exc)
+                cur = chunk_end
+        by_start = {r.interval_start: r for r in rows}
+        return [by_start[k] for k in sorted(by_start)]
 
 
 def parse_oasis_zip(payload: bytes, *, source: str) -> list[_PriceRow]:

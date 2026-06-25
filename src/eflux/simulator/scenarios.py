@@ -83,7 +83,6 @@ def _build_executor(name: str, executor, *, seed: int = 0, auto_update: bool = T
     """Build the tactical policy for a strategy/hybrid entry from its ExecutorSpec.
 
     None / scripted → None (the agent uses its own ScriptedStrategyPolicy default).
-    ppo → a frozen PPOPrimitivePolicy (RLlib checkpoint) over the structured action space.
     ppo_online → a custom live-learning OnlinePPOPolicy (warm-started from a BC/online
     checkpoint when present, else a fresh net). Any failure (missing 'ai' extras or
     checkpoint, load error) falls back to scripted with a warning — a bad executor must not
@@ -110,21 +109,6 @@ def _build_executor(name: str, executor, *, seed: int = 0, auto_update: bool = T
             log.exception("%s: ppo_online executor failed to build — using scripted", name)
             return None
 
-    if executor.kind == "ppo":
-        try:
-            from eflux.agents.ppo.primitive_agent import PPOPrimitivePolicy
-        except ImportError as e:
-            log.warning("%s: PPO executor needs the 'ai' extras (%s) — using scripted", name, e)
-            return None
-        path = _resolve_checkpoint(executor.checkpoint)
-        if path is None:
-            log.warning("%s: PPO executor checkpoint %r missing — using scripted", name, executor.checkpoint)
-            return None
-        try:
-            return PPOPrimitivePolicy(str(path))
-        except Exception:
-            log.exception("%s: PPO executor failed to load — using scripted", name)
-            return None
     return None
 
 
@@ -207,11 +191,6 @@ def load_default_scenario(sim: Simulator) -> None:
     # Back-compat: a roster without LLM-managed entries still gets the demo LLM VPP.
     if not managed_specs:
         load_my_llm_vpp(sim)
-
-    # Optional: if a PPO checkpoint is configured, add one more VPP driven by it.
-    ckpt = os.environ.get("EFLUX_PPO_CHECKPOINT")
-    if ckpt:
-        load_ppo_scenario(sim, ckpt)
 
     log.info(
         "Default scenario ready: %d ordinary agents + %d LLM agents",
@@ -350,6 +329,7 @@ def _add_mirror_vpp(
         agent=agent,
         seed=seed,
         strategy="StrategyAgent (PPO mirror)",
+        mirror_of=spec.name,
     )
     log.info("PPO mirror VPP %s loaded (twin of %s, seed=%d)", name, spec.name, seed)
 
@@ -378,45 +358,3 @@ def load_my_llm_vpp(sim: Simulator) -> None:
         offset_index=0,
         n_managed=1,
     )
-
-
-def load_ppo_scenario(sim: Simulator, checkpoint_path: str) -> None:
-    """Add a PPO-driven VPP to the simulator. Skipped (with a warning) if the 'ai'
-    extras are missing or the checkpoint cannot be loaded — a bad EFLUX_PPO_CHECKPOINT
-    must not take down the whole app at startup.
-
-    EFLUX_PPO_ENV selects the policy kind: "single" (default, the legacy 3-float
-    action agent) or "primitive" (a StrategyAgent driven by a learned policy over the
-    structured StrategyAction space — must match how the checkpoint was trained)."""
-    ppo_env = os.environ.get("EFLUX_PPO_ENV", "single").lower()
-    try:
-        if ppo_env == "primitive":
-            from eflux.agents.ppo.primitive_agent import build_ppo_primitive_agent
-        else:
-            from eflux.agents.ppo.agent import PPOAgent
-    except ImportError as e:
-        log.warning("PPO checkpoint %s configured but 'ai' extras not installed (%s) — skipping", checkpoint_path, e)
-        return
-    # The policy wrapper loads lazily (Ray init is expensive), so a bad path
-    # would otherwise surface as an inference error on every tick instead of
-    # one clear startup message.
-    if not Path(checkpoint_path).exists():
-        log.warning("PPO checkpoint %s does not exist — skipping the PPO VPP", checkpoint_path)
-        return
-    try:
-        agent = (
-            build_ppo_primitive_agent(checkpoint_path)
-            if ppo_env == "primitive"
-            else PPOAgent(checkpoint_path=checkpoint_path)
-        )
-    except Exception:
-        log.exception("PPO checkpoint %s failed to load — skipping the PPO VPP", checkpoint_path)
-        return
-    params = VPPParams(pv_kw_peak=6.0, battery_kwh=20.0, battery_kw_max=5.0, load_kw_base=2.0)
-    sim.add_builtin_vpp(
-        name=f"builtin-ppo-{os.path.basename(checkpoint_path)}",
-        params=params,
-        agent=agent,
-        seed=99,
-    )
-    log.info("PPO VPP loaded from checkpoint %s", checkpoint_path)

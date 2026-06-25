@@ -4,7 +4,9 @@ import EquityCurves from "../components/EquityCurves";
 import { BoltIcon, LlmIcon, MarketIcon, ScaleIcon, TrendUpIcon, type IconProps } from "../components/icons";
 import IntroStrip from "../components/IntroStrip";
 import KpiBar from "../components/KpiBar";
+import LlmPpoInfluencePanel from "../components/LlmPpoInfluencePanel";
 import PriceChart from "../components/PriceChart";
+import RenewPpoButton from "../components/RenewPpoButton";
 import StrategyLeaderboard from "../components/StrategyLeaderboard";
 import TradeTape from "../components/TradeTape";
 import { useMarket } from "../state/marketStream";
@@ -33,6 +35,9 @@ export default function RealTimeMarketOverview() {
       <IntroStrip variant="realprice" />
       <KpiBar variant="realprice" snapshot={snapshot} builtinVpps={snapshot?.num_builtin_vpps ?? 0} />
       <DataSourceBanner dataSource={snapshot?.data_source} />
+      <div className="flex justify-end">
+        <RenewPpoButton />
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4 lg:col-span-2">
@@ -51,7 +56,7 @@ export default function RealTimeMarketOverview() {
         </section>
         <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">
           <CardTitle icon={LlmIcon}>Agent thoughts (LLM)</CardTitle>
-          <AgentThoughtsFeed />
+          <AgentThoughtsFeed variant="realprice" />
         </section>
       </div>
 
@@ -65,6 +70,11 @@ export default function RealTimeMarketOverview() {
           <EquityCurves history={history} />
         </section>
       </div>
+
+      <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">
+        <CardTitle icon={LlmIcon}>LLM to PPO influence — hybrid vs mirror</CardTitle>
+        <LlmPpoInfluencePanel agents={agents} />
+      </section>
 
       <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">
         <CardTitle icon={MarketIcon}>Grid trades (vs CAISO)</CardTitle>

@@ -1,4 +1,5 @@
 import type { MarketAgent } from "../api/types";
+import { formatCompactCount } from "../lib/format";
 
 interface Props {
   agents: MarketAgent[];
@@ -74,7 +75,9 @@ export default function StrategyLeaderboard({ agents }: Props) {
                   </td>
                   <td className="px-3 py-1.5 text-right text-slate-300 tabular-nums">{a.net_kw.toFixed(2)}</td>
                   <td className="px-3 py-1.5 text-right text-slate-300 tabular-nums">{(a.soc_frac * 100).toFixed(0)}%</td>
-                  <td className="px-3 py-1.5 text-right text-slate-400 tabular-nums">{a.recent_trade_count}</td>
+                  <td className="px-3 py-1.5 text-right text-slate-400 tabular-nums" title={`${a.trade_count} trades`}>
+                    {formatCompactCount(a.trade_count)}
+                  </td>
                 </tr>
               );
             })}

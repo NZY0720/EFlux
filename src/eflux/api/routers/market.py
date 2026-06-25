@@ -211,6 +211,7 @@ class AgentOut(BaseModel):
     strategy: str
     category: str
     is_llm: bool
+    mirror_of: str | None = None
     llm_health_state: str | None  # only for LLM-managed agents
     # Endowment (static)
     pv_kw_peak: float
@@ -230,6 +231,7 @@ class AgentOut(BaseModel):
     net_kw: float
     energy_bought_kwh: float
     energy_sold_kwh: float
+    trade_count: int
     recent_trade_count: int
 
 
@@ -255,6 +257,7 @@ async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
                 strategy=vpp.strategy,
                 category=agent_category(vpp),
                 is_llm=vpp.is_my_vpp,
+                mirror_of=vpp.mirror_of,
                 llm_health_state=health_state,
                 pv_kw_peak=p.pv_kw_peak,
                 wind_kw_rated=p.wind_kw_rated,
@@ -272,6 +275,7 @@ async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
                 net_kw=vpp.state.net_kw,
                 energy_bought_kwh=vpp.state.cumulative_energy_bought_kwh,
                 energy_sold_kwh=vpp.state.cumulative_energy_sold_kwh,
+                trade_count=vpp.trade_count,
                 recent_trade_count=len(vpp.recent_trades),
             )
         )
@@ -296,6 +300,7 @@ class MarketReflectionOut(BaseModel):
     rationale: str = ""
     # Durable takeaway the LLM distilled from the latest guidance cycle.
     lesson: str | None = None
+    meta_control: dict[str, float] | None = None
     error: str | None
 
 
@@ -336,3 +341,19 @@ async def set_market_speed(
     except ValueError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     return {"speed": sim.clock.speed, "is_realtime": sim.clock.is_realtime}
+
+
+@router.post("/ppo/renew")
+async def renew_ppos(user: CurrentUser, sim: SimulatorDep, days: int = 30) -> dict:
+    """Retrain the PPO warm-start on the latest `days` of real CAISO price + weather, then
+    hot-reload every live online policy (standalone PPOs, mirrors, and hybrid executors).
+    Runs in the background — poll GET /market/ppo/status for progress. Auth-gated like /speed."""
+    if not sim.start_ppo_renew(days=max(1, min(days, 60))):
+        raise HTTPException(status.HTTP_409_CONFLICT, "a PPO renew is already running")
+    return {"status": "started", **sim.ppo_renew_status()}
+
+
+@router.get("/ppo/status")
+async def ppo_renew_status(sim: SimulatorDep) -> dict:
+    """Current state of the background PPO renew (idle | training | reloading | done | error)."""
+    return sim.ppo_renew_status()

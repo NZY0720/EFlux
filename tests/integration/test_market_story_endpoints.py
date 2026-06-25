@@ -3,6 +3,9 @@ reflection feed, and the runtime speed control."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from types import SimpleNamespace
+
 import pytest
 
 VALID_CATEGORIES = {"solar", "wind", "gas", "battery_load", "llm", "external"}
@@ -28,6 +31,7 @@ async def test_agents_roster_is_public_and_complete(client):
         by_cat[a["category"]] = by_cat.get(a["category"], 0) + 1
         assert 0.0 <= a["soc_frac"] <= 1.0
         float(a["pnl"])  # parseable decimal string
+        assert a["trade_count"] >= a["recent_trade_count"]
     # The default roster spans the whole merit order.
     assert by_cat.get("gas") == 2
     assert by_cat.get("wind") == 8
@@ -36,6 +40,9 @@ async def test_agents_roster_is_public_and_complete(client):
     llm = next(a for a in agents if a["is_llm"])
     assert llm["name"] == "my-llm-vpp"
     assert llm["llm_health_state"] in ("live", "degraded", "offline")
+    mirrors = [a for a in agents if a["mirror_of"] is not None]
+    assert len(mirrors) == 6
+    assert all(a["name"] == f"{a['mirror_of']}-ppo-mirror" for a in mirrors)
 
 
 @pytest.mark.asyncio
@@ -62,6 +69,48 @@ async def test_reflections_feed_is_public(client):
     for e in entries:  # empty until the first reflection interval elapses
         assert e["vpp_name"] == "my-llm-vpp"
         assert e["health_state"] in ("live", "degraded", "offline")
+
+
+@pytest.mark.asyncio
+async def test_reflections_feed_serializes_meta_control(db_session):
+    from httpx import ASGITransport, AsyncClient
+
+    from eflux.api.main import create_app
+
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        sim = app.state.simulator
+        vpp = sim.my_managed_vpps()[0]
+        ts = datetime.now(UTC)
+        vpp.agent.strategist = SimpleNamespace(
+            client=object(),
+            ok_count=1,
+            fail_count=0,
+            last_ok_ts=ts,
+            reflection_log=[
+                {
+                    "ts": ts,
+                    "ok": True,
+                    "preferred_modes": ["battery_arbitrage"],
+                    "avoid_modes": [],
+                    "risk_budget": 0.8,
+                    "soc_target": 0.6,
+                    "execution_style": "Charge before high grid prices.",
+                    "rationale": "Charge before high grid prices.",
+                    "lesson": "Grid timing beats book chasing here.",
+                    "meta_control": {"w_soc_mult": 1.4, "mode_reg_coef": 0.25},
+                    "error": None,
+                }
+            ],
+        )
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            r = await ac.get("/market/reflections?limit=1")
+
+    assert r.status_code == 200, r.text
+    entry = r.json()[0]
+    assert entry["meta_control"]["w_soc_mult"] == 1.4
+    assert entry["meta_control"]["mode_reg_coef"] == 0.25
 
 
 @pytest.mark.asyncio

@@ -36,10 +36,11 @@ dev = [
     "httpx>=0.28",
 ]
 
-# Reinforcement-learning stack for the PPO agent (`./tasks.sh train-ppo`).
-# Optional because Ray+torch are large; the core app runs without them.
+# Learning stack for the PPO agent (`./tasks.sh train-ppo`). The live policy is a
+# custom torch actor-critic (online_ppo) warm-started by behavior cloning (bc); the
+# Gymnasium env drives training rollouts. Optional because torch is large; the core
+# app runs without it (agents fall back to the scripted policy).
 ai = [
-    "ray[rllib]>=2.40",
     "gymnasium>=1.0",
     "torch>=2.5",
 ]

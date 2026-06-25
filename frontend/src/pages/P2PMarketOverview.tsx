@@ -6,6 +6,7 @@ import KpiBar from "../components/KpiBar";
 import MeritOrderChart from "../components/MeritOrderChart";
 import OrderBookDepth from "../components/OrderBookDepth";
 import PriceChart from "../components/PriceChart";
+import RenewPpoButton from "../components/RenewPpoButton";
 import TradeTape from "../components/TradeTape";
 import { useMarket } from "../state/marketStream";
 
@@ -32,7 +33,10 @@ export default function P2PMarketOverview() {
     <div className="p-6 space-y-6">
       <IntroStrip variant="p2p" />
       <KpiBar snapshot={snapshot} builtinVpps={snapshot?.num_builtin_vpps ?? 0} />
-      <DataSourceBanner dataSource={snapshot?.data_source} />
+      <DataSourceBanner dataSource={snapshot?.data_source} showExternalPrice={false} />
+      <div className="flex justify-end">
+        <RenewPpoButton />
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4 lg:col-span-2">
@@ -41,25 +45,17 @@ export default function P2PMarketOverview() {
         </section>
         <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">
           <CardTitle icon={LlmIcon}>Agent thoughts (LLM)</CardTitle>
-          <AgentThoughtsFeed />
+          <AgentThoughtsFeed variant="p2p" />
         </section>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-          <CardTitle icon={BoltIcon}>Price — emergent P2P vs CAISO reference</CardTitle>
+          <CardTitle icon={BoltIcon}>Price — emergent local P2P price</CardTitle>
           <PriceChart
             variant="p2p"
             events={recent}
             initialPrice={snapshot?.last_price ? Number(snapshot.last_price) : null}
-            initialExternalPrice={
-              // Only seed the CAISO line from a live (real/fallback) feed.
-              snapshot?.external_market &&
-              (snapshot.external_market.status === "real" || snapshot.external_market.status === "fallback") &&
-              snapshot.external_market.raw_lmp
-                ? Number(snapshot.external_market.raw_lmp)
-                : null
-            }
           />
         </section>
         <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">

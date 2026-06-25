@@ -352,6 +352,16 @@ class OnlinePPOPolicy:
     def save(self, path: str) -> None:
         torch.save(self.learner.net.state_dict(), path)
 
+    def reload_weights(self, checkpoint_path: str) -> None:
+        """Hot-swap the live net's weights from a freshly-trained checkpoint (BC or online),
+        in place, so a renewed policy takes effect without restarting the simulator. The
+        warm-start loader remaps a BC checkpoint onto the actor-critic net (the critic
+        re-fits as online learning resumes)."""
+        from eflux.agents.ppo.online_net import load_warm_start
+
+        net = load_warm_start(checkpoint_path)
+        self.learner.net.load_state_dict(net.state_dict())
+
 
 def build_online_policy(
     checkpoint_path: str | None = None,

@@ -78,6 +78,7 @@ class ReflectionEntryOut(BaseModel):
     # Durable takeaway the LLM distilled from the latest guidance/reflection cycle.
     # None for entries recorded before lessons existed.
     lesson: str | None = None
+    meta_control: dict[str, float] | None = None
     error: str | None
 
 

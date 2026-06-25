@@ -44,8 +44,7 @@ export default function IntroStrip({ variant = "p2p" }: Props) {
         </p>
         <p>
           Prices emerge from supply and demand: agents set their own bids and asks chasing profit, so
-          the cleared price can drift away from the dashed <span className="text-white">CAISO</span>{" "}
-          reference line.
+          the cleared price reflects this local market on its own terms.
         </p>
         <p>
           One agent, <span className="text-emerald-300">my-llm-vpp</span>, is steered by an LLM — watch

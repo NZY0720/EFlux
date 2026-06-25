@@ -178,6 +178,7 @@ export default function PriceChart({ events, initialPrice, initialExternalPrice,
             },
           ]
         : [
+            // Pure P2P: only the emergent local price. CAISO is not shown in this market.
             {
               type: "line",
               name: "P2P",
@@ -187,16 +188,6 @@ export default function PriceChart({ events, initialPrice, initialExternalPrice,
               data: linePoints.map((p) => [p.ts, p.price]),
               lineStyle: { color: "#38bdf8", width: 1.5 },
               areaStyle: { color: "rgba(56, 189, 248, 0.1)" },
-            },
-            {
-              // Reference only — does not drive P2P prices (free price discovery).
-              type: "line",
-              name: "CAISO (reference)",
-              showSymbol: false,
-              smooth: false,
-              sampling: "lttb",
-              data: lineExternalPoints.map((p) => [p.ts, p.price]),
-              lineStyle: { color: "#f59e0b", width: 1.5, type: "dashed" },
             },
           ],
     animation: false,

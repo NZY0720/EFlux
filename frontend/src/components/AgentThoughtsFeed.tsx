@@ -47,7 +47,11 @@ function guidanceText(r: MarketReflection): string {
   return r.execution_style || r.rationale || "(no rationale)";
 }
 
-export default function AgentThoughtsFeed() {
+interface Props {
+  variant?: "p2p" | "realprice";
+}
+
+export default function AgentThoughtsFeed({ variant = "p2p" }: Props) {
   const [entries, setEntries] = useState<MarketReflection[] | null>(null);
   const [filter, setFilter] = useState<string | null>(null);
 
@@ -97,7 +101,9 @@ export default function AgentThoughtsFeed() {
       <div className="mb-2 flex items-center justify-between text-xs">
         <span className="text-slate-400">
           <span className="font-medium text-emerald-300">{agents.length || "The"} LLM agents</span>{" "}
-          consult an LLM strategist every ~minute to bias their trading primitives
+          {variant === "realprice"
+            ? "consult an LLM strategist every ~minute to steer grid-price timing and PPO learning"
+            : "consult an LLM strategist every ~minute to bias their trading primitives"}
         </span>
         {agents.length > 0 && <HealthSummary live={liveCount} total={agents.length} />}
       </div>
@@ -120,7 +126,7 @@ export default function AgentThoughtsFeed() {
         {entries !== null && entries.length === 0 && (
           <p className="px-1 py-4 text-center text-xs text-slate-500">
             No guidance yet. The agents consult the LLM every ~minute when the link is live —
-            otherwise they trade on the scripted hybrid baseline. See{" "}
+            otherwise they trade on the hybrid PPO baseline. See{" "}
             <Link to="/vpps" className="text-sky-400 hover:text-sky-300">
               My VPPs
             </Link>{" "}
