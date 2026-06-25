@@ -44,7 +44,9 @@ Tasks: start | stop | dev | sync | run | smoke | ws | clean | openapi | fe-dev |
   migrate        - apply pending alembic migrations (= alembic upgrade head)
   makemigration  - autogenerate a new alembic migration; usage: ./tasks.sh makemigration "<message>"
   test           - run pytest suite (tests/)
-  train-ppo      - train the live torch PPO policy (BC warm-start; needs 'ai' extras) → checkpoints/bc_primitive.pt
+  train-ppo      - train the live torch PPO policy (BC warm-start; needs 'ai' extras). Per market:
+#                    train-ppo --real-data --market-mode p2p       --out checkpoints/bc_primitive_p2p.pt
+#                    train-ppo --real-data --market-mode realprice --out checkpoints/bc_primitive_realprice.pt
   bench          - score candidate agents vs a fixed counter-roster (leaderboard)
   eval-ppo       - score a trained torch checkpoint vs the benchmark baselines (--checkpoint FILE.pt)
 EOF

@@ -23,6 +23,10 @@ os.environ.setdefault("EFLUX_DB_URL", f"sqlite+aiosqlite:///{_TMP_DB}")
 os.environ.setdefault("EFLUX_BUS_BACKEND", "memory")
 os.environ.setdefault("EFLUX_AUTO_CREATE_SCHEMA", "true")
 os.environ.setdefault("EFLUX_REFLECTIVE_ENABLED", "false")
+# Keep the cost-basis reference static (50) in tests so scenario loading is deterministic and
+# never touches the network (config.env sets "caiso" for the live app). os.environ overrides
+# the env_file, so this wins over config.env even when set there.
+os.environ.setdefault("EFLUX_PRICE_REF_SOURCE", "static")
 
 from eflux.config import get_settings  # noqa: E402
 from eflux.db.base import Base  # noqa: E402

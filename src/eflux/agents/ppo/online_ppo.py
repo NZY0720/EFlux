@@ -25,10 +25,10 @@ from eflux.agents.base import AgentContext
 from eflux.agents.ppo.online_net import ActorCriticNet
 from eflux.agents.ppo.primitive_encoding import (
     N_MODES,
-    PRICE_REF,
     PRIMITIVE_MODES,
     decode_action,
     encode_obs,
+    price_ref_scale,
 )
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.agents.valuation import ValuationSignal
@@ -81,7 +81,7 @@ def compute_step_reward(prev: _Snap, cur: _Snap, w: RewardWeights) -> float:
     """Reward for the action taken at the *prev* tick, read off the deltas to the *cur*
     tick. Pure function of two snapshots + weights, so it is unit-testable in isolation."""
     realized = cur.pnl - prev.pnl
-    inv_delta = (cur.pending - prev.pending) * PRICE_REF
+    inv_delta = (cur.pending - prev.pending) * price_ref_scale()
     imbalance = abs(cur.pending + cur.open_net)
     soc_dev = max(0.0, w.soc_low - cur.soc_frac) + max(0.0, cur.soc_frac - w.soc_high)
     degrade = abs(cur.soc_kwh - prev.soc_kwh)

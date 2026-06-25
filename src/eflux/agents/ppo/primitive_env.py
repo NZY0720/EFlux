@@ -27,9 +27,9 @@ from eflux.agents.hybrid import RiskGate
 from eflux.agents.ppo.primitive_encoding import (
     ACTION_DIM,
     OBS_DIM,
-    PRICE_REF,
     decode_action,
     encode_obs,
+    price_ref_scale,
 )
 from eflux.agents.strategy import OrderProgramCompiler
 from eflux.agents.valuation import TruthfulValuationOracle
@@ -79,7 +79,13 @@ class VPPPrimitiveEnv(gym.Env):
         # Optional RealMarketData (eflux.agents.ppo.training_data): when present the env
         # replays real CAISO price + real weather-driven PV instead of the synthetic walk.
         self._real_data = cfg.get("real_data")
-        self._oracle = TruthfulValuationOracle(price_ref=Decimal(str(PRICE_REF)), demand_beta=0.5)
+        # Which market structure to train against: "p2p" = a noisy peer counter-party book;
+        # "realprice" = a deep grid book at lmp ± fee (the agent is a pure price-taker, exactly
+        # as in the live realprice market) → distinct obs/reward distribution → a per-market
+        # checkpoint. Defaults to p2p for back-compat.
+        self._market_mode = str(cfg.get("market_mode", "p2p"))
+        self._txn_fee = float(cfg.get("transaction_fee", 2.0))
+        self._oracle = TruthfulValuationOracle(price_ref=Decimal(str(price_ref_scale())), demand_beta=0.5)
         self._compiler = OrderProgramCompiler()
         self._risk_gate = RiskGate()
         # Late-initialized in reset().
@@ -93,7 +99,7 @@ class VPPPrimitiveEnv(gym.Env):
         self._load: FlexibleLoad
         self._sim_ts: datetime
         self._tick = 0
-        self._last_price_ref = PRICE_REF
+        self._last_price_ref = price_ref_scale()
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
@@ -115,7 +121,7 @@ class VPPPrimitiveEnv(gym.Env):
         self._load = FlexibleLoad(base_kw=self._params.load_kw_base, profile=self._params.load_profile)
         self._engine = MatchingEngine()
         self._tick = 0
-        self._last_price_ref = PRICE_REF
+        self._last_price_ref = price_ref_scale()
 
         self._step_der()
         self._seed_counterparty()
@@ -125,7 +131,8 @@ class VPPPrimitiveEnv(gym.Env):
         cap = max(self._params.battery_kwh, 1.0)
         # Credit this tick's net energy into the untraded balance (DER accumulation).
         self._state.pending_net_kwh = min(cap, max(-cap, self._state.pending_net_kwh + self._state.net_kw * TICK_DURATION_H))
-        inv_start = self._state.pending_net_kwh * PRICE_REF
+        scale = price_ref_scale()
+        inv_start = self._state.pending_net_kwh * scale
         soc_throughput_start = self._battery.soc_kwh
 
         ctx = self._make_ctx()
@@ -151,7 +158,7 @@ class VPPPrimitiveEnv(gym.Env):
         self._expire_orders()
 
         # Reward terms (§7).
-        inv_end = self._state.pending_net_kwh * PRICE_REF
+        inv_end = self._state.pending_net_kwh * scale
         open_net = self._open_orders_net()
         imbalance = abs(self._state.pending_net_kwh + open_net)
         soc = self._battery.soc_frac
@@ -275,15 +282,23 @@ class VPPPrimitiveEnv(gym.Env):
 
     def _seed_counterparty(self) -> None:
         if self._real_data is not None:
-            # Center the counter-party book on the real LMP for this hour, so the agent
-            # trades against the actual price curve (its own price_ref stays fixed).
+            # Center the counter-party on the real LMP for this hour, so the agent trades
+            # against the actual price curve (its own normalization scale stays fixed).
             ref = max(5.0, self._real_data.price_at(self._sim_ts))
             self._last_price_ref = ref
         else:
             drift = self._np_rng.normal(0.0, 1.0)
-            revert = 0.05 * (PRICE_REF - self._last_price_ref)
+            revert = 0.05 * (price_ref_scale() - self._last_price_ref)
             self._last_price_ref = max(5.0, self._last_price_ref + drift + revert)
             ref = self._last_price_ref
+        if self._market_mode == "realprice":
+            self._seed_grid(ref)
+        else:
+            self._seed_peer_book(ref)
+
+    def _seed_peer_book(self, ref: float) -> None:
+        """p2p structure: a thin noisy two-sided peer book around the reference price, so the
+        agent discovers price against peers and its own size can move the book."""
         for _ in range(COUNTERPARTY_ORDERS_PER_TICK):
             side = self._rng.choice(["buy", "sell"])
             jitter = self._np_rng.normal(0.0, 0.05 * ref)
@@ -295,6 +310,27 @@ class VPPPrimitiveEnv(gym.Env):
                     side=side,
                     price=Decimal(str(round(price, 4))),
                     qty=Decimal(str(round(qty, 4))),
+                    sim_ts=self._sim_ts,
+                    wall_ts=self._sim_ts,
+                    ttl_sec=TICK_DURATION_H * 3600.0 * ORDER_TTL_TICKS,
+                )
+            except ValueError:
+                continue
+
+    def _seed_grid(self, ref: float) -> None:
+        """realprice structure: a deep grid book at import/export (lmp ± fee). The agent is a
+        pure price-taker — it can always buy at ref+fee or sell at ref-fee, and its volume
+        never moves the price — mirroring the live realprice market's settlement."""
+        depth = 1e6  # effectively unlimited grid liquidity → no price impact
+        export = max(0.01, ref - self._txn_fee)  # grid bid the agent sells into
+        import_ = max(export + 0.0002, ref + self._txn_fee)  # grid ask the agent buys from
+        for side, price in (("buy", export), ("sell", import_)):
+            try:
+                self._engine.submit(
+                    vpp_id=COUNTERPARTY_ID,
+                    side=side,
+                    price=Decimal(str(round(price, 4))),
+                    qty=Decimal(str(depth)),
                     sim_ts=self._sim_ts,
                     wall_ts=self._sim_ts,
                     ttl_sec=TICK_DURATION_H * 3600.0 * ORDER_TTL_TICKS,

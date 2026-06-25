@@ -26,10 +26,10 @@ from eflux.agents.ppo.primitive_encoding import (
     ACTION_DIM,
     N_MODES,
     OBS_DIM,
-    PRICE_REF,
     decode_action,
     encode_action,
     encode_obs,
+    price_ref_scale,
 )
 from eflux.agents.strategy.policy import ScriptedStrategyPolicy, StrategyPolicy
 from eflux.agents.strategy.schema import StrategyAction
@@ -79,7 +79,7 @@ def collect_demonstrations(
     from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 
     env = VPPPrimitiveEnv(env_config or {})
-    oracle = TruthfulValuationOracle(price_ref=Decimal(str(PRICE_REF)), demand_beta=demand_beta)
+    oracle = TruthfulValuationOracle(price_ref=Decimal(str(price_ref_scale())), demand_beta=demand_beta)
     obs_rows: list[np.ndarray] = []
     act_rows: list[np.ndarray] = []
     for ep in range(n_episodes):
@@ -205,12 +205,40 @@ def build_bc_agent(policy: BCPolicy, *, price_ref: Decimal = Decimal("50.0")) ->
     return StrategyAgent(price_ref=price_ref, demand_beta=_DEMO_DEMAND_BETA, policy=policy)
 
 
-def save_bc(net: BCNet, path: str) -> None:
-    torch.save(net.state_dict(), path)
+def save_bc(net: BCNet, path: str, *, price_ref: float | None = None, market_mode: str | None = None) -> None:
+    """Save a BC checkpoint wrapping the state-dict with metadata: the fixed price scale the
+    net was trained under (so serve/eval can restore train/serve parity) and the market mode
+    it was trained for (p2p / realprice). The loaders also accept legacy bare state-dicts."""
+    torch.save(
+        {
+            "format": "bc_primitive_v2",
+            "state_dict": net.state_dict(),
+            "price_ref": float(price_ref) if price_ref is not None else price_ref_scale(),
+            "market_mode": market_mode,
+        },
+        path,
+    )
+
+
+def _unwrap_state(raw: object) -> dict:
+    """Extract the model state-dict from either the v2 metadata-wrapped checkpoint or a legacy
+    bare state-dict."""
+    if isinstance(raw, dict) and "state_dict" in raw:
+        return raw["state_dict"]
+    return raw  # type: ignore[return-value]
+
+
+def checkpoint_meta(path: str) -> dict:
+    """Read a checkpoint's metadata ({} for legacy bare state-dicts). Used by eval / repro to
+    restore the exact normalization scale the checkpoint trained under."""
+    raw = torch.load(path, map_location="cpu")
+    if isinstance(raw, dict) and "state_dict" in raw:
+        return {k: v for k, v in raw.items() if k != "state_dict"}
+    return {}
 
 
 def load_bc(path: str, *, hidden: int = 64) -> BCNet:
     net = BCNet(hidden=hidden)
-    net.load_state_dict(torch.load(path))
+    net.load_state_dict(_unwrap_state(torch.load(path)))
     net.eval()
     return net

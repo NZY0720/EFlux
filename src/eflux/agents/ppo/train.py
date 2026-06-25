@@ -33,9 +33,16 @@ def run_training(
     episodes: int = 40,
     epochs: int = 300,
     seed: int = 0,
+    market_mode: str = "p2p",
 ) -> dict:
     """Train a BC warm-start checkpoint and save it to `out_path`. Returns a metrics dict.
-    Importable so the renew endpoint can run it in a background thread."""
+    Importable so the renew endpoint can run it in a background thread.
+
+    `market_mode` ("p2p"/"realprice") selects the training env's market structure (peer book
+    vs grid price-taker) so each live market gets a checkpoint trained against its own
+    dynamics. With real data the fixed normalization scale is set to the trailing-month CAISO
+    mean and stamped into the checkpoint, so serve-time restores the exact scale (train/serve
+    parity) — and the scale stays a constant, never the live tick."""
     from eflux.agents.ppo.bc import (
         BCPolicy,
         collect_demonstrations,
@@ -46,21 +53,27 @@ def run_training(
         trade_mode_accuracy,
         train_bc,
     )
+    from eflux.agents.ppo.primitive_encoding import price_ref_scale, set_price_ref_scale
     from eflux.agents.strategy.policy import ScriptedStrategyPolicy
 
-    env_config: dict = {}
+    env_config: dict = {"market_mode": market_mode}
     data_window = None
     if real_data:
         from eflux.agents.ppo.training_data import load_real_market_data
+        from eflux.data.caiso_reference import caiso_reference_price
 
         log.info("Loading %d days of real CAISO price + weather…", days)
         data = load_real_market_data(days=days)
-        env_config = {"real_data": data}
+        env_config["real_data"] = data
+        # Fix the normalization scale to the trailing-month CAISO mean for this run; the env
+        # oracle/encoding and the saved checkpoint all use it (synthetic runs keep 50).
+        set_price_ref_scale(caiso_reference_price(days=days))
         data_window = {
             "start": data.start.isoformat(),
             "end": data.end.isoformat(),
             "price_points": len(data.price),
         }
+    log.info("PPO training: market_mode=%s, price_ref_scale=%.2f", market_mode, price_ref_scale())
 
     log.info("Collecting demonstrations (%d episodes, seed=%d, real_data=%s)…", episodes, seed, real_data)
     obs, acts = collect_demonstrations(
@@ -71,7 +84,7 @@ def run_training(
     net = train_bc(obs, acts, epochs=epochs, seed=seed)
 
     metrics = {
-        "samples": int(len(obs)),
+        "samples": len(obs),
         "mode_accuracy": round(mode_accuracy(net, obs, acts), 4),
         "trade_mode_accuracy": round(trade_mode_accuracy(net, obs, acts), 4),
         "cloned_reward": round(mean_episode_reward(BCPolicy(net), seed=seed, env_config=env_config), 3),
@@ -79,6 +92,8 @@ def run_training(
         "real_data": real_data,
         "days": days if real_data else None,
         "data_window": data_window,
+        "market_mode": market_mode,
+        "price_ref_scale": round(price_ref_scale(), 4),
         "out": out_path,
     }
     log.info("BC mode accuracy: %.3f (trade-only %.3f)", metrics["mode_accuracy"], metrics["trade_mode_accuracy"])
@@ -86,7 +101,7 @@ def run_training(
 
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    save_bc(net, str(out))
+    save_bc(net, str(out), market_mode=market_mode)
     log.info("Saved checkpoint to %s", out)
     return metrics
 
@@ -98,6 +113,12 @@ def main() -> int:
     p.add_argument("--episodes", type=int, default=40, help="demonstration episodes")
     p.add_argument("--epochs", type=int, default=300, help="behavior-cloning epochs")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument(
+        "--market-mode",
+        choices=("p2p", "realprice"),
+        default="p2p",
+        help="train the env against this market's structure (peer book vs grid price-taker)",
+    )
     p.add_argument("--out", type=Path, default=Path("checkpoints/bc_primitive.pt"), help="checkpoint output (.pt)")
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
@@ -112,6 +133,7 @@ def main() -> int:
             episodes=args.episodes,
             epochs=args.epochs,
             seed=args.seed,
+            market_mode=args.market_mode,
         )
     except ImportError as e:
         print(f"PPO training requires the 'ai' (+ 'data' for --real-data) extras: {e}", file=sys.stderr)

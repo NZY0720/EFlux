@@ -69,6 +69,14 @@ class Settings(BaseSettings):
     # 0 disables (every agent uses the default 50). LLM/reflective agents are
     # always excluded. Gas is unaffected (its cost is set per-VPP already).
     price_ref_jitter_frac: float = 0.06
+    # What the cost-basis reference (price_ref) and the PPO normalization scale are
+    # calibrated to. "static" = the fixed legacy 50 $/MWh. "caiso" = the trailing-month
+    # CAISO LMP mean (a *fixed* value computed once per run, never the live tick — see
+    # data/caiso_reference.py). The live config.env sets this to "caiso"; the default stays
+    # "static" so library/test use needs no network and stays deterministic.
+    price_ref_source: Literal["static", "caiso"] = "static"
+    # Trailing window (days) for the CAISO reference mean when price_ref_source="caiso".
+    price_ref_window_days: int = 30
 
     magic_link_ttl_min: int = 15
     session_ttl_day: int = 30

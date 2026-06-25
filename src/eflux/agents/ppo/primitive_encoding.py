@@ -17,7 +17,28 @@ from eflux.agents.base import AgentContext
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.agents.valuation import ValuationSignal
 
-PRICE_REF = 50.0
+PRICE_REF = 50.0  # default normalization scale (back-compat / tests / synthetic training)
+
+# The *fixed* price scale every PPO price channel is normalized by (obs ratios + the reward's
+# inventory mark). It is a constant per run/checkpoint — set once at training time to the
+# trailing-month CAISO mean and carried in the checkpoint — NEVER the live tick. Keeping it
+# fixed is what preserves the price-level signal: when the live LMP runs above this scale the
+# obs ratios (mid/scale, fair_buy/scale, …) rise above 1.0 and the policy can see it. If the
+# scale tracked the live price those ratios would collapse to ~1.0 and the policy would go
+# blind to whether prices are high or low. See data/caiso_reference.py.
+_scale = PRICE_REF
+
+
+def price_ref_scale() -> float:
+    """The current fixed PPO price-normalization scale."""
+    return _scale
+
+
+def set_price_ref_scale(value: float | None) -> None:
+    """Set the process-wide normalization scale (training / scenario-load / eval entry points
+    own this). A falsy/non-positive value resets to the default so callers degrade safely."""
+    global _scale
+    _scale = float(value) if value and float(value) > 0 else PRICE_REF
 
 # The primitive set PPO chooses among (argmax over the first N_MODES action logits).
 # A small, safe set: stand down, trade the imbalance either way, or work the battery.
@@ -40,7 +61,8 @@ def _sigmoid(x: float) -> float:
 def encode_obs(ctx: AgentContext, valuation: ValuationSignal) -> np.ndarray:
     """AgentContext + ValuationSignal → fixed-width observation (OBS_DIM)."""
     m = ctx.market
-    mid = float(m.mid_price) if m.mid_price is not None else (float(m.last_price) if m.last_price is not None else PRICE_REF)
+    pr = price_ref_scale()
+    mid = float(m.mid_price) if m.mid_price is not None else (float(m.last_price) if m.last_price is not None else pr)
     mid = max(mid, 1e-3)
     bb = float(m.best_bid) if m.best_bid is not None else None
     ba = float(m.best_ask) if m.best_ask is not None else None
@@ -48,7 +70,6 @@ def encode_obs(ctx: AgentContext, valuation: ValuationSignal) -> np.ndarray:
     last = float(m.last_price) if m.last_price is not None else mid
     hour = ctx.state.sim_ts.hour + ctx.state.sim_ts.minute / 60.0
     cap = max(ctx.params.battery_kwh, 1e-3)
-    pr = PRICE_REF
     return np.array(
         [
             ctx.state.pv_kw / max(ctx.params.pv_kw_peak, 1e-3),

@@ -18,7 +18,9 @@ from eflux.agents.bench.metrics import format_leaderboard
 from eflux.agents.bench.run import score
 from eflux.agents.bench.scenarios import candidates
 from eflux.agents.hybrid import StrategyAgent
+from eflux.agents.ppo.bc import checkpoint_meta
 from eflux.agents.ppo.online_ppo import build_online_policy
+from eflux.agents.ppo.primitive_encoding import price_ref_scale, set_price_ref_scale
 
 # Match the training/serving valuation config so the obs channels line up.
 EVAL_DEMAND_BETA = 0.5
@@ -26,9 +28,13 @@ EVAL_DEMAND_BETA = 0.5
 
 def _make_online_agent(checkpoint: str) -> StrategyAgent:
     """A StrategyAgent driven by the trained torch policy, frozen (no live updates)
-    so the evaluation is deterministic — the same machinery the live agent runs."""
+    so the evaluation is deterministic — the same machinery the live agent runs.
+
+    Restore the normalization scale the checkpoint was trained under (and pin the agent's
+    valuation to it) so the obs channels line up exactly with training."""
+    set_price_ref_scale(checkpoint_meta(checkpoint).get("price_ref"))
     policy = build_online_policy(checkpoint, learning=False, auto_update=False)
-    return StrategyAgent(price_ref=Decimal("50.0"), demand_beta=EVAL_DEMAND_BETA, policy=policy)
+    return StrategyAgent(price_ref=Decimal(str(price_ref_scale())), demand_beta=EVAL_DEMAND_BETA, policy=policy)
 
 
 def main() -> None:

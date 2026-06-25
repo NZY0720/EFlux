@@ -4,11 +4,12 @@
 # (src/eflux/simulator/agent_spec.py; JSON Schema: eflux agent-spec-schema).
 # (Mirror of scenarios/default.yaml; default.yaml is kept as the fallback default.)
 #
-# Roster mix (declared entries): 4 zi · 20 truthful · 2 gas · 6 hybrid · 4 standalone PPO.
-# Each `hybrid` entry sets `mirror: true`, so the loader also spawns a strategist-less PPO
-# twin ("<name>-ppo-mirror") into the same market — the LLM-coached agent and its PPO-only
-# control trade side-by-side, isolating the LLM's marginal contribution. Live total = 42 VPPs
-# (36 declared + 6 mirrors → 10 PPO learners: 4 standalone + 6 mirrored).
+# Roster mix (declared entries): 4 zi · 20 truthful · 9 quant baselines (3 zip · 3 gd · 3 aa) ·
+# 2 gas · 6 hybrid · 4 standalone PPO. Each `hybrid` entry sets `mirror: true`, so the loader
+# also spawns a strategist-less PPO twin ("<name>-ppo-mirror") into the same market — the
+# LLM-coached agent and its PPO-only control trade side-by-side, isolating the LLM's marginal
+# contribution. Live total = 51 VPPs (45 declared + 6 mirrors → 10 PPO learners: 4 standalone +
+# 6 mirrored).
 #
 # Fields per entry:
 #   name         — shown in the trade tape / participants directory
@@ -149,6 +150,58 @@ vpps:
               load_kw_base: 8.0, load_profile: flat, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
 
+  # ===================== CLASSICAL QUANT BASELINES (ZIP · GD · AA) (9) =====================
+  # Adaptive continuous-double-auction strategies. Each reuses the truthful valuation oracle for
+  # its private value (marginal cost / value) and layers its own bidding rule on top, so they
+  # benchmark "bidding intelligence" between the random ZI floor and the learned PPO/LLM agents.
+  # price_ref is re-based to the trailing-month CAISO mean and jittered ±6% like zi/truthful.
+  # --- ZIP (Cliff 1997): Widrow-Hoff adaptive profit margin ---
+  - name: zip-solar-40
+    agent: zip
+    seed: 100
+    params: { pv_kw_peak: 8.0, battery_kwh: 14.0, battery_kw_max: 4.0, load_kw_base: 1.5, markup_floor: 0.4 }
+  - name: zip-load-41
+    agent: zip
+    seed: 101
+    params: { pv_kw_peak: 0.5, battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 6.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+  - name: zip-wind-42
+    agent: zip
+    seed: 102
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 9.0, wind_mean_speed: 8.5,
+              battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 0.4, markup_floor: 0.4 }
+  # --- GD (Gjerstad–Dickhaut 1998): belief-based expected-surplus maximization ---
+  - name: gd-solar-43
+    agent: gd
+    seed: 103
+    params: { pv_kw_peak: 7.0, battery_kwh: 16.0, battery_kw_max: 5.0, load_kw_base: 2.0, markup_floor: 0.4 }
+  - name: gd-factory-44
+    agent: gd
+    seed: 104
+    params: { pv_kw_peak: 2.0, battery_kwh: 20.0, battery_kw_max: 6.0,
+              load_kw_base: 10.0, load_profile: industrial, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+  - name: gd-battery-45
+    agent: gd
+    seed: 105
+    params: { pv_kw_peak: 1.0, battery_kwh: 28.0, battery_kw_max: 8.0, load_kw_base: 2.0, markup_floor: 0.4 }
+  # --- AA (Vytelingum 2008): equilibrium tracking + adaptive aggressiveness ---
+  - name: aa-solar-46
+    agent: aa
+    seed: 106
+    params: { pv_kw_peak: 9.0, battery_kwh: 18.0, battery_kw_max: 5.0, load_kw_base: 1.5, markup_floor: 0.4 }
+  - name: aa-commercial-47
+    agent: aa
+    seed: 107
+    params: { pv_kw_peak: 2.5, battery_kwh: 10.0, battery_kw_max: 4.0,
+              load_kw_base: 6.0, load_profile: commercial, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+  - name: aa-wind-48
+    agent: aa
+    seed: 108
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 12.0, wind_mean_speed: 9.0,
+              battery_kwh: 12.0, battery_kw_max: 5.0, load_kw_base: 0.5, markup_floor: 0.4 }
+
   # ===================== GAS generation (dispatchable, merit-order top) (2) =====================
   - name: gas-base-26
     agent: gas
@@ -172,7 +225,7 @@ vpps:
     params: { pv_kw_peak: 5.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 2.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
     mirror: true
 
   - name: llm-arb-aggressive
@@ -181,7 +234,7 @@ vpps:
     params: { pv_kw_peak: 2.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 0.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
     mirror: true
     persona:
       name: aggressive-arbitrageur
@@ -198,7 +251,7 @@ vpps:
     seed: 79
     params: { pv_kw_peak: 0.0, wind_kw_rated: 10.0, wind_mean_speed: 9.0,
               battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 0.4, markup_floor: 0.4 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
     mirror: true
     persona:
       name: conservative-wind-farmer
@@ -215,7 +268,7 @@ vpps:
     params: { pv_kw_peak: 0.0, battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 6.0,
               load_profile: commercial, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
     mirror: true
     persona:
       name: cost-minimizing-buyer
@@ -232,7 +285,7 @@ vpps:
     params: { pv_kw_peak: 9.0, battery_kwh: 18.0, battery_kw_max: 5.0, load_kw_base: 1.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
     mirror: true
     persona:
       name: solar-prosumer
@@ -248,7 +301,7 @@ vpps:
     params: { pv_kw_peak: 3.0, battery_kwh: 22.0, battery_kw_max: 6.0, load_kw_base: 3.0,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
     mirror: true
     persona:
       name: balanced-market-maker
@@ -260,34 +313,35 @@ vpps:
 
   # ===================== STANDALONE learned PPO agents (4) =====================
   # agent: strategy + a learned executor — online-learning PPO baselines (no LLM) trading
-  # alongside the fleet. price_ref / demand_beta pinned to the training config (50 / 0.5) so
-  # the live valuation obs match the warm-start; pinning price_ref also opts out of the
-  # cost-diversification jitter. Falls back to scripted if the 'ai' extras are missing.
+  # alongside the fleet. demand_beta pinned to the training config (0.5); price_ref is injected
+  # at load time as the unjittered trailing-month CAISO mean (the same fixed scale the p2p
+  # checkpoint trained under) so the live valuation obs match the warm-start. Falls back to
+  # scripted if the 'ai' extras are missing.
   - name: ppo-primitive-30
     agent: strategy
     seed: 88
     params: { pv_kw_peak: 8.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 4.0,
               markup_floor: 0.4 }
-    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
   - name: ppo-primitive-31
     agent: strategy
     seed: 89
     params: { pv_kw_peak: 4.0, battery_kwh: 20.0, battery_kw_max: 6.0, load_kw_base: 6.0,
               markup_floor: 0.4 }
-    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
   - name: ppo-primitive-32
     agent: strategy
     seed: 90
     params: { pv_kw_peak: 2.0, battery_kwh: 10.0, battery_kw_max: 3.0, load_kw_base: 3.0,
               markup_floor: 0.4 }
-    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
   - name: ppo-primitive-33
     agent: strategy
     seed: 91
     params: { pv_kw_peak: 0.0, wind_kw_rated: 8.0, wind_mean_speed: 8.5,
               battery_kwh: 16.0, battery_kw_max: 5.0, load_kw_base: 1.0, markup_floor: 0.4 }
-    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }

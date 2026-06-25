@@ -599,7 +599,9 @@ class Simulator:
             return False
         from eflux.config import PROJECT_ROOT
 
-        checkpoint = str(PROJECT_ROOT / "checkpoints" / "bc_primitive.pt")
+        # Per-market checkpoint: retrain the checkpoint this market's PPO agents loaded, against
+        # this market's own structure, so a p2p renew never overwrites the realprice prior.
+        checkpoint = str(PROJECT_ROOT / "checkpoints" / f"bc_primitive_{self.market_mode}.pt")
         self._ppo_renew_task = asyncio.create_task(
             self._run_ppo_renew(days=days, episodes=episodes, epochs=epochs, checkpoint_path=checkpoint),
             name="ppo-renew",
@@ -622,7 +624,13 @@ class Simulator:
 
             # Training fetches real data (network) + runs torch — keep it off the event loop.
             metrics = await asyncio.to_thread(
-                run_training, checkpoint_path, real_data=True, days=days, episodes=episodes, epochs=epochs
+                run_training,
+                checkpoint_path,
+                real_data=True,
+                days=days,
+                episodes=episodes,
+                epochs=epochs,
+                market_mode=self.market_mode,
             )
             self._ppo_renew.update(state="reloading", metrics=metrics, detail="hot-reloading live policies")
             n = await self.reload_online_policies(checkpoint_path)

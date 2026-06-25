@@ -26,6 +26,12 @@ def test_unknown_agent_kind_rejected():
         AgentSpec.model_validate({"name": "vpp-1", "agent": "quantum"})
 
 
+def test_classical_baseline_kinds_accepted():
+    for kind in ("zip", "gd", "aa"):
+        spec = AgentSpec.model_validate({"name": f"vpp-{kind}", "agent": kind})
+        assert spec.agent == kind
+
+
 def test_unknown_top_level_key_rejected():
     # extra="forbid" — a YAML typo like 'parms' must fail loudly, not load silently.
     with pytest.raises(ValidationError, match="parms"):

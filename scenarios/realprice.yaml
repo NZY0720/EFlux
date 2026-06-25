@@ -6,8 +6,9 @@
 # the ZI noise cohort and gas merit-order top are dropped (they exist only to feed the P2P
 # book). What's left is a focused strategy-vs-grid testbed:
 #
-#   4 truthful baselines · 6 hybrid LLM-strategists (each mirrored) · 4 standalone PPO.
-# Live total = 20 VPPs (14 declared + 6 PPO mirrors → 10 PPO learners: 4 standalone + 6 mirrored).
+#   4 truthful baselines · 6 quant baselines (2 zip · 2 gd · 2 aa) · 6 hybrid LLM-strategists
+#   (each mirrored) · 4 standalone PPO.
+# Live total = 26 VPPs (20 declared + 6 PPO mirrors → 10 PPO learners: 4 standalone + 6 mirrored).
 #
 # The truthful agents are non-learning cost-based baselines to compare the PPO / hybrid
 # strategies against on the Real-Time dashboard's PnL leaderboard. price_ref (their cost
@@ -35,6 +36,41 @@ vpps:
               battery_kwh: 10.0, battery_kw_max: 4.0,
               load_kw_base: 0.4, markup_floor: 0.4 }
 
+  # ===================== CLASSICAL QUANT BASELINES (ZIP · GD · AA) (6) =====================
+  # Non-learning adaptive baselines as strategy-vs-grid controls on the PnL leaderboard. Each
+  # reuses the truthful valuation oracle for its private value; price_ref is re-based to the
+  # trailing-month CAISO mean (jittered ±6%) but NOT pegged to the live LMP, so they trade on
+  # the live-price-vs-cost spread — the timing signal this market tests.
+  - name: zip-batt-40
+    agent: zip
+    seed: 100
+    params: { pv_kw_peak: 6.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 2.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+  - name: zip-load-41
+    agent: zip
+    seed: 101
+    params: { pv_kw_peak: 0.5, battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 5.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+  - name: gd-solar-42
+    agent: gd
+    seed: 102
+    params: { pv_kw_peak: 9.0, battery_kwh: 12.0, battery_kw_max: 4.0, load_kw_base: 1.0, markup_floor: 0.4 }
+  - name: gd-wind-43
+    agent: gd
+    seed: 103
+    params: { pv_kw_peak: 0.0, wind_kw_rated: 12.0, wind_mean_speed: 9.0,
+              battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 0.4, markup_floor: 0.4 }
+  - name: aa-solar-44
+    agent: aa
+    seed: 104
+    params: { pv_kw_peak: 8.0, battery_kwh: 16.0, battery_kw_max: 5.0, load_kw_base: 1.5, markup_floor: 0.4 }
+  - name: aa-commercial-45
+    agent: aa
+    seed: 105
+    params: { pv_kw_peak: 2.5, battery_kwh: 10.0, battery_kw_max: 4.0,
+              load_kw_base: 6.0, load_profile: commercial, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+
   # ===================== HYBRID LLM strategists (6, each mirrored) =====================
   # Online-learning PPO executor (warm-started from the BC checkpoint) coached by the LLM
   # strategist; `mirror: true` spawns a strategist-less PPO twin for A/B attribution. With no
@@ -45,7 +81,7 @@ vpps:
     params: { pv_kw_peak: 5.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 2.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice.pt }
     mirror: true
 
   - name: llm-arb-aggressive
@@ -54,7 +90,7 @@ vpps:
     params: { pv_kw_peak: 2.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 0.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice.pt }
     mirror: true
     persona:
       name: aggressive-arbitrageur
@@ -71,7 +107,7 @@ vpps:
     seed: 79
     params: { pv_kw_peak: 0.0, wind_kw_rated: 10.0, wind_mean_speed: 9.0,
               battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 0.4, markup_floor: 0.4 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice.pt }
     mirror: true
     persona:
       name: conservative-wind-farmer
@@ -88,7 +124,7 @@ vpps:
     params: { pv_kw_peak: 0.0, battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 6.0,
               load_profile: commercial, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice.pt }
     mirror: true
     persona:
       name: cost-minimizing-buyer
@@ -105,7 +141,7 @@ vpps:
     params: { pv_kw_peak: 9.0, battery_kwh: 18.0, battery_kw_max: 5.0, load_kw_base: 1.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice.pt }
     mirror: true
     persona:
       name: solar-prosumer
@@ -121,7 +157,7 @@ vpps:
     params: { pv_kw_peak: 3.0, battery_kwh: 22.0, battery_kw_max: 6.0, load_kw_base: 3.0,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice.pt }
     mirror: true
     persona:
       name: balanced-market-maker
@@ -132,35 +168,35 @@ vpps:
         learner stable (modest lr, protect the SOC band).
 
   # ===================== STANDALONE learned PPO agents (4) =====================
-  # agent: strategy + a learned executor — online-learning PPO baselines (no LLM). price_ref /
-  # demand_beta pinned to the training config (50 / 0.5) so the live valuation obs match the
-  # warm-start; pinning price_ref also opts out of cost-diversification jitter. Falls back to
-  # scripted if the 'ai' extras are missing.
+  # agent: strategy + a learned executor — online-learning PPO baselines (no LLM). demand_beta
+  # pinned to the training config (0.5); price_ref is injected at load time as the unjittered
+  # trailing-month CAISO mean (the same fixed scale the realprice checkpoint trained under) so
+  # the live valuation obs match the warm-start. Falls back to scripted if 'ai' extras missing.
   - name: ppo-primitive-30
     agent: strategy
     seed: 88
     params: { pv_kw_peak: 8.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 4.0,
               markup_floor: 0.4 }
-    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice.pt }
   - name: ppo-primitive-31
     agent: strategy
     seed: 89
     params: { pv_kw_peak: 4.0, battery_kwh: 20.0, battery_kw_max: 6.0, load_kw_base: 6.0,
               markup_floor: 0.4 }
-    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice.pt }
   - name: ppo-primitive-32
     agent: strategy
     seed: 90
     params: { pv_kw_peak: 2.0, battery_kwh: 10.0, battery_kw_max: 3.0, load_kw_base: 3.0,
               markup_floor: 0.4 }
-    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice.pt }
   - name: ppo-primitive-33
     agent: strategy
     seed: 91
     params: { pv_kw_peak: 0.0, wind_kw_rated: 8.0, wind_mean_speed: 8.5,
               battery_kwh: 16.0, battery_kw_max: 5.0, load_kw_base: 1.0, markup_floor: 0.4 }
-    agent_params: { price_ref: 50.0, demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive.pt }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice.pt }

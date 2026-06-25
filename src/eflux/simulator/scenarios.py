@@ -17,14 +17,18 @@ from pathlib import Path
 
 import yaml
 
+from eflux.agents.aa_agent import AAAgent
 from eflux.agents.base import BaseAgent
 from eflux.agents.gas import GasGeneratorAgent
+from eflux.agents.gd_agent import GDAgent
 from eflux.agents.hybrid import HybridPolicyAgent, StrategyAgent
 from eflux.agents.reflective.pool import SharedLLM
 from eflux.agents.reflective.strategist import LLMStrategist
 from eflux.agents.truthful import TruthfulAgent
 from eflux.agents.zi import ZIAgent
+from eflux.agents.zip_agent import ZIPAgent
 from eflux.config import PROJECT_ROOT, get_settings
+from eflux.data.caiso_reference import caiso_reference_price
 from eflux.simulator.agent_spec import AgentSpec, validate_vpp_params
 from eflux.simulator.runner import Simulator
 from eflux.vpp.base import VPPParams
@@ -37,7 +41,16 @@ AGENT_FACTORIES: dict[str, type[BaseAgent]] = {
     "gas": GasGeneratorAgent,
     "strategy": StrategyAgent,
     "hybrid": HybridPolicyAgent,
+    # Classical quantitative baselines (continuous double auction). Each reuses the
+    # truthful valuation oracle for its private value and adds an adaptive bidding rule.
+    "zip": ZIPAgent,
+    "gd": GDAgent,
+    "aa": AAAgent,
 }
+
+# Cost-based agents whose price_ref is re-based to the CAISO reference + jittered for cost
+# diversification (LLM/gas/strategy-with-pinned-ref are handled elsewhere).
+_COST_DIVERSIFIED_KINDS = frozenset({"zi", "truthful", "strategy", "zip", "gd", "aa"})
 
 # Dataclass fields that hold injected policy/strategist objects, never YAML kwargs.
 _INJECTED_FIELDS = frozenset(
@@ -123,9 +136,26 @@ def _real_pv_available() -> bool:
         return False
 
 
+def _ppo_price_ref() -> Decimal:
+    """The fixed CAISO-mean reference PPO/hybrid agents pin their valuation to — unjittered, so
+    it matches the normalization scale the checkpoints were trained under (obs parity)."""
+    return Decimal(str(caiso_reference_price()))
+
+
+def _set_ppo_scale() -> None:
+    """Fix this process's PPO normalization scale to the trailing-month CAISO mean (the same
+    quantity training stamps into the checkpoint). No-op without the 'ai' extras / numpy."""
+    try:
+        from eflux.agents.ppo.primitive_encoding import set_price_ref_scale
+    except ImportError:
+        return
+    set_price_ref_scale(caiso_reference_price())
+
+
 def load_default_scenario(sim: Simulator) -> None:
     """Load and validate the YAML roster; wire LLM-managed entries to the shared LLM."""
     settings = get_settings()
+    _set_ppo_scale()
     path = Path(settings.scenario_file)
     if not path.is_absolute():
         path = PROJECT_ROOT / path
@@ -166,12 +196,17 @@ def load_default_scenario(sim: Simulator) -> None:
             factory = AGENT_FACTORIES[spec.agent]
             _validate_agent_params(spec.name, spec.agent_params, factory)
             seed = spec.seed if spec.seed is not None else 42 + i
-            agent_params = _diversify_cost(spec, seed, settings.price_ref_jitter_frac, factory)
-            # A `strategy` entry may carry a learned executor (the standalone PPO VPP).
+            # A `strategy` entry may carry a learned executor (the standalone PPO VPP). Such
+            # agents pin price_ref to the unjittered CAISO reference (matching the checkpoint's
+            # training scale) rather than taking the cost-diversification jitter.
             if spec.agent == "strategy" and spec.executor is not None:
+                agent_params = dict(spec.agent_params)
+                agent_params.setdefault("price_ref", _ppo_price_ref())
                 agent_params["policy"] = _build_executor(
                     spec.name, spec.executor, seed=seed, auto_update=True
                 )
+            else:
+                agent_params = _diversify_cost(spec, seed, settings.price_ref_jitter_frac, factory)
             sim.add_builtin_vpp(
                 name=spec.name,
                 params=_build_params(spec, use_real_weather),
@@ -216,12 +251,16 @@ def _diversify_cost(
     agent_params = dict(spec.agent_params)
     if (
         jitter_frac <= 0
-        or spec.agent not in ("zi", "truthful", "strategy")
+        or spec.agent not in _COST_DIVERSIFIED_KINDS
         or "price_ref" in agent_params
     ):
         return agent_params
+    # Base the cost reference on the trailing-month CAISO mean (calibrates the whole price
+    # band to real grid levels) rather than the hardcoded dataclass default. Falls back to
+    # the dataclass default / 50 when CAISO is unreachable.
     field = factory.__dataclass_fields__.get("price_ref")
-    base = float(field.default) if field is not None else 50.0  # type: ignore[union-attr]
+    default_base = float(field.default) if field is not None else 50.0  # type: ignore[union-attr]
+    base = caiso_reference_price(default=default_base)
     rng = random.Random(f"price_ref::{spec.name}::{seed}")
     price_ref = round(base * (1.0 + rng.uniform(-jitter_frac, jitter_frac)), 4)
     agent_params["price_ref"] = Decimal(str(price_ref))
@@ -280,8 +319,10 @@ def _add_hybrid_vpp(
         else None
     )
     seed = spec.seed if spec.seed is not None else default_seed
+    agent_params = dict(spec.agent_params)
+    agent_params.setdefault("price_ref", _ppo_price_ref())  # match the PPO normalization scale
     agent = HybridPolicyAgent(
-        **spec.agent_params,
+        **agent_params,
         executor=_build_executor(
             spec.name, spec.executor, seed=seed, auto_update=not settings.online_update_async
         ),
@@ -321,8 +362,11 @@ def _add_mirror_vpp(
     name = f"{spec.name}-ppo-mirror"
     policy = _build_executor(name, spec.executor, seed=seed, auto_update=True)
     # agent_params validated for HybridPolicyAgent share StrategyAgent's fields (price_ref,
-    # demand_beta, min_qty, price_cap_mult) — pass them straight through.
-    agent = StrategyAgent(**spec.agent_params, policy=policy)
+    # demand_beta, min_qty, price_cap_mult) — pass them straight through, pinning price_ref to
+    # the PPO normalization scale so the twin's obs match its checkpoint.
+    agent_params = dict(spec.agent_params)
+    agent_params.setdefault("price_ref", _ppo_price_ref())
+    agent = StrategyAgent(**agent_params, policy=policy)
     sim.add_builtin_vpp(
         name=name,
         params=_build_params(spec, use_real_weather),

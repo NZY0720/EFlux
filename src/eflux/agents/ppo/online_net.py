@@ -122,7 +122,11 @@ def load_warm_start(
     """Build an ActorCriticNet from a checkpoint, autodetecting its kind: a BC `BCNet`
     state_dict warm-starts the trunk+actor; a previously-saved ActorCriticNet state_dict
     (live weights persisted on shutdown) is loaded whole to resume learning."""
-    state = torch.load(str(path), map_location=map_location)
+    raw = torch.load(str(path), map_location=map_location)
+    # v2 BC checkpoints wrap the state-dict with metadata (price scale, market mode); legacy
+    # checkpoints are a bare state-dict. Either way we only need the weights here — the scale
+    # is restored by the entry points (training / scenario-load / eval), not the loader.
+    state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
     net = ActorCriticNet(obs_dim=obs_dim, action_dim=action_dim, hidden=hidden)
     if _is_bcnet_state(state):
         warm_start_from_bcnet(net, state)
