@@ -61,7 +61,10 @@ class TruthfulAgent(BaseAgent):
         # energy: with a 1s tick the per-tick net is ~1e-3 kWh and would never
         # clear min_qty. The oracle reports it as surplus_kwh / deficit_kwh.
         if sig.surplus_kwh >= min_qty_f:
-            self._append_balance_order(intents, "sell", sig.fair_sell_price, sig.surplus_kwh)
+            # Gas-backed surplus is dispatched (settles through fuel, not the ambient balance).
+            self._append_balance_order(
+                intents, "sell", sig.fair_sell_price, sig.surplus_kwh, dispatched=sig.supply_dispatched
+            )
         elif sig.deficit_kwh >= min_qty_f:
             self._append_balance_order(intents, "buy", sig.fair_buy_price, sig.deficit_kwh)
 
@@ -73,12 +76,12 @@ class TruthfulAgent(BaseAgent):
         return intents
 
     def _append_balance_order(
-        self, intents: list[OrderIntent], side: str, price_f: float, qty_f: float
+        self, intents: list[OrderIntent], side: str, price_f: float, qty_f: float, *, dispatched: bool = False
     ) -> None:
         price = Decimal(str(price_f)).quantize(Decimal("0.0001"))
         qty = Decimal(str(qty_f)).quantize(Decimal("0.0001"))
         if price > 0 and qty >= self.min_qty:
-            intents.append(OrderIntent(side=side, price=price, qty=qty))
+            intents.append(OrderIntent(side=side, price=price, qty=qty, dispatched=dispatched))
 
     def _append_battery_band_order(
         self, intents: list[OrderIntent], ctx: AgentContext, sig: ValuationSignal

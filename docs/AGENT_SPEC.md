@@ -14,7 +14,7 @@ PYTHONPATH=src .env/bin/python -m eflux.cli agent-spec-schema > docs/agent_spec.
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string (1–100 chars) | yes | Unique display name (trade tape, participants directory). Duplicates are rejected at load. |
-| `agent` | `zi` \| `truthful` \| `gas` \| `strategy` \| `hybrid` \| `reflective` | no (default `zi`) | Strategy kind. `hybrid` = LLM-steered HybridPolicyAgent (see §3). `reflective` is a legacy alias that loads the hybrid stack. |
+| `agent` | `zi` \| `truthful` \| `gas` \| `strategy` \| `hybrid` \| `reflective` \| `zip` \| `gd` \| `aa` | no (default `zi`) | Strategy kind. `hybrid` = LLM-steered HybridPolicyAgent (see §3). `reflective` is a legacy alias that loads the hybrid stack. |
 | `seed` | int | no | RNG seed (defaults to `42 + roster index`). |
 | `params` | object | no | DER portfolio — sparse `VPPParams` fields (see the JSON schema for all 19). Unknown keys are rejected (422 from `POST /vpps`, load failure for the YAML roster); known keys are type-checked. |
 | `agent_params` | object | no | Constructor kwargs for the strategy class. For `hybrid` / legacy `reflective`, they go to `HybridPolicyAgent`. |
@@ -30,6 +30,10 @@ Typos in top-level keys fail loudly (`extra="forbid"`), so a misspelled
 `wind_kw_rated`, `wind_mean_speed`, `gas_kw_max`, `gas_cost_per_kwh`,
 `markup_floor`, and site coords `pv_lat`/`pv_lon` (enable real Open-Meteo
 weather for PV + wind; stripped when `EFLUX_PV_PHYSICAL=false`).
+
+Gas providers are pure dispatchable supply. When `gas_kw_max > 0`, explicitly set
+`pv_kw_peak`, `wind_kw_rated`, `load_kw_base`, `battery_kwh`, and
+`battery_kw_max` to `0`; mixed gas+storage/generation/load portfolios are rejected.
 
 ### Useful `agent_params` per kind
 

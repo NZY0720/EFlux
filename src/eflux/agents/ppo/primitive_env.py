@@ -122,6 +122,7 @@ class VPPPrimitiveEnv(gym.Env):
         self._engine = MatchingEngine()
         self._tick = 0
         self._last_price_ref = price_ref_scale()
+        self._oracle.reset()  # fresh gas-throttle cadence per episode
 
         self._step_der()
         self._seed_counterparty()

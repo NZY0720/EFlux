@@ -243,7 +243,11 @@ def test_open_orders_net_by_vpp_signs_and_dispatched_excluded():
 def test_market_balance_reports_aggregates():
     sim = Simulator(bus=InMemoryBus())
     sim.add_builtin_vpp("load", VPPParams(pv_kw_peak=0.0, load_kw_base=5.0), ZIAgent())
-    sim.add_builtin_vpp("gas", VPPParams(gas_kw_max=20.0, load_kw_base=0.0), ZIAgent())
+    sim.add_builtin_vpp(
+        "gas",
+        VPPParams(gas_kw_max=20.0, battery_kwh=0.0, battery_kw_max=0.0, load_kw_base=0.0),
+        ZIAgent(),
+    )
     sim_ts = sim.clock.now_sim()
     tick_h = 1.0 / 3600.0
     market = MarketSnapshot.from_engine(sim_ts, sim.engine.snapshot())

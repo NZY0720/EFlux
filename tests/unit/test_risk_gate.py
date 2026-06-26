@@ -109,7 +109,7 @@ def test_batch_consumes_battery_headroom():
 
 def test_gas_dispatched_order_skips_soc_check():
     # is_gas (gas_kw_max > 0) → dispatched sell settles through fuel, not storage.
-    params = VPPParams(gas_kw_max=20.0)
+    params = VPPParams(gas_kw_max=20.0, battery_kwh=0.0, battery_kw_max=0.0, load_kw_base=0.0)
     d = RiskGate().validate(
         [_intent("sell", "72", "8", dispatched=True)],  # 8 kWh >> battery deliverable
         vpp_id=-1,
@@ -166,7 +166,7 @@ def test_full_roster_tick_loop_has_zero_vetoes(caplog):
     )
     sim.add_builtin_vpp(
         "gas",
-        VPPParams(gas_kw_max=20.0, gas_cost_per_kwh=72.0, battery_kwh=10.0, load_kw_base=0.0),
+        VPPParams(gas_kw_max=20.0, gas_cost_per_kwh=72.0, battery_kwh=0.0, battery_kw_max=0.0, load_kw_base=0.0),
         GasGeneratorAgent(),
     )
 

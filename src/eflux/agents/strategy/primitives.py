@@ -72,7 +72,8 @@ def build_program(action: StrategyAction, ctx: AgentContext, valuation: Valuatio
     if mode == StrategyMode.LIQUIDATE_SURPLUS:
         qty = valuation.surplus_kwh * max(0.0, action.qty_fraction)
         price = _effective_price("sell", valuation.fair_sell_price, action, market)
-        return OrderProgram(mode, orders=_one("sell", price, qty, action))
+        # Gas-backed surplus settles through fuel (dispatched); ambient surplus does not.
+        return OrderProgram(mode, orders=_one("sell", price, qty, action, dispatched=valuation.supply_dispatched))
 
     if mode == StrategyMode.COVER_DEFICIT:
         qty = valuation.deficit_kwh * max(0.0, action.qty_fraction)
@@ -96,7 +97,10 @@ def build_program(action: StrategyAction, ctx: AgentContext, valuation: Valuatio
             cross = market.best_ask
         px = cross if cross is not None else Decimal(str(base))
         price = _effective_price(side, px, action, market)
-        return OrderProgram(mode, orders=_one(side, price, avail * max(0.0, action.qty_fraction), action))
+        dispatched = side == "sell" and valuation.supply_dispatched
+        return OrderProgram(
+            mode, orders=_one(side, price, avail * max(0.0, action.qty_fraction), action, dispatched=dispatched)
+        )
 
     if mode in (StrategyMode.LADDER_SELL, StrategyMode.LADDER_BUY):
         return _ladder(mode, action, valuation)
@@ -123,13 +127,16 @@ def _ladder(mode: StrategyMode, action: StrategyAction, valuation: ValuationSign
     levels = max(1, action.ladder_levels)
     per = (avail * max(0.0, action.qty_fraction)) / levels
     slope = Decimal(str(action.ladder_slope))
+    dispatched = sell and valuation.supply_dispatched  # gas-backed ladder sells settle via fuel
     specs: list[OrderSpec] = []
     for i in range(levels):
         # Sells step up (ask higher further out); buys step down (bid lower).
         factor = (Decimal("1") + slope * i) if sell else (Decimal("1") - slope * i)
         price = (base * factor).quantize(QUANT)
         if price > 0 and per > 0:
-            specs.append(OrderSpec("sell" if sell else "buy", price, _q(per), ttl_ticks=action.ttl_ticks))
+            specs.append(
+                OrderSpec("sell" if sell else "buy", price, _q(per), dispatched=dispatched, ttl_ticks=action.ttl_ticks)
+            )
     return OrderProgram(mode, orders=specs)
 
 

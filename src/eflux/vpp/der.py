@@ -145,11 +145,12 @@ class Battery:
 @dataclass
 class FlexibleLoad:
     base_kw: float
-    elasticity: float = 0.2  # ±fraction around base
+    elasticity: float = 0.2  # ±fraction around base (deferrable flex; EV stations use ~0.7+)
     noise_std: float = 0.05
     # Daily shape: "residential" (morning+evening peaks), "industrial"
     # (workday shift, weekend slowdown), "commercial" (business hours),
-    # "flat" (24/7 — datacenters, cold storage, plant auxiliaries).
+    # "flat" (24/7 — datacenters, cold storage, plant auxiliaries), "ev"
+    # (deferrable evening plug-in + overnight charging window, minimal daytime).
     profile: str = "residential"
 
     def draw_kw(self, sim_ts: datetime, rng: random.Random) -> float:
@@ -168,6 +169,16 @@ class FlexibleLoad:
             shape = 1.0 if 9 <= hour <= 21 else 0.25
         elif self.profile == "flat":
             shape = 1.0
+        elif self.profile == "ev":
+            # EV charging station: deferrable demand concentrated in the evening plug-in
+            # (18-24) and overnight (0-6) window, when grid/renewable headroom is greatest;
+            # minimal daytime draw. Highly flexible within that window (see elasticity).
+            if 18 <= hour < 24:
+                shape = 0.9  # evening plug-in peak
+            elif 0 <= hour < 6:
+                shape = 0.7  # overnight scheduled charge
+            else:
+                shape = 0.12  # daytime: mostly idle / opportunistic top-ups
         else:  # residential
             # Two peaks: 7-9 morning, 18-22 evening.
             morning = math.exp(-0.5 * ((hour - 8) / 1.5) ** 2)

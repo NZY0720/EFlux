@@ -52,7 +52,13 @@ def counter_roster() -> list[BenchVPP]:
         ),
         BenchVPP(
             "gas-backstop",
-            VPPParams(gas_kw_max=20.0, gas_cost_per_kwh=65.0, load_kw_base=0.0),
+            VPPParams(
+                gas_kw_max=20.0,
+                gas_cost_per_kwh=65.0,
+                battery_kwh=0.0,
+                battery_kw_max=0.0,
+                load_kw_base=0.0,
+            ),
             GasGeneratorAgent(),
             104,
         ),

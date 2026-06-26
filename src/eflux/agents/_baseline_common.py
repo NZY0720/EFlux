@@ -70,7 +70,9 @@ class BaselineAgent(BaseAgent):
         else:
             return []
         price_f = self._quote_price(side=side, limit=limit, ctx=ctx, sig=sig)
-        return self._order(side, self._rationalize(side, price_f, limit), qty_f)
+        # Gas-backed surplus settles through fuel — its sell order is dispatched.
+        dispatched = side == "sell" and sig.supply_dispatched
+        return self._order(side, self._rationalize(side, price_f, limit), qty_f, dispatched=dispatched)
 
     # -- shared helpers ---------------------------------------------------------------
     @staticmethod
@@ -79,12 +81,12 @@ class BaselineAgent(BaseAgent):
         never bids above its marginal value."""
         return max(price_f, limit) if side == "sell" else min(price_f, limit)
 
-    def _order(self, side: str, price_f: float, qty_f: float) -> list[OrderIntent]:
+    def _order(self, side: str, price_f: float, qty_f: float, *, dispatched: bool = False) -> list[OrderIntent]:
         price = Decimal(str(max(price_f, 0.0001))).quantize(_QUANT)
         qty = Decimal(str(qty_f)).quantize(_QUANT)
         if price <= 0 or qty < self.min_qty:
             return []
-        return [OrderIntent(side=side, price=price, qty=qty)]
+        return [OrderIntent(side=side, price=price, qty=qty, dispatched=dispatched)]
 
     @staticmethod
     def _last_market_price(ctx: AgentContext) -> float | None:

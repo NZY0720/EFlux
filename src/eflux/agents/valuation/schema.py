@@ -35,3 +35,9 @@ class ValuationSignal:
     # neutral mid SOC (negative = room to charge, positive = should discharge).
     soc_frac: float
     soc_pressure: float
+    # True when the surplus on offer is dispatchable generation (gas fuel) rather than
+    # ambient/battery energy: its sell orders must carry dispatched=True so the runner
+    # settles them through fuel (no pending_net_kwh debit). Gas folds into the existing
+    # surplus_kwh / fair_sell_price channels (so the PPO obs is unchanged); this flag only
+    # routes the resulting orders. Default False keeps every non-gas path identical.
+    supply_dispatched: bool = False

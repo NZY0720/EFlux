@@ -38,7 +38,22 @@ def validate_vpp_params(d: dict) -> dict:
         raise ValueError(f"unknown params keys: {', '.join(unknown)}")
     defaults = VPPParams()
     merged = {f: d.get(f, getattr(defaults, f)) for f in known}
-    return _VPP_PARAMS_ADAPTER.validate_python(merged).to_dict()
+    validated = _VPP_PARAMS_ADAPTER.validate_python(merged)
+    # Gas providers are pure dispatchable supply: fuel capacity is metered onto the sell
+    # side and settles through fuel, not through ambient generation, load, or storage.
+    if validated.gas_kw_max > 0 and (
+        validated.pv_kw_peak > 0
+        or validated.wind_kw_rated > 0
+        or validated.load_kw_base > 0
+        or validated.battery_kwh > 0
+        or validated.battery_kw_max > 0
+    ):
+        raise ValueError(
+            "gas_kw_max > 0 requires pv_kw_peak = wind_kw_rated = load_kw_base = "
+            "battery_kwh = battery_kw_max = 0 "
+            "(gas providers are pure dispatchable supply)"
+        )
+    return validated.to_dict()
 
 
 class PersonaSpec(BaseModel):

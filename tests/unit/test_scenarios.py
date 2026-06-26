@@ -87,7 +87,7 @@ def test_realprice_mirrors_point_to_llm_twins(monkeypatch):
     load_default_scenario(sim)
 
     mirrors = [v for v in sim.vpps.values() if v.mirror_of is not None]
-    assert len(mirrors) == 6
+    assert len(mirrors) == 4  # 4 heterogeneous LLM VPPs, each mirrored
     by_name = {v.name: v for v in sim.vpps.values()}
     for mirror in mirrors:
         llm = by_name[mirror.mirror_of]

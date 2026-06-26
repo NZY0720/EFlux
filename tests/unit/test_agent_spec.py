@@ -120,7 +120,7 @@ vpps:
   - name: gas-custom
     agent: gas
     agent_params: { quote_every_n_ticks: 7 }
-    params: { gas_kw_max: 10.0 }
+    params: { gas_kw_max: 10.0, pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0 }
 """,
         encoding="utf-8",
     )
