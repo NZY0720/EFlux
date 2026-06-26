@@ -16,6 +16,14 @@ import type {
 
 const TOKEN_KEY = "eflux.session_token";
 
+type AuthExpiredHandler = () => void;
+
+let authExpiredHandler: AuthExpiredHandler | null = null;
+
+export function setAuthExpiredHandler(handler: AuthExpiredHandler | null): void {
+  authExpiredHandler = handler;
+}
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -57,6 +65,13 @@ api.interceptors.response.use(undefined, (error) => {
       .join("; ");
   }
   if (msg && error instanceof Error) error.message = msg;
+  if (
+    error?.response?.status === 401 &&
+    (msg === "invalid token" || msg === "missing bearer token")
+  ) {
+    setToken(null);
+    authExpiredHandler?.();
+  }
   return Promise.reject(error);
 });
 

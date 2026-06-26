@@ -1,7 +1,7 @@
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
-import { getToken, setToken as setStoredToken } from "../api/client";
+import { getToken, setAuthExpiredHandler, setToken as setStoredToken } from "../api/client";
 
 interface AuthCtx {
   token: string | null;
@@ -41,12 +41,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUserId(s.user_id);
   };
 
-  const logout = () => {
+  const logout = useCallback(() => {
     setStoredToken(null);
     setTokState(null);
     setEmail(null);
     setUserId(null);
-  };
+  }, []);
+
+  useEffect(() => {
+    setAuthExpiredHandler(logout);
+    return () => setAuthExpiredHandler(null);
+  }, [logout]);
 
   return (
     <Ctx.Provider value={{ token, email, userId, setSession, logout }}>{children}</Ctx.Provider>
