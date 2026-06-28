@@ -444,7 +444,7 @@ def _real_price_points(real_data) -> int:
         return 0
     price = getattr(real_data, "price", None)
     try:
-        return int(len(price)) if price is not None else 0
+        return len(price) if price is not None else 0
     except TypeError:
         return 0
 

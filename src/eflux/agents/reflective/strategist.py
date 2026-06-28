@@ -22,13 +22,31 @@ from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
-from eflux.agents.reflective.prompt import _first_json_object
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 
 log = logging.getLogger(__name__)
 
 GUIDANCE_LESSON_MAX = 200
 _VALID_MODES = {m.value for m in StrategyMode}
+
+
+def _first_json_object(text: str) -> dict | None:
+    """Scan for the first decodable JSON object. raw_decode from each '{' handles
+    prose around the object and trailing garbage; the old greedy `\\{.*\\}` regex
+    spanned from the first to the *last* brace and broke on multi-object output.
+    """
+    decoder = json.JSONDecoder()
+    idx = text.find("{")
+    while idx != -1:
+        try:
+            obj, _end = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            idx = text.find("{", idx + 1)
+            continue
+        if isinstance(obj, dict):
+            return obj
+        idx = text.find("{", idx + 1)
+    return None
 
 
 class GuidanceParseError(ValueError):

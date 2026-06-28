@@ -1,12 +1,16 @@
-"""Reflective LLM agent — periodically asks an LLM for strategy hints.
+"""Shared LLM strategist stack for the hybrid agents.
 
-The agent wraps a deterministic baseline (default: TruthfulAgent) and every N ticks
-fires an async "reflection" prompt to the LLM. The LLM returns a small JSON object
-with price/qty adjustments, which the agent applies to the baseline's intents.
+Despite the historical package name, this no longer contains the old standalone
+``ReflectiveAgent``. It holds the slow strategist layer that ``HybridPolicyAgent``
+consumes:
+
+- ``strategist`` — ``LLMStrategist``/``StaticStrategist`` and ``StrategyGuidance``.
+- ``pool`` — ``SharedLLM``: one validated LLM connection shared by every managed VPP.
+- ``llm_client`` — the OpenAI-compatible async chat client the strategist calls.
+
+Import directly from the submodules; nothing is re-exported here.
 """
 
 from __future__ import annotations
 
-from eflux.agents.reflective.agent import ReflectiveAgent
-
-__all__ = ["ReflectiveAgent"]
+__all__: list[str] = []

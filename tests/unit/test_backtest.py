@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,6 @@ from eflux.backtest.runner import (
     _validate_live_strict_llm,
 )
 from eflux.config import PROJECT_ROOT
-from decimal import Decimal
 
 
 def test_backtest_defaults_are_one_month_one_second_hourly_strict_llm():
@@ -165,7 +165,7 @@ async def test_backtest_strict_llm_refresh_retries_transient_failure():
 
 def test_real_price_points_counts_loaded_rows():
     class RealData:
-        price = [10.0, 11.0, 12.0]
+        price = (10.0, 11.0, 12.0)
 
     assert _real_price_points(None) == 0
     assert _real_price_points(RealData()) == 3

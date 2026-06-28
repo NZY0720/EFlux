@@ -40,7 +40,7 @@ flowchart LR
     SIM["Simulator loop<br/>(1s rolling clock, 1x/10x/100x)"]
     ENGINE["CDA matching engine<br/>(in-memory LOB)"]
     AGENTS["33 built-in agents<br/>ZI · Truthful · Gas · PPO · Hybrid"]
-    LLM["MiMo LLM<br/>(strategy guidance)"]
+    LLM["OpenCode LLM<br/>(strategy guidance)"]
   end
   DB[("SQLite / Postgres<br/>users + VPP defs")]
   OM["Open-Meteo<br/>(PV + wind weather)"]
@@ -93,7 +93,7 @@ brew install python@3.12 node pnpm uv
 ### 2. Bootstrap
 
 ```bash
-# venv lives in .env/ (non-standard, per project choice — uv defaults to .venv/)
+# this project's venv is .env/, not uv's default .venv/
 export UV_PROJECT_ENVIRONMENT=.env
 uv venv .env --python 3.12
 uv sync --extra dev
@@ -193,7 +193,7 @@ live / degraded / offline health). `GET /vpps/managed/{id}/performance` returns
 the same data as JSON.
 
 ### Important notes
-- venv is at `.env/`, NOT `.venv/`. uv defaults to `.venv/` — always export `UV_PROJECT_ENVIRONMENT=.env` first (the shell scripts already do this).
+- The venv is at `.env/`, not uv's default `.venv/`; always `export UV_PROJECT_ENVIRONMENT=.env` first (the shell scripts already do this).
 - Env vars file is `config.env` (not `.env`) to avoid clashing with the venv dir.
 - `key.txt` holds the OpenAI-compatible LLM API key (gitignored). The default
   model template is `deepseek-v4-pro` via the configured base URL. With
@@ -237,7 +237,7 @@ in the container.
 
 ```
 conf_1/
-  .env/                # Python venv (non-standard name per project choice)
+  .env/                # Python venv (.env/, not uv's default .venv/)
   config.env           # local env vars (gitignored)
   key.txt              # LLM API key (gitignored)
   pyproject.toml

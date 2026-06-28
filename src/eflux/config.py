@@ -90,12 +90,9 @@ class Settings(BaseSettings):
     # most reflections die with ReadTimeout.
     llm_timeout_sec: float = 120.0
     # LLM-managed hybrid agents. Off by default so no key/base_url is needed for
-    # default dev runs. Env name kept for compatibility with earlier ReflectiveAgent.
+    # default dev runs. The EFLUX_REFLECTIVE_* env names are kept for compatibility.
     reflective_enabled: bool = False
     reflective_interval_ticks: int = 60
-    # Legacy ReflectiveAgent learning memory (JSONL). HybridPolicyAgent uses
-    # in-memory guidance audit logs instead. Relative paths resolve against the project root.
-    agent_memory_dir: str = "data/agent_memory"
 
     # --- Online PPO (live learning) ----------------------------------------------------
     # Global kill-switch for the custom online PPO learner. When False, a `ppo_online`

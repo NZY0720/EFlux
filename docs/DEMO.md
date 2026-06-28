@@ -11,7 +11,7 @@ starts from a clean book and rebuilds within seconds.
 ./tasks.sh start          # backend + frontend + opens http://localhost:5173/
 ```
 
-Optional, for the full LLM story: put the MiMo key in `key.txt` and set
+Optional, for the full LLM story: put the OpenCode (deepseek-v4-pro) API key in `key.txt` and set
 `EFLUX_REFLECTIVE_ENABLED=true` + `EFLUX_LLM_BASE_URL` + `EFLUX_LLM_MODEL` in
 `config.env` before starting — the *Agent thoughts* panel then fills with live
 strategy guidance (one refresh every ~minute). Without it the panel explains

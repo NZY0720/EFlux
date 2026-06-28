@@ -9,7 +9,7 @@ const fmtUsd = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
 
 function typeBadge(a: MarketAgent): { label: string; cls: string } {
   // a.strategy is a descriptive string, e.g. "TruthfulAgent",
-  // "StrategyAgent (PPO mirror)", "HybridPolicyAgent (xiaomi-mimo:...)".
+  // "StrategyAgent (PPO mirror)", "HybridPolicyAgent (opencode:deepseek-v4-pro)".
   const s = a.strategy ?? "";
   if (a.is_llm) return { label: "LLM", cls: "border-violet-800 bg-violet-950/40 text-violet-300" };
   if (s.includes("PPO mirror")) return { label: "PPO mirror", cls: "border-teal-800 bg-teal-950/40 text-teal-300" };
