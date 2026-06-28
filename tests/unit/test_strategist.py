@@ -175,3 +175,16 @@ async def test_llm_strategist_keeps_prior_guidance_on_failure():
     # Second call fails → prior guidance is retained, not blanked.
     await s.arefresh(recent_pnl=[], soc_frac=0.5, best_bid=None, best_ask=None, last_price=None)
     assert s.current_guidance().risk_budget == 0.6
+
+
+@pytest.mark.asyncio
+async def test_llm_strategist_strict_mode_raises_on_failure():
+    class BadClient:
+        async def chat(self, messages, *, temperature=0.2):
+            raise RuntimeError("endpoint down")
+
+    s = LLMStrategist(client=BadClient(), raise_errors=True)
+    with pytest.raises(RuntimeError, match="endpoint down"):
+        await s.arefresh(recent_pnl=[], soc_frac=0.5, best_bid=None, best_ask=None, last_price=None)
+    assert s.current_guidance() is None
+    assert s.fail_count == 1

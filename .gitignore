@@ -64,3 +64,6 @@ frontend/.vite/
 
 # PPO checkpoints (large binaries; re-trainable via `./tasks.sh train-ppo`)
 checkpoints/
+
+# Backtest artifacts (generated; re-runnable via `./tasks.sh backtest`)
+artifacts/

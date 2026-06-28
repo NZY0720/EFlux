@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from datetime import date
 from pathlib import Path
 
 log = logging.getLogger("eflux.ppo.train")
@@ -34,6 +35,8 @@ def run_training(
     epochs: int = 300,
     seed: int = 0,
     market_mode: str = "p2p",
+    start_date: date | None = None,
+    end_date: date | None = None,
 ) -> dict:
     """Train a BC warm-start checkpoint and save it to `out_path`. Returns a metrics dict.
     Importable so the renew endpoint can run it in a background thread.
@@ -60,14 +63,18 @@ def run_training(
     data_window = None
     if real_data:
         from eflux.agents.ppo.training_data import load_real_market_data
-        from eflux.data.caiso_reference import caiso_reference_price
 
         log.info("Loading %d days of real CAISO price + weather…", days)
-        data = load_real_market_data(days=days)
+        data = load_real_market_data(days=days, start_date=start_date, end_date=end_date)
         env_config["real_data"] = data
         # Fix the normalization scale to the trailing-month CAISO mean for this run; the env
         # oracle/encoding and the saved checkpoint all use it (synthetic runs keep 50).
-        set_price_ref_scale(caiso_reference_price(days=days))
+        if start_date is not None and end_date is not None:
+            set_price_ref_scale(float(data.price.mean()) if len(data.price) else 50.0)
+        else:
+            from eflux.data.caiso_reference import caiso_reference_price
+
+            set_price_ref_scale(caiso_reference_price(days=days))
         data_window = {
             "start": data.start.isoformat(),
             "end": data.end.isoformat(),

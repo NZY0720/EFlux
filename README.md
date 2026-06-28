@@ -195,9 +195,21 @@ the same data as JSON.
 ### Important notes
 - venv is at `.env/`, NOT `.venv/`. uv defaults to `.venv/` — always export `UV_PROJECT_ENVIRONMENT=.env` first (the shell scripts already do this).
 - Env vars file is `config.env` (not `.env`) to avoid clashing with the venv dir.
-- `key.txt` holds the MiMo LLM key (gitignored). With `EFLUX_REFLECTIVE_ENABLED=true` + base URL + model configured, the LLM strategist refreshes every `EFLUX_REFLECTIVE_INTERVAL_TICKS` ticks; `EFLUX_LLM_TIMEOUT_SEC` (default 120) bounds each call.
+- `key.txt` holds the OpenAI-compatible LLM API key (gitignored). The default
+  model template is `deepseek-v4-pro` via the configured base URL. With
+  `EFLUX_REFLECTIVE_ENABLED=true` + base URL + model configured, the live LLM
+  strategist refreshes every `EFLUX_REFLECTIVE_INTERVAL_TICKS` ticks;
+  `EFLUX_LLM_TIMEOUT_SEC` (default 120) bounds each call.
 - Speed lock: external (user-submitted) orders only allowed at `market_speed=1.0`. Fast modes are for training/replay.
 - Market state is in-memory by design — restart wipes orders/trades/PnL.
+
+### Backtests
+
+`./tasks.sh backtest` runs the backtest-only historical runner. Defaults are one
+month, `1s` ticks, the latest per-market roster (`scenarios/p2p.yaml` or
+`scenarios/realprice.yaml`), and strict live LLM calls once per simulated hour.
+LLM failures abort the backtest; live market fallback behavior is unchanged.
+Artifacts are written under `artifacts/backtests/`.
 
 ## Run with Docker
 

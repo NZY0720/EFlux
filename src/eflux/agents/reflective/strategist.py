@@ -326,6 +326,9 @@ class LLMStrategist:
     hard_timeout_sec: float = 180.0
     # Shared across all LLM-managed agents: at most one strategist call in flight.
     llm_gate: asyncio.Semaphore | None = None
+    # Backtest-only strict mode: surface LLM failures to the caller instead of
+    # degrading to cached guidance. Live agents keep the default tolerant behavior.
+    raise_errors: bool = False
 
     # Audit/health trail, shaped similarly to ReflectiveAgent.reflection_log so
     # existing API health code can reason about either implementation.
@@ -433,6 +436,9 @@ class LLMStrategist:
                     error=f"{type(e).__name__}: {e}",
                 )
             )
+            if self.raise_errors:
+                log.error("strategist refresh failed (%s); raising in strict mode", type(e).__name__)
+                raise
             log.warning("strategist refresh failed (%s); keeping prior guidance", type(e).__name__)
         return self._guidance
 

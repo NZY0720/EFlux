@@ -77,6 +77,8 @@ def _price_cache_path(cache_dir: Path, node: str, start: date, end: date) -> Pat
 def load_real_market_data(
     *,
     days: int = 30,
+    start_date: date | None = None,
+    end_date: date | None = None,
     node: str | None = None,
     lat: float | None = None,
     lon: float | None = None,
@@ -85,11 +87,13 @@ def load_real_market_data(
     cache_dir: Path | None = None,
     refresh: bool = False,
 ) -> RealMarketData:
-    """Fetch (or load from cache) the last `days` of real CAISO price + Open-Meteo weather.
+    """Fetch (or load from cache) real CAISO price + Open-Meteo weather.
 
-    The window ends yesterday (UTC) so it is fully historical — CAISO DAM is published and
-    the weather archive has settled. PV/wind sites default to the configured market region's
-    coordinates, matching the live simulator."""
+    By default the window is the last `days` ending yesterday (UTC), so it is fully
+    historical — CAISO DAM is published and the weather archive has settled.
+    Backtests may pass explicit `start_date` / `end_date` so PPO warm-starts never
+    use data from inside the evaluation window. PV/wind sites default to the
+    configured market region's coordinates, matching the live simulator."""
     import pandas as pd  # local: optional 'data' extra
 
     settings = get_settings()
@@ -99,8 +103,16 @@ def load_real_market_data(
     wind_lat = settings.site_wind_lat if wind_lat is None else wind_lat
     wind_lon = settings.site_wind_lon if wind_lon is None else wind_lon
 
-    end_d = date.today() - timedelta(days=1)
-    start_d = end_d - timedelta(days=days)
+    if start_date is not None or end_date is not None:
+        if start_date is None or end_date is None:
+            raise ValueError("start_date and end_date must be provided together")
+        start_d = start_date
+        end_d = end_date
+    else:
+        end_d = date.today() - timedelta(days=1)
+        start_d = end_d - timedelta(days=days)
+    if start_d >= end_d:
+        raise ValueError("start_date must be before end_date")
     start = datetime(start_d.year, start_d.month, start_d.day, tzinfo=UTC)
     end = datetime(end_d.year, end_d.month, end_d.day, tzinfo=UTC)
 

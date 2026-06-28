@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from pathlib import Path
+
 import click
 
 
@@ -62,6 +65,64 @@ def info() -> None:
     click.echo(f"  redis_url:    {s.redis_url}")
     click.echo(f"  market_speed: {s.market_speed}x")
     click.echo(f"  llm_provider: {s.llm_provider} (key present: {s.llm_api_key is not None})")
+
+
+def _parse_date_option(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    return datetime.fromisoformat(value).replace(tzinfo=UTC)
+
+
+@main.command()
+@click.option("--market-mode", type=click.Choice(["p2p", "realprice"]), default="p2p", show_default=True)
+@click.option("--scenario", type=Path, default=None, help="Override the per-market backtest roster.")
+@click.option("--months", type=int, default=1, show_default=True)
+@click.option("--tick-seconds", type=float, default=1.0, show_default=True)
+@click.option("--llm-cadence-hours", type=float, default=1.0, show_default=True)
+@click.option("--llm-mode", type=click.Choice(["live-strict"]), default="live-strict", show_default=True)
+@click.option("--out-dir", type=Path, default=None, help="Backtest artifact directory.")
+@click.option("--start-date", default=None, help="UTC date/datetime, e.g. 2026-05-01.")
+@click.option("--end-date", default=None, help="UTC date/datetime, e.g. 2026-06-01.")
+@click.option("--max-ticks", type=int, default=None, help="Debug/smoke cap; omit for the full window.")
+@click.option("--skip-ppo-train", is_flag=True, help="Use roster checkpoints instead of training a temp backtest checkpoint.")
+@click.option("--skip-real-data", is_flag=True, help="Use flat synthetic price for smoke tests.")
+def backtest(
+    market_mode: str,
+    scenario: Path | None,
+    months: int,
+    tick_seconds: float,
+    llm_cadence_hours: float,
+    llm_mode: str,
+    out_dir: Path | None,
+    start_date: str | None,
+    end_date: str | None,
+    max_ticks: int | None,
+    skip_ppo_train: bool,
+    skip_real_data: bool,
+) -> None:
+    """Run a strict, headless historical backtest and save CSV/SVG artifacts."""
+    from eflux.backtest import BacktestConfig, run_backtest
+    from eflux.config import PROJECT_ROOT
+
+    config = BacktestConfig(
+        market_mode=market_mode,  # type: ignore[arg-type]
+        scenario=scenario,
+        months=months,
+        tick_seconds=tick_seconds,
+        llm_cadence_hours=llm_cadence_hours,
+        llm_mode=llm_mode,  # type: ignore[arg-type]
+        out_dir=out_dir or (PROJECT_ROOT / "artifacts" / "backtests"),
+        start=_parse_date_option(start_date),
+        end=_parse_date_option(end_date),
+        max_ticks=max_ticks,
+        train_ppo=not skip_ppo_train,
+        fetch_real_data=not skip_real_data,
+    )
+    result = run_backtest(config)
+    click.echo(f"backtest complete: {result.run_dir}")
+    click.echo(f"  ticks_run: {result.ticks_run}")
+    click.echo(f"  llm_calls: {result.llm_calls}")
+    click.echo(f"  participants: {result.participant_count}")
 
 
 if __name__ == "__main__":

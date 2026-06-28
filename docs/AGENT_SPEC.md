@@ -65,6 +65,10 @@ vpps:
 Loaded by `load_default_scenario()`; the roster file is set via
 `EFLUX_SCENARIO_FILE` (default `scenarios/default.yaml`).
 
+Backtests deliberately default to the current per-market rosters instead of the
+legacy default file: `scenarios/p2p.yaml` for `--market-mode p2p` and
+`scenarios/realprice.yaml` for `--market-mode realprice`.
+
 ## 3. Hybrid (LLM-steered) agents
 
 All `agent: hybrid` entries share **one** LLM connection (configured via

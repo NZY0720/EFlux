@@ -82,12 +82,12 @@ class Settings(BaseSettings):
     session_ttl_day: int = 30
     api_key_prefix: str = "eflux_"
 
-    llm_provider: str = "xiaomi-mimo"
+    llm_provider: str = "opencode"
     llm_key_file: str = "key.txt"
     llm_base_url: str = ""
-    llm_model: str = ""
-    # Reasoning models (mimo-v2.5-pro) regularly take >30s per completion; the
-    # old 30s default made most reflections die with ReadTimeout.
+    llm_model: str = "deepseek-v4-pro"
+    # Reasoning models can take >30s per completion; the old 30s default made
+    # most reflections die with ReadTimeout.
     llm_timeout_sec: float = 120.0
     # LLM-managed hybrid agents. Off by default so no key/base_url is needed for
     # default dev runs. Env name kept for compatibility with earlier ReflectiveAgent.

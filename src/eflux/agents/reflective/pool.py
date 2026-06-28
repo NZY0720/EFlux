@@ -23,7 +23,7 @@ log = logging.getLogger(__name__)
 class SharedLLM:
     client: LLMClient | None
     status: str  # human-readable, surfaced as llm_status on each managed VPP
-    strategy_suffix: str  # e.g. "xiaomi-mimo:mimo-v2.5-pro" or "offline fallback"
+    strategy_suffix: str  # e.g. "opencode:deepseek-v4-pro" or "offline fallback"
     gate: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
 
     @property
