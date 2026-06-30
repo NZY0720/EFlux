@@ -169,8 +169,8 @@ HybridPolicyAgents** (`my-llm-vpp` and three persona rivals). Each hybrid agent
 uses a truthful valuation oracle, a fast strategy-primitive policy, a deterministic
 order compiler, a risk-gated Truthful fallback, and a slow LLMStrategist that
 recommends/discourages primitives plus `risk_budget` and `soc_target`.
-Agents: `zi | truthful | gas | strategy | hybrid` per YAML entry (`reflective`
-is still accepted as a legacy alias). They trade against
+Agents: `zi | truthful | gas | strategy | hybrid | zip | gd | aa` per YAML entry
+(`reflective` is still accepted as a legacy alias). They trade against
 each other continuously — merit order is renewables (~floor) → battery band
 (~52.7) → gas, with demand bids rising toward 75 under deficit
 (`demand_beta`) and resting orders expiring after `EFLUX_ORDER_TTL_SEC`

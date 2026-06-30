@@ -13,6 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
+from typing import Literal, TypedDict
 from zoneinfo import ZoneInfo
 
 from eflux.agents.base import AgentContext, BaseAgent, MarketSnapshot, OrderIntent
@@ -32,6 +33,36 @@ from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad, WindTurbine
 
 log = logging.getLogger(__name__)
+
+
+PpoRenewState = Literal["idle", "training", "reloading", "done", "error"]
+
+
+class ExternalSubmitResult(TypedDict):
+    order_id: int
+    remaining_qty: str
+    expires_at_sim: datetime | None
+    trades: list[dict[str, object]]
+
+
+class MarketBalanceSummary(TypedDict):
+    renewable_kw: float
+    load_kw: float
+    gas_capacity_kw: float
+    net_kw: float
+    supply_demand_ratio: float | None
+    bid_depth_kwh: float
+    ask_depth_kwh: float
+
+
+class PpoRenewStatus(TypedDict):
+    state: PpoRenewState
+    started_at: str | None
+    finished_at: str | None
+    detail: str
+    reloaded: int
+    error: str | None
+    metrics: dict[str, object] | None
 
 
 @dataclass
@@ -104,7 +135,7 @@ class Simulator:
         self._external_market_task: asyncio.Task | None = None
         # Background "renew PPOs" (retrain on latest real data + hot-reload) state.
         self._ppo_renew_task: asyncio.Task | None = None
-        self._ppo_renew: dict = {
+        self._ppo_renew: PpoRenewStatus = {
             "state": "idle",  # idle | training | reloading | done | error
             "started_at": None,
             "finished_at": None,
@@ -409,7 +440,7 @@ class Simulator:
         side: str,
         price: Decimal,
         qty: Decimal,
-    ) -> dict:
+    ) -> ExternalSubmitResult:
         """Entry point for SDK-submitted orders. Honors realtime-only constraint."""
         if not self.clock.is_realtime:
             raise PermissionError(
@@ -589,7 +620,7 @@ class Simulator:
                 log.exception("failed saving online weights for %s", vpp.name)
 
     # -- renew PPOs (retrain on latest real data + hot-reload) ----------------------------
-    def ppo_renew_status(self) -> dict:
+    def ppo_renew_status(self) -> PpoRenewStatus:
         return dict(self._ppo_renew)
 
     def start_ppo_renew(self, *, days: int = 30, episodes: int = 40, epochs: int = 300) -> bool:
@@ -927,7 +958,7 @@ class Simulator:
                 cap, max(-cap, vpp.state.pending_net_kwh + signed)
             )
 
-    def market_balance(self) -> dict:
+    def market_balance(self) -> MarketBalanceSummary:
         """Aggregate live supply/demand across built-in VPPs plus book depth —
         the instrument for judging whether the market is structurally balanced."""
         renewable_kw = sum(v.state.pv_kw + v.state.wind_kw for v in self.vpps.values())

@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchMarketReflections } from "../api/client";
 import type { MarketAgent, MarketReflection, PpoMetaControl } from "../api/types";
 import { formatCompactSigned } from "../lib/format";
+import { EmptyState, StatusPill } from "./DashboardCard";
 
 interface Props {
   agents: MarketAgent[];
@@ -75,11 +76,7 @@ export default function LlmPpoInfluencePanel({ agents }: Props) {
   }, [agents, reflections]);
 
   if (pairs.length === 0) {
-    return (
-      <div className="flex h-72 items-center justify-center text-sm text-slate-500">
-        Waiting for LLM/PPO mirror pairs...
-      </div>
-    );
+    return <EmptyState className="h-72" title="Waiting for LLM/PPO mirror pairs..." />;
   }
 
   return (
@@ -90,13 +87,13 @@ export default function LlmPpoInfluencePanel({ agents }: Props) {
         const tradeDelta = llm.trade_count - mirror.trade_count;
         const chips = metaChips(reflection?.meta_control);
         return (
-          <div key={mirror.id} className="rounded border border-slate-800 bg-slate-950/40 p-2">
+          <div key={mirror.id} className="eflux-inset rounded-lg p-2">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div>
-                <div className="text-xs font-medium text-slate-200">{llm.name}</div>
-                <div className="text-[11px] text-slate-500">vs {mirror.name}</div>
+                <div className="text-xs font-medium text-[var(--text)]">{llm.name}</div>
+                <div className="text-[11px] text-[var(--text-subtle)]">vs {mirror.name}</div>
               </div>
-              <div className={`text-sm font-semibold tabular-nums ${pnlDelta >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+              <div className={`text-sm font-semibold tabular-nums ${pnlDelta >= 0 ? "text-[var(--success)]" : "text-[var(--danger)]"}`}>
                 {fmtSigned(pnlDelta)}
               </div>
             </div>
@@ -109,31 +106,21 @@ export default function LlmPpoInfluencePanel({ agents }: Props) {
 
             <div className="mt-2 flex flex-wrap gap-1 text-[11px]">
               {reflection?.preferred_modes?.slice(0, 3).map((m) => (
-                <span key={`p-${m}`} className="rounded border border-emerald-800 bg-emerald-950/40 px-1.5 py-0.5 text-emerald-300">
-                  prefer {m}
-                </span>
+                <StatusPill key={`p-${m}`} tone="success" className="py-0 text-[11px]">prefer {m}</StatusPill>
               ))}
               {reflection?.avoid_modes?.slice(0, 2).map((m) => (
-                <span key={`a-${m}`} className="rounded border border-rose-800 bg-rose-950/40 px-1.5 py-0.5 text-rose-300">
-                  avoid {m}
-                </span>
+                <StatusPill key={`a-${m}`} tone="danger" className="py-0 text-[11px]">avoid {m}</StatusPill>
               ))}
               {reflection && (
                 <>
-                  <span className="rounded border border-sky-800 bg-sky-950/40 px-1.5 py-0.5 text-sky-300">
-                    risk {pct(reflection.risk_budget)}
-                  </span>
-                  <span className="rounded border border-amber-800 bg-amber-950/40 px-1.5 py-0.5 text-amber-300">
-                    SOC {pct(reflection.soc_target)}
-                  </span>
+                  <StatusPill tone="accent" className="py-0 text-[11px]">risk {pct(reflection.risk_budget)}</StatusPill>
+                  <StatusPill tone="amber" className="py-0 text-[11px]">SOC {pct(reflection.soc_target)}</StatusPill>
                 </>
               )}
               {chips.map(([k, v]) => (
-                <span key={`${k}-${v}`} className="rounded border border-violet-800 bg-violet-950/40 px-1.5 py-0.5 text-violet-300">
-                  {k} {v}
-                </span>
+                <StatusPill key={`${k}-${v}`} tone="violet" className="py-0 text-[11px]">{k} {v}</StatusPill>
               ))}
-              {!reflection && <span className="text-slate-500">No LLM guidance yet</span>}
+              {!reflection && <span className="text-[var(--text-subtle)]">No LLM guidance yet</span>}
             </div>
           </div>
         );
@@ -144,9 +131,9 @@ export default function LlmPpoInfluencePanel({ agents }: Props) {
 
 function Metric({ label, value, good }: { label: string; value: string; good: boolean }) {
   return (
-    <div className="rounded border border-slate-800 bg-slate-900/50 px-2 py-1">
-      <div className="text-[10px] uppercase tracking-wide text-slate-500">{label}</div>
-      <div className={`mt-0.5 font-semibold tabular-nums ${good ? "text-emerald-300" : "text-rose-300"}`}>{value}</div>
+    <div className="rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-2 py-1">
+      <div className="text-[10px] uppercase tracking-wide text-[var(--text-subtle)]">{label}</div>
+      <div className={`mt-0.5 font-semibold tabular-nums ${good ? "text-[var(--success)]" : "text-[var(--danger)]"}`}>{value}</div>
     </div>
   );
 }

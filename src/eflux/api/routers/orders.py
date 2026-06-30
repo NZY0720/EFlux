@@ -13,6 +13,7 @@ from sqlalchemy import select
 from eflux.agents.hybrid import RiskRejected
 from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
 from eflux.db.models import VPP
+from eflux.market.events import ExternalTradeEvent, TradeEvent
 
 router = APIRouter(prefix="/orders", tags=["orders"])
 
@@ -27,21 +28,13 @@ class OrderSubmit(BaseModel):
     qty: Decimal = Field(ge=Decimal("0.01"), le=1000, decimal_places=4)
 
 
-class TradeOut(BaseModel):
-    trade_id: int
-    price: str
-    qty: str
-    buy_vpp_id: int
-    sell_vpp_id: int
-
-
 class OrderSubmitResponse(BaseModel):
     order_id: int
     remaining_qty: str
     # Sim time when the unfilled remainder is swept from the book (order TTL;
     # an `order.cancelled` event is published). None = rests until filled/cancelled.
     expires_at_sim: datetime | None = None
-    trades: list[dict]
+    trades: list[TradeEvent | ExternalTradeEvent]
 
 
 @router.post("", response_model=OrderSubmitResponse)

@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { ArrowDown, ArrowUp, ArrowUpDown, UsersRound } from "lucide-react";
 
 import { fetchMarketAgents } from "../api/client";
 import type { MarketAgent } from "../api/types";
+import { EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
 import { CategoryIcon } from "../components/icons";
 import { CATEGORY_ORDER, categoryMeta, strategyLabel } from "../lib/categories";
 import { formatCompactCount } from "../lib/format";
@@ -16,6 +18,7 @@ export default function Participants() {
   const [agents, setAgents] = useState<MarketAgent[] | null>(null);
   const [sortKey, setSortKey] = useState<SortKey>("category");
   const [sortAsc, setSortAsc] = useState(true);
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -67,6 +70,11 @@ export default function Participants() {
     return out;
   }, [agents, sortKey, sortAsc]);
 
+  const visible = useMemo(() => {
+    if (!sorted) return null;
+    return categoryFilter === null ? sorted : sorted.filter((a) => a.category === categoryFilter);
+  }, [sorted, categoryFilter]);
+
   const counts = useMemo(() => {
     const c = new Map<string, number>();
     for (const a of agents ?? []) c.set(a.category, (c.get(a.category) ?? 0) + 1);
@@ -82,39 +90,58 @@ export default function Participants() {
   };
 
   return (
-    <div className="p-6 space-y-4">
+    <div className="mx-auto w-full max-w-[1800px] space-y-4 px-4 py-5 md:p-6">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div>
-          <h2 className="text-lg font-semibold text-white">Market participants</h2>
-          <p className="mt-1 text-sm text-slate-400">
-            {agents?.length ?? "…"} autonomous VPPs trading right now. Cheap renewables form the
+          <h2 className="flex items-center gap-2 text-lg font-semibold text-[var(--text)]">
+            <UsersRound size={20} className="text-[var(--accent)]" />
+            Market participants
+          </h2>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">
+            {agents?.length ?? "..."} autonomous VPPs trading right now. Cheap renewables form the
             merit-order floor, batteries arbitrage the middle band, gas sets the top.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {agents && (
+            <button
+              type="button"
+              onClick={() => setCategoryFilter(null)}
+              className={`eflux-chip px-3 py-1 text-xs ${categoryFilter === null ? "eflux-chip-active" : ""}`}
+            >
+              All <span className="tabular-nums">{agents.length}</span>
+            </button>
+          )}
           {CATEGORY_ORDER.filter((c) => counts.has(c)).map((c) => {
             const meta = categoryMeta(c);
             return (
-              <span
+              <button
                 key={c}
-                className="flex items-center gap-1.5 rounded-md border border-slate-800 bg-slate-900/60 px-2 py-1 text-xs text-slate-300"
+                type="button"
+                onClick={() => setCategoryFilter(categoryFilter === c ? null : c)}
+                className={`eflux-chip flex items-center gap-1.5 px-2.5 py-1 text-xs ${categoryFilter === c ? "font-semibold" : ""}`}
+                style={
+                  categoryFilter === c
+                    ? { borderColor: `${meta.color}66`, backgroundColor: `${meta.color}1f`, color: meta.color }
+                    : undefined
+                }
               >
                 <CategoryIcon category={c} size={14} style={{ color: meta.color }} />
-                <span className="tabular-nums text-slate-200">{counts.get(c)}</span> {meta.label.toLowerCase()}
-              </span>
+                <span className="tabular-nums">{counts.get(c)}</span> {meta.label.toLowerCase()}
+              </button>
             );
           })}
         </div>
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-slate-800 bg-slate-900/40">
-        <table className="w-full text-xs">
-          <thead className="bg-slate-950/80 text-slate-400">
+      <TableShell>
+        <table className="eflux-table min-w-[1040px] text-xs">
+          <thead className="sticky top-0 z-10">
             <tr>
               <Th label="VPP" onClick={() => onSort("name")} active={sortKey === "name"} asc={sortAsc} align="left" />
               <Th label="Type" onClick={() => onSort("category")} active={sortKey === "category"} asc={sortAsc} align="left" />
-              <th className="px-3 py-2 text-left">Strategy</th>
-              <th className="px-3 py-2 text-left">Endowment</th>
+              <th className="px-3 py-2 text-left font-semibold">Strategy</th>
+              <th className="px-3 py-2 text-left font-semibold">Endowment</th>
               <Th label="Output now" onClick={() => onSort("net")} active={sortKey === "net"} asc={sortAsc} align="right" />
               <Th label="Battery SOC" onClick={() => onSort("soc")} active={sortKey === "soc"} asc={sortAsc} align="left" />
               <Th label="PnL ($)" onClick={() => onSort("pnl")} active={sortKey === "pnl"} asc={sortAsc} align="right" />
@@ -122,19 +149,26 @@ export default function Participants() {
             </tr>
           </thead>
           <tbody>
-            {sorted?.map((a) => (
+            {visible?.map((a) => (
               <AgentRow key={a.id} agent={a} />
             ))}
-            {sorted === null && (
+            {visible === null && (
               <tr>
-                <td colSpan={8} className="px-3 py-8 text-center text-slate-500">
-                  Loading roster…
+                <td colSpan={8} className="p-3">
+                  <EmptyState icon={UsersRound} title="Loading roster..." />
+                </td>
+              </tr>
+            )}
+            {visible !== null && visible.length === 0 && (
+              <tr>
+                <td colSpan={8} className="p-3">
+                  <EmptyState icon={UsersRound} title="No participants match this filter" />
                 </td>
               </tr>
             )}
           </tbody>
         </table>
-      </div>
+      </TableShell>
     </div>
   );
 }
@@ -154,9 +188,14 @@ function Th({
 }) {
   return (
     <th className={`px-3 py-2 ${align === "right" ? "text-right" : "text-left"}`}>
-      <button onClick={onClick} className={`hover:text-white ${active ? "text-white" : ""}`}>
-        {label}
-        {active && <span className="ml-1">{asc ? "▲" : "▼"}</span>}
+      <button
+        onClick={onClick}
+        className={`inline-flex items-center gap-1.5 font-semibold transition-colors hover:text-[var(--text)] ${
+          active ? "text-[var(--text)]" : "text-[var(--text-muted)]"
+        } ${align === "right" ? "justify-end" : ""}`}
+      >
+        <span>{label}</span>
+        {active ? (asc ? <ArrowUp size={13} /> : <ArrowDown size={13} />) : <ArrowUpDown size={13} className="text-[var(--text-subtle)]" />}
       </button>
     </th>
   );
@@ -176,13 +215,13 @@ function AgentRow({ agent: a }: { agent: MarketAgent }) {
     .join(" · ");
 
   return (
-    <tr className={`border-t border-slate-800 ${a.is_llm ? "bg-emerald-950/20" : "hover:bg-slate-800/40"}`}>
-      <td className="px-3 py-2 font-medium text-white">
+    <tr className={a.is_llm ? "bg-[var(--success-soft)]" : ""}>
+      <td className="px-3 py-2 font-medium text-[var(--text)]">
         {a.name}
         {a.is_llm && a.llm_health_state && (
-          <span className="ml-2 rounded bg-emerald-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-emerald-300">
+          <StatusPill tone={a.llm_health_state === "live" ? "success" : a.llm_health_state === "degraded" ? "amber" : "muted"} className="ml-2 py-0 text-[10px] uppercase">
             LLM {a.llm_health_state}
-          </span>
+          </StatusPill>
         )}
       </td>
       <td className="px-3 py-2">
@@ -194,18 +233,18 @@ function AgentRow({ agent: a }: { agent: MarketAgent }) {
           {meta.label}
         </span>
       </td>
-      <td className="px-3 py-2 text-slate-300">{strategyLabel(a.strategy)}</td>
-      <td className="px-3 py-2 text-slate-400">{endowment}</td>
+      <td className="px-3 py-2 text-[var(--text-muted)]">{strategyLabel(a.strategy)}</td>
+      <td className="px-3 py-2 text-[var(--text-muted)]">{endowment}</td>
       <td className="px-3 py-2 text-right tabular-nums">
         <NetFlow netKw={a.net_kw} />
       </td>
       <td className="px-3 py-2">
-        {a.battery_kwh > 0 ? <SocBar frac={a.soc_frac} /> : <span className="text-slate-600">—</span>}
+        {a.battery_kwh > 0 ? <SocBar frac={a.soc_frac} /> : <span className="text-[var(--text-subtle)]">-</span>}
       </td>
-      <td className={`px-3 py-2 text-right tabular-nums ${pnl >= 0 ? "text-emerald-300" : "text-rose-300"}`}>
+      <td className={`px-3 py-2 text-right tabular-nums ${pnl >= 0 ? "text-[var(--success)]" : "text-[var(--danger)]"}`}>
         {pnl.toFixed(2)}
       </td>
-      <td className="px-3 py-2 text-right text-slate-300 tabular-nums" title={`${a.trade_count} trades`}>
+      <td className="px-3 py-2 text-right text-[var(--text-muted)] tabular-nums" title={`${a.trade_count} trades`}>
         {formatCompactCount(a.trade_count)}
       </td>
     </tr>
@@ -213,18 +252,18 @@ function AgentRow({ agent: a }: { agent: MarketAgent }) {
 }
 
 function NetFlow({ netKw }: { netKw: number }) {
-  if (netKw > 0.05) return <span className="text-emerald-300">▲ {netKw.toFixed(2)} kW</span>;
-  if (netKw < -0.05) return <span className="text-rose-300">▼ {netKw.toFixed(2)} kW</span>;
-  return <span className="text-slate-500">≈ 0 kW</span>;
+  if (netKw > 0.05) return <span className="text-[var(--success)]">▲ {netKw.toFixed(2)} kW</span>;
+  if (netKw < -0.05) return <span className="text-[var(--danger)]">▼ {netKw.toFixed(2)} kW</span>;
+  return <span className="text-[var(--text-subtle)]">~ 0 kW</span>;
 }
 
 function SocBar({ frac }: { frac: number }) {
   return (
     <div className="flex items-center gap-2">
-      <div className="h-1.5 w-20 overflow-hidden rounded-full bg-slate-800">
-        <div className="h-full rounded-full bg-sky-500" style={{ width: `${Math.round(frac * 100)}%` }} />
+      <div className="h-1.5 w-20 overflow-hidden rounded-full bg-[var(--surface-inset)]">
+        <div className="h-full rounded-full bg-[var(--accent)]" style={{ width: `${Math.round(frac * 100)}%` }} />
       </div>
-      <span className="text-slate-400 tabular-nums">{(frac * 100).toFixed(0)}%</span>
+      <span className="text-[var(--text-muted)] tabular-nums">{(frac * 100).toFixed(0)}%</span>
     </div>
   );
 }

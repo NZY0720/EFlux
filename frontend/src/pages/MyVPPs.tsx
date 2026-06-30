@@ -1,4 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
+import {
+  AlertCircle,
+  BatteryCharging,
+  BrainCircuit,
+  ChevronDown,
+  ChevronRight,
+  CheckCircle2,
+  Layers3,
+  ListChecks,
+  MapPinned,
+  PlusCircle,
+  ShoppingCart,
+  Zap,
+} from "lucide-react";
 
 import {
   createVPP,
@@ -8,6 +22,7 @@ import {
   submitOrder,
 } from "../api/client";
 import type { ManagedVPP, ManagedVPPPerformance, ReflectionEntry, VPP } from "../api/types";
+import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
 import { useMarket } from "../state/marketStream";
 
 export default function MyVPPs() {
@@ -21,7 +36,6 @@ export default function MyVPPs() {
   const [newName, setNewName] = useState("");
   const [pvKw, setPvKw] = useState(6);
   const [battKwh, setBattKwh] = useState(12);
-  // Optional PV physical-model geometry (lat/lon enables Open-Meteo + pvlib path).
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [pvLat, setPvLat] = useState<string>("");
   const [pvLon, setPvLon] = useState<string>("");
@@ -75,13 +89,12 @@ export default function MyVPPs() {
     return () => clearInterval(id);
   }, [selectedManaged]);
 
-  const onCreate = async (e: React.FormEvent) => {
+  const onCreate = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     setError(null);
     try {
       const params: Record<string, number> = { pv_kw_peak: pvKw, battery_kwh: battKwh };
-      // Only include geo if both lat and lon are filled — backend treats either-null as "use stub model".
       if (pvLat !== "" && pvLon !== "") {
         params.pv_lat = Number(pvLat);
         params.pv_lon = Number(pvLon);
@@ -90,7 +103,7 @@ export default function MyVPPs() {
       }
       const created = await createVPP(newName.trim(), params);
       setNewName("");
-      setOrderVpp(created.id); // pre-select the new VPP in the order form
+      setOrderVpp(created.id);
       await reload();
     } catch (err) {
       setError((err as Error).message);
@@ -99,15 +112,15 @@ export default function MyVPPs() {
     }
   };
 
-  const onOrder = async (e: React.FormEvent) => {
+  const onOrder = async (e: FormEvent) => {
     e.preventDefault();
     if (orderVpp === null) return;
     setBusy(true);
     setError(null);
-    setLastOrder(null); // clear stale feedback from the previous order
+    setLastOrder(null);
     try {
       const r = await submitOrder({ vpp_id: orderVpp, side, price, qty });
-      setLastOrder(`order ${r.order_id} — ${r.trades.length} fill(s), remaining=${r.remaining_qty}`);
+      setLastOrder(`order ${r.order_id} - ${r.trades.length} fill(s), remaining=${r.remaining_qty}`);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -116,171 +129,116 @@ export default function MyVPPs() {
   };
 
   return (
-    <div className="p-6 grid grid-cols-1 lg:grid-cols-2 gap-6">
-      <section className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-        <h2 className="text-sm uppercase tracking-wide text-slate-400 mb-3">My VPPs</h2>
-        {vpps.length === 0 && managedVpps.length === 0 && <p className="text-slate-500">No VPPs yet — create one →</p>}
-        <ul className="space-y-2">
-          {managedVpps.map((v) => (
-            <li key={v.id} className="rounded border border-sky-800 bg-sky-950/30 p-3">
-              <button
-                type="button"
-                onClick={() => toggleManaged(v.id)}
-                className="w-full cursor-pointer text-left hover:bg-sky-900/20"
-              >
-              <div className="flex items-baseline justify-between gap-3">
-                <div>
-                  <span className="text-slate-500">{selectedManaged === v.id ? "▾" : "▸"}</span>
-                  <span className="ml-1 text-white font-medium">{v.name}</span>
-                  <span className="ml-2 rounded bg-sky-900/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-sky-300">
-                    built-in
-                  </span>
-                  <span className="ml-2 text-[11px] text-slate-500">
-                    {selectedManaged === v.id ? "" : "click for performance & reflections"}
-                  </span>
-                </div>
-                <LLMBadge state={v.llm_health_state} />
-              </div>
-              <div className="mt-1 text-xs text-slate-400">
-                PV {v.params.pv_kw_peak}kW · Batt {v.params.battery_kwh}kWh · Load {v.params.load_kw_base}kW
-              </div>
-              <div className="mt-1 text-xs text-sky-300">{v.strategy}</div>
-              <div className="mt-1 text-xs text-slate-500">{v.llm_status}</div>
-              </button>
-              {selectedManaged === v.id && (
-                <ManagedPerformancePanel data={performance[v.id]} />
-              )}
-            </li>
-          ))}
-          {vpps.map((v) => (
-            <li key={v.id} className="rounded border border-slate-800 bg-slate-950/60 p-3">
-              <div className="flex items-baseline justify-between">
-                <div>
-                  <span className="text-white font-medium">{v.name}</span>
-                  <span className="ml-2 text-xs text-slate-500">#{v.id}</span>
-                </div>
-                <span className={`text-xs ${v.is_active ? "text-emerald-400" : "text-rose-400"}`}>
-                  {v.is_active ? "active" : "inactive"}
-                </span>
-              </div>
-              <div className="mt-1 text-xs text-slate-400">
-                PV {v.params.pv_kw_peak}kW · Batt {v.params.battery_kwh}kWh · Load {v.params.load_kw_base}kW
-              </div>
-            </li>
-          ))}
-        </ul>
+    <div className="mx-auto grid w-full max-w-[1800px] grid-cols-1 gap-6 px-4 py-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] md:p-6">
+      <DashboardCard>
+        <CardTitle icon={Layers3}>My VPPs</CardTitle>
 
-        <form onSubmit={onCreate} className="mt-4 space-y-3 border-t border-slate-800 pt-4">
-          <h3 className="text-sm text-slate-300">Create new VPP</h3>
+        {vpps.length === 0 && managedVpps.length === 0 ? (
+          <EmptyState icon={Layers3} title="No VPPs yet" body="Create one below to submit manual market orders." />
+        ) : (
+          <ul className="space-y-2">
+            {managedVpps.map((v) => (
+              <li key={v.id} className="eflux-inset overflow-hidden rounded-lg">
+                <button
+                  type="button"
+                  onClick={() => toggleManaged(v.id)}
+                  className="flex w-full cursor-pointer items-start justify-between gap-3 px-3 py-3 text-left transition-colors hover:bg-[var(--surface-hover)]"
+                >
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      {selectedManaged === v.id ? (
+                        <ChevronDown size={15} className="text-[var(--text-subtle)]" />
+                      ) : (
+                        <ChevronRight size={15} className="text-[var(--text-subtle)]" />
+                      )}
+                      <span className="font-medium text-[var(--text)]">{v.name}</span>
+                      <StatusPill tone="accent" className="py-0 text-[10px] uppercase">built-in</StatusPill>
+                    </div>
+                    <div className="mt-1 text-xs text-[var(--text-muted)]">
+                      PV {v.params.pv_kw_peak}kW / Batt {v.params.battery_kwh}kWh / Load {v.params.load_kw_base}kW
+                    </div>
+                    <div className="mt-1 text-xs text-[var(--accent)]">{v.strategy}</div>
+                    <div className="mt-1 text-xs text-[var(--text-subtle)]">{v.llm_status}</div>
+                  </div>
+                  <LLMBadge state={v.llm_health_state} />
+                </button>
+                {selectedManaged === v.id && <ManagedPerformancePanel data={performance[v.id]} />}
+              </li>
+            ))}
+
+            {vpps.map((v) => (
+              <li key={v.id} className="eflux-inset rounded-lg px-3 py-3">
+                <div className="flex items-baseline justify-between gap-3">
+                  <div className="min-w-0">
+                    <span className="font-medium text-[var(--text)]">{v.name}</span>
+                    <span className="ml-2 text-xs text-[var(--text-subtle)]">#{v.id}</span>
+                  </div>
+                  <StatusPill tone={v.is_active ? "success" : "danger"}>{v.is_active ? "active" : "inactive"}</StatusPill>
+                </div>
+                <div className="mt-1 text-xs text-[var(--text-muted)]">
+                  PV {v.params.pv_kw_peak}kW / Batt {v.params.battery_kwh}kWh / Load {v.params.load_kw_base}kW
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        <form onSubmit={onCreate} className="mt-5 space-y-3 border-t border-[var(--border)] pt-4">
+          <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--text)]">
+            <PlusCircle size={16} className="text-[var(--accent)]" />
+            Create new VPP
+          </h3>
           <input
             placeholder="name"
             required
             value={newName}
             onChange={(e) => setNewName(e.target.value)}
-            className="w-full rounded border border-slate-700 bg-slate-800 px-3 py-1.5 text-white text-sm"
+            className="eflux-input w-full rounded-md px-3 py-2 text-sm outline-none"
           />
-          <div className="grid grid-cols-2 gap-2">
-            <label className="text-xs text-slate-400">
-              PV peak (kW)
-              <input
-                type="number"
-                step="0.5"
-                value={pvKw}
-                onChange={(e) => setPvKw(Number(e.target.value))}
-                className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-white text-sm"
-              />
-            </label>
-            <label className="text-xs text-slate-400">
-              Battery (kWh)
-              <input
-                type="number"
-                step="1"
-                value={battKwh}
-                onChange={(e) => setBattKwh(Number(e.target.value))}
-                className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-white text-sm"
-              />
-            </label>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <NumberField label="PV peak (kW)" value={pvKw} step="0.5" onChange={setPvKw} />
+            <NumberField label="Battery (kWh)" value={battKwh} step="1" onChange={setBattKwh} />
           </div>
           <button
             type="button"
             onClick={() => setAdvancedOpen(!advancedOpen)}
-            className="block text-xs text-sky-400 hover:text-sky-300"
+            className="eflux-btn h-8 px-3 text-xs"
           >
-            {advancedOpen ? "Hide" : "Show"} advanced (real PV physics)
+            <MapPinned size={14} />
+            {advancedOpen ? "Hide advanced" : "Show advanced"}
           </button>
           {advancedOpen && (
-            <div className="space-y-2 rounded border border-slate-800 bg-slate-950/40 p-3">
-              <p className="text-xs text-slate-400">
-                Optional. Fill lat + lon to drive PV output from Open-Meteo weather data
-                via pvlib (instead of the diurnal sine stub). Defaults to HKU rooftop.
+            <div className="eflux-inset space-y-2 rounded-lg p-3">
+              <p className="text-xs text-[var(--text-muted)]">
+                Optional. Fill latitude and longitude to drive PV output from Open-Meteo weather data via pvlib.
               </p>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="text-xs text-slate-400">
-                  Latitude
-                  <input
-                    type="number"
-                    step="0.01"
-                    placeholder="22.28"
-                    value={pvLat}
-                    onChange={(e) => setPvLat(e.target.value)}
-                    className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-white text-sm"
-                  />
-                </label>
-                <label className="text-xs text-slate-400">
-                  Longitude
-                  <input
-                    type="number"
-                    step="0.01"
-                    placeholder="114.13"
-                    value={pvLon}
-                    onChange={(e) => setPvLon(e.target.value)}
-                    className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-white text-sm"
-                  />
-                </label>
-                <label className="text-xs text-slate-400">
-                  Tilt (°)
-                  <input
-                    type="number"
-                    step="1"
-                    value={pvTilt}
-                    onChange={(e) => setPvTilt(Number(e.target.value))}
-                    className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-white text-sm"
-                  />
-                </label>
-                <label className="text-xs text-slate-400">
-                  Azimuth (° from N)
-                  <input
-                    type="number"
-                    step="5"
-                    value={pvAzimuth}
-                    onChange={(e) => setPvAzimuth(Number(e.target.value))}
-                    className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-white text-sm"
-                  />
-                </label>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <TextNumberField label="Latitude" value={pvLat} step="0.01" placeholder="22.28" onChange={setPvLat} />
+                <TextNumberField label="Longitude" value={pvLon} step="0.01" placeholder="114.13" onChange={setPvLon} />
+                <NumberField label="Tilt (deg)" value={pvTilt} step="1" onChange={setPvTilt} />
+                <NumberField label="Azimuth (deg from N)" value={pvAzimuth} step="5" onChange={setPvAzimuth} />
               </div>
             </div>
           )}
-          <button
-            disabled={busy}
-            className="rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-50 px-4 py-1.5 text-white text-sm"
-          >
-            {busy ? "Creating…" : "Create"}
+          <button disabled={busy} className="eflux-btn eflux-btn-primary h-9 px-4 text-sm font-semibold disabled:opacity-50">
+            <PlusCircle size={15} />
+            {busy ? "Creating..." : "Create"}
           </button>
         </form>
-      </section>
+      </DashboardCard>
 
-      <section className="rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-        <h2 className="text-sm uppercase tracking-wide text-slate-400 mb-3">Submit order</h2>
+      <DashboardCard>
+        <CardTitle icon={ShoppingCart}>Submit order</CardTitle>
         {vpps.length === 0 ? (
-          <p className="text-slate-500">Manual orders require an external VPP.</p>
+          <EmptyState icon={ShoppingCart} title="Manual orders require an external VPP" />
         ) : (
           <form onSubmit={onOrder} className="space-y-3">
-            <label className="block text-xs text-slate-400">
+            <label className="block text-xs font-medium text-[var(--text-muted)]">
               VPP
               <select
                 value={orderVpp ?? ""}
                 onChange={(e) => setOrderVpp(Number(e.target.value))}
-                className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-white text-sm"
+                className="eflux-select mt-1 w-full rounded-md px-3 py-2 text-sm outline-none"
               >
                 {vpps.map((v) => (
                   <option key={v.id} value={v.id}>
@@ -289,52 +247,57 @@ export default function MyVPPs() {
                 ))}
               </select>
             </label>
-            <div className="grid grid-cols-3 gap-2">
-              <label className="text-xs text-slate-400">
-                Side
-                <select
-                  value={side}
-                  onChange={(e) => setSide(e.target.value as "buy" | "sell")}
-                  className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1.5 text-white text-sm"
-                >
-                  <option value="buy">buy</option>
-                  <option value="sell">sell</option>
-                </select>
-              </label>
-              <label className="text-xs text-slate-400">
-                Price
-                <input
-                  type="number"
-                  step="0.01"
-                  value={price}
-                  onChange={(e) => setPrice(Number(e.target.value))}
-                  className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-white text-sm"
-                />
-              </label>
-              <label className="text-xs text-slate-400">
-                Qty (kWh)
-                <input
-                  type="number"
-                  step="0.01"
-                  value={qty}
-                  onChange={(e) => setQty(Number(e.target.value))}
-                  className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-2 py-1 text-white text-sm"
-                />
-              </label>
+
+            <div>
+              <div className="mb-1 text-xs font-medium text-[var(--text-muted)]">Side</div>
+              <div className="inline-flex overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-inset)]">
+                {(["buy", "sell"] as const).map((s) => (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setSide(s)}
+                    className={`px-4 py-2 text-sm font-semibold uppercase transition-colors ${
+                      side === s
+                        ? s === "buy"
+                          ? "bg-[var(--success)] text-[var(--text-inverse)]"
+                          : "bg-[var(--danger)] text-[var(--text-inverse)]"
+                        : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
+                    }`}
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
             </div>
+
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              <NumberField label="Price" value={price} step="0.01" onChange={setPrice} />
+              <NumberField label="Qty (kWh)" value={qty} step="0.01" onChange={setQty} />
+            </div>
+
             <button
               disabled={busy}
-              className={`rounded ${side === "buy" ? "bg-emerald-600 hover:bg-emerald-500" : "bg-rose-600 hover:bg-rose-500"} disabled:opacity-50 px-4 py-1.5 text-white text-sm`}
+              className={`eflux-btn h-10 w-full px-4 text-sm font-semibold disabled:opacity-50 ${
+                side === "buy" ? "eflux-btn-success" : "eflux-btn-danger"
+              }`}
             >
-              {busy ? "Submitting…" : `Submit ${side.toUpperCase()}`}
+              <Zap size={16} />
+              {busy ? "Submitting..." : `Submit ${side.toUpperCase()}`}
             </button>
-            {lastOrder && <p className="text-xs text-emerald-300 mt-2">{lastOrder}</p>}
+
+            {lastOrder && (
+              <div className="flex items-center gap-2 rounded-lg border border-[color-mix(in_srgb,var(--success)_42%,transparent)] bg-[var(--success-soft)] px-3 py-2 text-sm text-[var(--success)]">
+                <CheckCircle2 size={16} />
+                {lastOrder}
+              </div>
+            )}
           </form>
         )}
-      </section>
+      </DashboardCard>
 
       {error && (
-        <div className="col-span-full text-sm text-rose-400 border border-rose-900 bg-rose-950/40 rounded p-3">
+        <div className="lg:col-span-2 flex items-start gap-2 rounded-lg border border-[color-mix(in_srgb,var(--danger)_42%,transparent)] bg-[var(--danger-soft)] p-3 text-sm text-[var(--danger)]">
+          <AlertCircle size={17} className="mt-0.5 shrink-0" />
           {error}
         </div>
       )}
@@ -342,91 +305,149 @@ export default function MyVPPs() {
   );
 }
 
+function NumberField({
+  label,
+  value,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  step: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="block text-xs font-medium text-[var(--text-muted)]">
+      {label}
+      <input
+        type="number"
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="eflux-input mt-1 w-full rounded-md px-3 py-2 text-sm outline-none"
+      />
+    </label>
+  );
+}
+
+function TextNumberField({
+  label,
+  value,
+  step,
+  placeholder,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  step: string;
+  placeholder: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block text-xs font-medium text-[var(--text-muted)]">
+      {label}
+      <input
+        type="number"
+        step={step}
+        placeholder={placeholder}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="eflux-input mt-1 w-full rounded-md px-3 py-2 text-sm outline-none"
+      />
+    </label>
+  );
+}
+
 function LLMBadge({ state }: { state: string }) {
-  const styles: Record<string, string> = {
-    live: "text-emerald-300",
-    degraded: "text-amber-300",
-    offline: "text-slate-500",
-  };
+  const tone = state === "live" ? "success" : state === "degraded" ? "amber" : "muted";
   const labels: Record<string, string> = {
     live: "LLM live",
     degraded: "LLM degraded",
     offline: "LLM offline",
   };
-  return (
-    <span className={`shrink-0 text-xs ${styles[state] ?? "text-slate-400"}`}>
-      {labels[state] ?? state}
-    </span>
-  );
+  return <StatusPill tone={tone}>{labels[state] ?? state}</StatusPill>;
 }
 
 function ManagedPerformancePanel({ data }: { data?: ManagedVPPPerformance }) {
   const { nameOf } = useMarket();
   const pnl = Number(data?.pnl ?? 0);
-  const pnlClass = pnl >= 0 ? "text-emerald-300" : "text-rose-300";
+  const pnlClass = pnl >= 0 ? "text-[var(--success)]" : "text-[var(--danger)]";
 
   return (
-    <div className="mt-3 border-t border-sky-900/70 pt-3">
+    <div className="border-t border-[var(--border)] px-3 py-3">
       {!data ? (
-        <div className="text-xs text-slate-500">Loading performance…</div>
+        <EmptyState icon={BrainCircuit} title="Loading performance..." className="min-h-28" />
       ) : (
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
             <Metric label="PnL ($)" value={Number(data.pnl).toFixed(4)} valueClass={pnlClass} />
-            <Metric label="Battery SOC" value={`${(data.soc_frac * 100).toFixed(1)}%`} />
+            <Metric label="Battery SOC" value={`${(data.soc_frac * 100).toFixed(1)}%`} icon={BatteryCharging} />
             <Metric label="Bought (kWh)" value={data.cumulative_energy_bought_kwh.toFixed(4)} />
             <Metric label="Sold (kWh)" value={data.cumulative_energy_sold_kwh.toFixed(4)} />
           </div>
           <ReflectionTimeline data={data} />
-          <div className="overflow-hidden rounded border border-slate-800">
-            <table className="w-full text-xs">
-              <thead className="bg-slate-950/80 text-slate-400">
+          <TableShell className="max-h-72">
+            <table className="eflux-table min-w-[720px] text-xs">
+              <thead className="sticky top-0 z-10">
                 <tr>
-                  <th className="px-2 py-2 text-left">Time</th>
-                  <th className="px-2 py-2 text-left">Side</th>
-                  <th className="px-2 py-2 text-right">Price ($/MWh)</th>
-                  <th className="px-2 py-2 text-right">Qty (kWh)</th>
-                  <th className="px-2 py-2 text-right">Cash ($)</th>
-                  <th className="px-2 py-2 text-right">Counterparty</th>
+                  <th className="px-2 py-2 text-left font-semibold">Time</th>
+                  <th className="px-2 py-2 text-left font-semibold">Side</th>
+                  <th className="px-2 py-2 text-right font-semibold">Price ($/MWh)</th>
+                  <th className="px-2 py-2 text-right font-semibold">Qty (kWh)</th>
+                  <th className="px-2 py-2 text-right font-semibold">Cash ($)</th>
+                  <th className="px-2 py-2 text-right font-semibold">Counterparty</th>
                 </tr>
               </thead>
               <tbody>
                 {data.recent_trades.map((t) => (
-                  <tr key={`${t.trade_id}-${t.side}`} className="border-t border-slate-800">
-                    <td className="px-2 py-1.5 text-slate-300 tabular-nums">
+                  <tr key={`${t.trade_id}-${t.side}`}>
+                    <td className="px-2 py-1.5 text-[var(--text-muted)] tabular-nums">
                       {new Date(t.wall_ts).toLocaleTimeString("en-GB", { hour12: false })}
                     </td>
-                    <td className={t.side === "buy" ? "px-2 py-1.5 text-emerald-300" : "px-2 py-1.5 text-rose-300"}>
+                    <td className={t.side === "buy" ? "px-2 py-1.5 text-[var(--success)]" : "px-2 py-1.5 text-[var(--danger)]"}>
                       {t.side}
                     </td>
-                    <td className="px-2 py-1.5 text-right text-slate-200 tabular-nums">{Number(t.price).toFixed(2)}</td>
-                    <td className="px-2 py-1.5 text-right text-slate-200 tabular-nums">{Number(t.qty).toFixed(4)}</td>
-                    <td className="px-2 py-1.5 text-right text-slate-200 tabular-nums">{Number(t.cash).toFixed(4)}</td>
-                    <td className="px-2 py-1.5 text-right text-slate-400">
+                    <td className="px-2 py-1.5 text-right text-[var(--text)] tabular-nums">{Number(t.price).toFixed(2)}</td>
+                    <td className="px-2 py-1.5 text-right text-[var(--text)] tabular-nums">{Number(t.qty).toFixed(4)}</td>
+                    <td className="px-2 py-1.5 text-right text-[var(--text)] tabular-nums">{Number(t.cash).toFixed(4)}</td>
+                    <td className="px-2 py-1.5 text-right text-[var(--text-muted)]">
                       {t.counterparty ?? nameOf(t.counterparty_vpp_id)}
                     </td>
                   </tr>
                 ))}
                 {data.recent_trades.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-2 py-3 text-center text-slate-500">
-                      No trades yet.
+                    <td colSpan={6} className="p-3">
+                      <EmptyState icon={ListChecks} title="No trades yet" className="min-h-24" />
                     </td>
                   </tr>
                 )}
               </tbody>
             </table>
-          </div>
+          </TableShell>
         </div>
       )}
     </div>
   );
 }
 
-function Metric({ label, value, valueClass = "text-white" }: { label: string; value: string; valueClass?: string }) {
+function Metric({
+  label,
+  value,
+  valueClass = "text-[var(--text)]",
+  icon: Icon,
+}: {
+  label: string;
+  value: string;
+  valueClass?: string;
+  icon?: typeof BatteryCharging;
+}) {
   return (
-    <div className="rounded border border-slate-800 bg-slate-950/50 px-2 py-2">
-      <div className="text-[11px] uppercase tracking-wide text-slate-500">{label}</div>
+    <div className="eflux-inset rounded-md px-2 py-2">
+      <div className="flex items-center gap-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">
+        {Icon && <Icon size={12} />}
+        {label}
+      </div>
       <div className={`mt-1 text-sm font-semibold tabular-nums ${valueClass}`}>{value}</div>
     </div>
   );
@@ -439,10 +460,10 @@ function guidanceSummary(r: ReflectionEntry): string {
       parts.push(`SOC ${(r.soc_target * 100).toFixed(0)}%`);
     }
     if (r.preferred_modes?.length) parts.push(`prefer ${r.preferred_modes.slice(0, 2).join(", ")}`);
-    return parts.join(" · ");
+    return parts.join(" / ");
   }
   if (r.price_adjust !== null && r.price_adjust !== undefined && r.qty_scale !== null && r.qty_scale !== undefined) {
-    return `price ${r.price_adjust >= 0 ? "+" : ""}${(r.price_adjust * 100).toFixed(1)}% · qty ×${r.qty_scale.toFixed(2)}`;
+    return `price ${r.price_adjust >= 0 ? "+" : ""}${(r.price_adjust * 100).toFixed(1)}% / qty x${r.qty_scale.toFixed(2)}`;
   }
   return "guidance updated";
 }
@@ -457,40 +478,38 @@ function ReflectionTimeline({ data }: { data: ManagedVPPPerformance }) {
 
   return (
     <div>
-      <div className="mb-1 flex items-baseline justify-between">
-        <h4 className="text-[11px] uppercase tracking-wide text-slate-500">Guidance timeline</h4>
+      <div className="mb-1 flex flex-wrap items-baseline justify-between gap-2">
+        <h4 className="text-[11px] font-semibold uppercase tracking-wide text-[var(--text-subtle)]">Guidance timeline</h4>
         {health && (
-          <span className="text-[11px] text-slate-500">
+          <span className="text-[11px] text-[var(--text-subtle)]">
             {health.ok_count} ok / {health.fail_count} failed
             {health.last_ok_ts &&
-              ` · last ok ${new Date(health.last_ok_ts).toLocaleTimeString("en-GB", { hour12: false })}`}
+              ` / last ok ${new Date(health.last_ok_ts).toLocaleTimeString("en-GB", { hour12: false })}`}
           </span>
         )}
       </div>
-      <div className="max-h-56 space-y-1.5 overflow-auto rounded border border-slate-800 bg-slate-950/40 p-2">
+      <div className="eflux-inset max-h-56 space-y-1.5 overflow-auto rounded-lg p-2">
         {reflections.length === 0 && (
-          <p className="px-1 py-2 text-center text-xs text-slate-500">
-            No guidance yet — the agent consults the LLM every ~minute.
+          <p className="px-1 py-2 text-center text-xs text-[var(--text-subtle)]">
+            No guidance yet - the agent consults the LLM every ~minute.
           </p>
         )}
         {reflections.map((r) => (
-          <div key={r.ts} className="rounded border border-slate-800/80 bg-slate-900/40 px-2 py-1.5">
-            <div className="flex items-center gap-2 text-[11px]">
-              <span className="text-slate-400 tabular-nums">
+          <div key={r.ts} className="rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-2 py-1.5">
+            <div className="flex flex-wrap items-center gap-2 text-[11px]">
+              <span className="text-[var(--text-muted)] tabular-nums">
                 {new Date(r.ts).toLocaleTimeString("en-GB", { hour12: false })}
               </span>
               {r.ok ? (
                 <>
-                  <span className="text-emerald-300">ok</span>
-                  <span className="text-sky-300 tabular-nums">{guidanceSummary(r)}</span>
+                  <StatusPill tone="success" className="py-0 text-[11px]">ok</StatusPill>
+                  <span className="text-[var(--accent)] tabular-nums">{guidanceSummary(r)}</span>
                 </>
               ) : (
-                <span className="text-rose-300">failed</span>
+                <StatusPill tone="danger" className="py-0 text-[11px]">failed</StatusPill>
               )}
             </div>
-            <p className="mt-0.5 text-xs text-slate-300">
-              {r.ok ? guidanceText(r) : r.error}
-            </p>
+            <p className="mt-0.5 text-xs text-[var(--text)]">{r.ok ? guidanceText(r) : r.error}</p>
           </div>
         ))}
       </div>

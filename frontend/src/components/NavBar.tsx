@@ -1,74 +1,110 @@
 import { Link, useLocation } from "react-router-dom";
+import {
+  Activity,
+  Layers3,
+  LoaderCircle,
+  LogIn,
+  LogOut,
+  Moon,
+  Sun,
+  UsersRound,
+  Wifi,
+  WifiOff,
+  type LucideIcon,
+} from "lucide-react";
 
 import { useAuth } from "../state/auth";
 import { useMarketMode } from "../state/marketMode";
 import { useMarket } from "../state/marketStream";
+import { useTheme } from "../state/theme";
 import BrandLogo from "./BrandLogo";
-import { MarketIcon, ParticipantsIcon, VppIcon, type IconProps } from "./icons";
 
 export default function NavBar() {
   const { email, logout } = useAuth();
   const { state: wsState } = useMarket();
   const { mode } = useMarketMode();
+  const { mode: themeMode, toggleMode } = useTheme();
   const loc = useLocation();
 
   const modeLabel = mode === "realprice" ? "Real-Time Price" : "P2P Market";
   const modeClass =
     mode === "realprice"
-      ? "border-amber-700 bg-amber-950/40 text-amber-300"
-      : "border-sky-800 bg-sky-950/40 text-sky-300";
+      ? "border-[color-mix(in_srgb,var(--warning)_46%,transparent)] bg-[var(--warning-soft)] text-[var(--warning)]"
+      : "border-[color-mix(in_srgb,var(--accent)_46%,transparent)] bg-[var(--accent-soft)] text-[var(--accent)]";
 
-  const link = (to: string, label: string, Icon: (p: IconProps) => React.ReactElement) => {
+  const link = (to: string, label: string, Icon: LucideIcon) => {
     const active = loc.pathname === to;
     return (
       <Link
         to={to}
-        className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-sm transition-colors ${
+        className={`flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition-colors ${
           active
-            ? "bg-slate-800 text-white shadow-[inset_0_1px_0_0_rgba(255,255,255,0.06)]"
-            : "text-slate-400 hover:bg-slate-800/60 hover:text-white"
+            ? "eflux-tab-active"
+            : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
         }`}
       >
-        <Icon size={16} className={active ? "text-sky-400" : ""} />
+        <Icon size={16} className={active ? "text-[var(--accent)]" : ""} />
         {label}
       </Link>
     );
   };
 
-  const wsColor =
-    wsState === "open" ? "bg-emerald-500" : wsState === "connecting" ? "bg-amber-500" : "bg-rose-500";
+  const wsTone =
+    wsState === "open"
+      ? "text-[var(--success)]"
+      : wsState === "connecting"
+        ? "text-[var(--warning)]"
+        : "text-[var(--danger)]";
+  const WsIcon = wsState === "open" ? Wifi : wsState === "connecting" ? LoaderCircle : WifiOff;
+  const ThemeIcon = themeMode === "dark" ? Sun : Moon;
 
   return (
-    <nav className="sticky top-0 z-20 flex items-center justify-between border-b border-slate-800/80 bg-slate-950/70 px-6 py-2.5 backdrop-blur-md">
-      <div className="flex items-center gap-3">
+    <nav className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-elevated)_86%,transparent)] px-4 py-2.5 backdrop-blur-md md:px-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex min-w-0 flex-wrap items-center gap-3">
         <Link to="/" className="flex items-center gap-2 pr-1">
           <BrandLogo size={30} />
           <span className="eflux-wordmark text-lg font-bold">EFlux</span>
         </Link>
-        <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${modeClass}`}>{modeLabel}</span>
-        <div className="flex items-center gap-1">
-          {link("/", "Market", MarketIcon)}
-          {link("/participants", "Participants", ParticipantsIcon)}
-          {link("/vpps", "My VPPs", VppIcon)}
+        <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${modeClass}`}>{modeLabel}</span>
+        <div className="flex items-center gap-1 overflow-x-auto">
+          {link("/", "Market", Activity)}
+          {link("/participants", "Participants", UsersRound)}
+          {link("/vpps", "My VPPs", Layers3)}
         </div>
-      </div>
-      <div className="flex items-center gap-4 text-sm text-slate-400">
-        <span className="flex items-center gap-1.5 rounded-full border border-slate-800 bg-slate-900/60 px-2.5 py-1">
-          <span className={`inline-block h-2 w-2 rounded-full ${wsColor} ${wsState !== "open" ? "eflux-pulse" : ""}`} />
-          <span className="text-xs tabular-nums">{wsState}</span>
-        </span>
-        {email ? (
-          <>
-            <span className="text-slate-300">{email}</span>
-            <button onClick={logout} className="text-slate-400 transition-colors hover:text-white">
-              Logout
-            </button>
-          </>
-        ) : (
-          <Link to="/login" className="text-slate-300 transition-colors hover:text-white">
-            Login
-          </Link>
-        )}
+        </div>
+        <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+          <span className="flex h-9 items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-muted)] px-2.5">
+            <span className={`relative inline-flex h-2 w-2 rounded-full ${wsTone} ${wsState === "open" ? "eflux-live-dot" : "eflux-pulse"}`}>
+              <span className="h-2 w-2 rounded-full bg-current" />
+            </span>
+            <WsIcon size={14} className={`${wsTone} ${wsState === "connecting" ? "animate-spin" : ""}`} />
+            <span className="text-xs tabular-nums">{wsState}</span>
+          </span>
+          <button
+            type="button"
+            onClick={toggleMode}
+            title={themeMode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            aria-label={themeMode === "dark" ? "Switch to light theme" : "Switch to dark theme"}
+            className="eflux-btn h-9 w-9 p-0"
+          >
+            <ThemeIcon size={16} />
+          </button>
+          {email ? (
+            <>
+              <span className="hidden max-w-[220px] truncate text-[var(--text)] sm:inline">{email}</span>
+              <button onClick={logout} className="eflux-btn h-9 px-3">
+                <LogOut size={15} />
+                <span className="hidden sm:inline">Logout</span>
+              </button>
+            </>
+          ) : (
+            <Link to="/login" className="eflux-btn h-9 px-3">
+              <LogIn size={15} />
+              Login
+            </Link>
+          )}
+        </div>
       </div>
     </nav>
   );

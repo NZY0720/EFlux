@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { LoaderCircle, RefreshCcw } from "lucide-react";
 
 import { fetchPpoStatus, renewPpos, type PpoStatus } from "../api/client";
 import { useAuth } from "../state/auth";
@@ -51,7 +52,7 @@ export default function RenewPpoButton() {
     : status?.state === "error"
       ? `failed: ${status.error ?? "unknown"}`
       : status?.state === "done"
-        ? `${status.detail}${finishedAt ? ` · ${finishedAt}` : ""}`
+        ? `${status.detail}${finishedAt ? ` / ${finishedAt}` : ""}`
         : running
           ? status?.detail || status?.state
           : "retrain on latest 1-month real data";
@@ -66,13 +67,13 @@ export default function RenewPpoButton() {
             ? "Retrain all PPOs on the latest 1-month real CAISO price + weather, then hot-reload them"
             : "Log in to renew PPOs"
         }
-        className="flex items-center gap-1.5 rounded border border-slate-700 bg-slate-800 px-2.5 py-1 text-xs text-slate-200 transition-colors hover:bg-slate-700 disabled:opacity-50"
+        className="eflux-btn h-8 px-3 text-xs disabled:opacity-50"
       >
-        {running && <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400" />}
-        {running ? `Renewing… (${status?.state})` : "↻ Renew PPOs"}
+        {running ? <LoaderCircle size={14} className="animate-spin text-[var(--warning)]" /> : <RefreshCcw size={14} />}
+        {running ? `Renewing... (${status?.state})` : "Renew PPOs"}
       </button>
       {sub && (
-        <span className={`text-[11px] ${error || status?.state === "error" ? "text-rose-400" : "text-slate-500"}`}>
+        <span className={`text-[11px] ${error || status?.state === "error" ? "text-[var(--danger)]" : "text-[var(--text-subtle)]"}`}>
           {sub}
         </span>
       )}

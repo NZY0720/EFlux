@@ -9,6 +9,7 @@ import Participants from "./pages/Participants";
 import { AuthProvider, useAuth } from "./state/auth";
 import { MarketModeProvider } from "./state/marketMode";
 import { MarketStreamProvider } from "./state/marketStream";
+import { ThemeProvider } from "./state/theme";
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
   const { token } = useAuth();
@@ -44,12 +45,14 @@ function Shell() {
 
 export default function App() {
   return (
-    <AuthProvider>
-      <MarketModeProvider>
-        <MarketStreamProvider>
-          <Shell />
-        </MarketStreamProvider>
-      </MarketModeProvider>
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <MarketModeProvider>
+          <MarketStreamProvider>
+            <Shell />
+          </MarketStreamProvider>
+        </MarketModeProvider>
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

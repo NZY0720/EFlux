@@ -1,8 +1,10 @@
 import ReactECharts from "echarts-for-react";
-import { useMemo, useRef } from "react";
+import { useMemo } from "react";
 
 import type { PnlPoint } from "../state/useStrategyPnl";
-import { FULL_ZOOM, readZoomEvent, timeZoom, type ZoomWindow } from "./chartZoom";
+import { EmptyState } from "./DashboardCard";
+import { chartAxis, chartLegend, chartTooltip, useChartTheme } from "./chartTheme";
+import { timeZoom, usePersistentTimeZoom } from "./chartZoom";
 
 interface Props {
   history: Record<string, PnlPoint[]>;
@@ -20,22 +22,8 @@ const lastPnl = (pts: PnlPoint[]): number => (pts.length ? pts[pts.length - 1].p
  */
 export default function EquityCurves({ history, topN = 8 }: Props) {
   // Preserve the zoom window (absolute time) across polling-driven rebuilds (see PriceChart).
-  const zoomRef = useRef<ZoomWindow>(FULL_ZOOM);
-  const onEvents = useMemo(
-    () => ({
-      datazoom: (params: {
-        start?: number;
-        end?: number;
-        startValue?: number;
-        endValue?: number;
-        batch?: Array<{ start?: number; end?: number; startValue?: number; endValue?: number }>;
-      }) => {
-        const w = readZoomEvent(params);
-        if (w) zoomRef.current = w;
-      },
-    }),
-    [],
-  );
+  const { zoomRef, onEvents } = usePersistentTimeZoom();
+  const theme = useChartTheme();
 
   const option = useMemo(() => {
     const names = Object.keys(history)
@@ -55,27 +43,33 @@ export default function EquityCurves({ history, topN = 8 }: Props) {
 
     return {
       backgroundColor: "transparent",
-      legend: { top: 0, type: "scroll" as const, textStyle: { color: "#94a3b8" } },
+      legend: { top: 0, type: "scroll" as const, ...chartLegend(theme) },
       grid: { left: 56, right: 20, top: 32, bottom: 56 },
       xAxis: {
         type: "time" as const,
-        axisLabel: { color: "#94a3b8" },
-        splitLine: { lineStyle: { color: "#1e293b" } },
+        ...chartAxis(theme),
       },
       yAxis: {
         type: "value" as const,
         scale: true,
         name: "PnL ($)",
-        nameTextStyle: { color: "#64748b", fontSize: 11 },
-        axisLabel: { color: "#94a3b8" },
-        splitLine: { lineStyle: { color: "#1e293b" } },
+        nameTextStyle: { color: theme.muted, fontSize: 11 },
+        ...chartAxis(theme),
       },
-      tooltip: { trigger: "axis" as const, backgroundColor: "#1e293b", borderWidth: 0, textStyle: { color: "#e2e8f0" } },
-      dataZoom: timeZoom(zoomRef.current),
+      tooltip: { trigger: "axis" as const, ...chartTooltip(theme) },
+      dataZoom: timeZoom(zoomRef.current, {
+        bg: theme.surface,
+        border: theme.tooltipBorder,
+        filler: "rgba(34, 183, 232, 0.14)",
+        handle: theme.axis,
+        axis: theme.axis,
+        grid: theme.grid,
+        accent: theme.accent,
+      }),
       series,
       animation: false,
     };
-  }, [history, topN]);
+  }, [history, topN, theme, zoomRef]);
 
   const hasData = Object.keys(history).length > 0;
 
@@ -84,9 +78,7 @@ export default function EquityCurves({ history, topN = 8 }: Props) {
       {hasData ? (
         <ReactECharts option={option} style={{ height: "100%", width: "100%" }} onEvents={onEvents} notMerge lazyUpdate />
       ) : (
-        <div className="flex h-full items-center justify-center text-sm text-slate-500">
-          Accumulating PnL history…
-        </div>
+        <EmptyState className="h-full" title="Accumulating PnL history..." />
       )}
     </div>
   );

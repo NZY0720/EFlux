@@ -16,16 +16,19 @@ from eflux.simulator.agent_spec import validate_vpp_params
 
 router = APIRouter(prefix="/vpps", tags=["vpps"])
 
+VPPParamValue = float | int | str | None
+VPPParamsPayload = dict[str, VPPParamValue]
+
 
 class VPPCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
-    params: dict = Field(default_factory=dict)
+    params: dict[str, object] = Field(default_factory=dict)
 
 
 class VPPOut(BaseModel):
     id: int
     name: str
-    params: dict
+    params: VPPParamsPayload
     is_active: bool
     is_external: bool
     created_at: datetime
@@ -34,7 +37,7 @@ class VPPOut(BaseModel):
 class ManagedVPPOut(BaseModel):
     id: int
     name: str
-    params: dict
+    params: VPPParamsPayload
     is_active: bool
     is_external: bool
     agent_kind: str

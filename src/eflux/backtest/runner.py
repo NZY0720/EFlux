@@ -486,7 +486,8 @@ def _write_timeseries_svg(
     x0, x1 = min(xs), max(xs)
     span_x = (x1 - x0) or 1.0
     vals = [float(r[k]) for (_, k, _) in series for r in rows if r.get(k) is not None]
-    lo, hi = min(vals + [0.0]), max(vals + [0.0])
+    padded_vals = [*vals, 0.0]
+    lo, hi = min(padded_vals), max(padded_vals)
     if lo == hi:
         lo -= 1.0
         hi += 1.0

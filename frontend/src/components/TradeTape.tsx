@@ -1,5 +1,8 @@
+import { ListChecks } from "lucide-react";
+
 import type { ExternalTradeEvent, MarketEvent, TradeEvent } from "../api/types";
 import { useMarket } from "../state/marketStream";
+import { EmptyState, TableShell } from "./DashboardCard";
 
 interface Props {
   events: MarketEvent[];
@@ -17,15 +20,15 @@ export default function TradeTape({ events, limit = 25 }: Props) {
   const trades = events.filter(isTrade).slice(0, limit);
 
   return (
-    <div className="h-72 overflow-auto rounded border border-slate-800 bg-slate-900/60">
-      <table className="w-full text-xs">
-        <thead className="sticky top-0 bg-slate-900 text-slate-400">
+    <TableShell className="h-72">
+      <table className="eflux-table text-xs">
+        <thead className="sticky top-0 z-10">
           <tr>
-            <th className="px-3 py-2 text-left">Time</th>
-            <th className="px-3 py-2 text-right">Price ($/MWh)</th>
-            <th className="px-3 py-2 text-right">Qty (kWh)</th>
-            <th className="px-3 py-2 text-left">Buyer</th>
-            <th className="px-3 py-2 text-left">Seller</th>
+            <th className="px-3 py-2 text-left font-semibold">Time</th>
+            <th className="px-3 py-2 text-right font-semibold">Price ($/MWh)</th>
+            <th className="px-3 py-2 text-right font-semibold">Qty (kWh)</th>
+            <th className="px-3 py-2 text-left font-semibold">Buyer</th>
+            <th className="px-3 py-2 text-left font-semibold">Seller</th>
           </tr>
         </thead>
         <tbody>
@@ -43,26 +46,26 @@ export default function TradeTape({ events, limit = 25 }: Props) {
                 ? t.counterparty
                 : nameOf(t.vpp_id);
             return (
-              <tr key={key} className="border-t border-slate-800 hover:bg-slate-800/50">
-                <td className="px-3 py-1.5 text-slate-300 tabular-nums">
+              <tr key={key}>
+                <td className="px-3 py-1.5 text-[var(--text-muted)] tabular-nums">
                   {dt.toLocaleTimeString("en-GB", { hour12: false })}
                 </td>
-                <td className="px-3 py-1.5 text-right text-amber-300 tabular-nums">{Number(t.price).toFixed(2)}</td>
-                <td className="px-3 py-1.5 text-right text-slate-200 tabular-nums">{Number(t.qty).toFixed(3)}</td>
-                <td className="px-3 py-1.5 text-emerald-300">{buyer}</td>
-                <td className="px-3 py-1.5 text-rose-300">{seller}</td>
+                <td className="px-3 py-1.5 text-right font-semibold text-[var(--warning)] tabular-nums">{Number(t.price).toFixed(2)}</td>
+                <td className="px-3 py-1.5 text-right text-[var(--text)] tabular-nums">{Number(t.qty).toFixed(3)}</td>
+                <td className="px-3 py-1.5 text-[var(--success)]">{buyer}</td>
+                <td className="px-3 py-1.5 text-[var(--danger)]">{seller}</td>
               </tr>
             );
           })}
           {trades.length === 0 && (
             <tr>
-              <td colSpan={5} className="px-3 py-4 text-center text-slate-500">
-                Waiting for trades…
+              <td colSpan={5} className="p-3">
+                <EmptyState icon={ListChecks} title="Waiting for trades..." />
               </td>
             </tr>
           )}
         </tbody>
       </table>
-    </div>
+    </TableShell>
   );
 }

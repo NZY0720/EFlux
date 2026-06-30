@@ -1,6 +1,7 @@
-"""Internal heuristic dispatcher: maps market price signal + DER state → buy/sell intent.
+"""Legacy heuristic dispatcher: maps DER state to a simple buy/sell decision.
 
-This is intentionally simple. RL agent (Phase 5) replaces this for the inner loop.
+The live scenario agents no longer use this path; it is retained as a small public helper
+for older integrations that imported it from `eflux.vpp`.
 Rule of thumb:
 - If net_kw > 0 (surplus): sell at marginal opportunity cost = forecast future price.
 - If net_kw < 0 (deficit): buy up to need.

@@ -1,6 +1,8 @@
 import ReactECharts from "echarts-for-react";
 
 import type { MarketSnapshot } from "../api/types";
+import { EmptyState } from "./DashboardCard";
+import { chartAxis, chartLegend, chartTooltip, useChartTheme } from "./chartTheme";
 
 interface Props {
   snapshot: MarketSnapshot | null;
@@ -10,8 +12,9 @@ interface Props {
  * Bid/ask depth: each side a stepped area, x = price, y = cumulative qty.
  */
 export default function OrderBookDepth({ snapshot }: Props) {
+  const theme = useChartTheme();
   if (!snapshot) {
-    return <div className="h-72 flex items-center justify-center text-slate-500">Loading order book…</div>;
+    return <EmptyState className="h-72" title="Loading order book..." />;
   }
 
   const cumulative = (levels: [string, string][], side: "buy" | "sell") => {
@@ -43,32 +46,30 @@ export default function OrderBookDepth({ snapshot }: Props) {
   const option = {
     backgroundColor: "transparent",
     grid: { left: 55, right: 20, top: 30, bottom: 42 },
-    legend: { top: 0, textStyle: { color: "#94a3b8", fontSize: 11 }, itemWidth: 12, itemHeight: 8 },
+    legend: { top: 0, ...chartLegend(theme) },
     xAxis: {
       type: "value",
       scale: true,
       name: "price ($/MWh)",
       nameLocation: "middle",
       nameGap: 28,
-      nameTextStyle: { color: "#64748b", fontSize: 11 },
-      axisLabel: { color: "#94a3b8" },
-      splitLine: { lineStyle: { color: "#1e293b" } },
+      nameTextStyle: { color: theme.muted, fontSize: 11 },
+      ...chartAxis(theme),
     },
     yAxis: {
       type: "value",
       name: "cumulative qty (kWh)",
-      nameTextStyle: { color: "#64748b", fontSize: 11 },
-      axisLabel: { color: "#94a3b8" },
-      splitLine: { lineStyle: { color: "#1e293b" } },
+      nameTextStyle: { color: theme.muted, fontSize: 11 },
+      ...chartAxis(theme),
     },
-    tooltip: { trigger: "axis", backgroundColor: "#1e293b", borderWidth: 0, textStyle: { color: "#e2e8f0" } },
+    tooltip: { trigger: "axis", ...chartTooltip(theme) },
     series: [
       {
         name: "Bids",
         type: "line",
         step: "end",
         data: bidData,
-        lineStyle: { color: "#10b981" },
+        lineStyle: { color: theme.success, width: 1.7 },
         areaStyle: { color: "rgba(16, 185, 129, 0.2)" },
         symbol: "none",
       },
@@ -77,7 +78,7 @@ export default function OrderBookDepth({ snapshot }: Props) {
         type: "line",
         step: "start",
         data: askData,
-        lineStyle: { color: "#f43f5e" },
+        lineStyle: { color: theme.danger, width: 1.7 },
         areaStyle: { color: "rgba(244, 63, 94, 0.2)" },
         symbol: "none",
       },

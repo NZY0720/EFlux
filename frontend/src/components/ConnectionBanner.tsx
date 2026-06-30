@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { AlertTriangle, RotateCcw, X } from "lucide-react";
 
 import { useMarket } from "../state/marketStream";
 
@@ -18,22 +19,24 @@ export default function ConnectionBanner() {
   return (
     <div className="space-y-px">
       {degraded && (
-        <div className="flex items-center gap-2 border-b border-amber-900 bg-amber-950/60 px-6 py-2 text-sm text-amber-200">
-          <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400" />
-          Reconnecting to the market — data on screen may be stale.
+        <div className="flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--warning)_42%,transparent)] bg-[var(--warning-soft)] px-4 py-2 text-sm text-[var(--warning)] md:px-6">
+          <AlertTriangle size={16} />
+          Reconnecting to the market - data on screen may be stale.
         </div>
       )}
       {showRestart && (
-        <div className="flex items-center justify-between gap-2 border-b border-sky-900 bg-sky-950/60 px-6 py-2 text-sm text-sky-200">
-          <span>
-            Backend restarted — the in-memory market started over, so price history and open
-            orders were reset.
+        <div className="flex items-center justify-between gap-2 border-b border-[color-mix(in_srgb,var(--accent)_42%,transparent)] bg-[var(--accent-soft)] px-4 py-2 text-sm text-[var(--accent)] md:px-6">
+          <span className="flex items-center gap-2">
+            <RotateCcw size={16} />
+            Backend restarted - the in-memory market started over, so price history and open orders were reset.
           </span>
           <button
             onClick={() => setDismissedAt(restartedAt)}
-            className="shrink-0 text-sky-400 hover:text-sky-200"
+            className="eflux-btn h-7 w-7 shrink-0 p-0"
+            title="Dismiss"
+            aria-label="Dismiss"
           >
-            Dismiss
+            <X size={14} />
           </button>
         </div>
       )}

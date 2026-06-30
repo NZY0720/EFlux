@@ -1,5 +1,8 @@
+import { Clock3, DatabaseZap } from "lucide-react";
+
 import type { DataSourceStatus } from "../api/types";
 import type { DataSourceEntry } from "../api/types";
+import { StatusPill } from "./DashboardCard";
 
 interface Props {
   dataSource?: DataSourceStatus;
@@ -7,10 +10,10 @@ interface Props {
   showExternalPrice?: boolean;
 }
 
-function statusClasses(status: string): string {
-  if (status === "real") return "border-emerald-800 bg-emerald-950/40 text-emerald-200";
-  if (status === "fallback") return "border-amber-800 bg-amber-950/40 text-amber-200";
-  return "border-slate-700 bg-slate-900 text-slate-300";
+function statusTone(status: string): "success" | "amber" | "muted" {
+  if (status === "real") return "success";
+  if (status === "fallback") return "amber";
+  return "muted";
 }
 
 function isSource(source: DataSourceEntry | undefined): source is DataSourceEntry {
@@ -27,29 +30,31 @@ export default function DataSourceBanner({ dataSource, showExternalPrice = true 
     weather && price && weather.component === price.component ? [price] : [weather, price].filter(isSource);
 
   return (
-    <section className="rounded-lg border border-slate-800 bg-slate-900/50 px-4 py-3">
+    <section className="eflux-panel px-4 py-3">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-        <div className="min-w-0">
-          <div className="text-xs uppercase tracking-wide text-slate-400">Data source</div>
-          <div className="mt-1 flex flex-wrap items-center gap-2">
-            <span className="text-base font-semibold text-white">
-              {dataSource?.summary ?? "Checking startup source"}
-            </span>
-            {price && (
-              <span className={`rounded border px-2 py-0.5 text-xs ${statusClasses(price.status)}`}>
-                {price.status}
+        <div className="flex min-w-0 gap-3">
+          <DatabaseZap size={18} className="mt-1 shrink-0 text-[var(--accent)]" />
+          <div className="min-w-0">
+            <div className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">Data source</div>
+            <div className="mt-1 flex flex-wrap items-center gap-2">
+              <span className="break-words text-base font-semibold text-[var(--text)]">
+                {dataSource?.summary ?? "Checking startup source"}
               </span>
-            )}
-          </div>
-          <div className="mt-1 space-y-1">
-            {visibleSources.map((source) => (
-              <p key={source.component} className="text-sm text-slate-400">
-                {source.component}: {source.source}. {source.detail}
-              </p>
-            ))}
+              {price && <StatusPill tone={statusTone(price.status)}>{price.status}</StatusPill>}
+            </div>
+            <div className="mt-1 space-y-1">
+              {visibleSources.map((source) => (
+                <p key={source.component} className="break-words text-sm text-[var(--text-muted)]">
+                  {source.component}: {source.source}. {source.detail}
+                </p>
+              ))}
+            </div>
           </div>
         </div>
-        <div className="shrink-0 text-xs text-slate-500">checked {checkedAt}</div>
+        <div className="flex shrink-0 items-center gap-1.5 text-xs text-[var(--text-subtle)]">
+          <Clock3 size={13} />
+          checked {checkedAt}
+        </div>
       </div>
     </section>
   );

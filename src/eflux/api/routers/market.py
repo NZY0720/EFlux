@@ -330,30 +330,49 @@ class SpeedUpdate(BaseModel):
     speed: float
 
 
-@router.post("/speed")
+class SpeedStatusOut(BaseModel):
+    speed: float
+    is_realtime: bool
+
+
+class PpoRenewStatusOut(BaseModel):
+    state: str
+    started_at: str | None
+    finished_at: str | None
+    detail: str
+    reloaded: int
+    error: str | None
+    metrics: dict[str, object] | None
+
+
+class PpoRenewStartOut(PpoRenewStatusOut):
+    status: str
+
+
+@router.post("/speed", response_model=SpeedStatusOut)
 async def set_market_speed(
     payload: SpeedUpdate,
     user: CurrentUser,
     sim: SimulatorDep,
-) -> dict:
+) -> SpeedStatusOut:
     try:
         sim.clock.set_speed(payload.speed)
     except ValueError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
-    return {"speed": sim.clock.speed, "is_realtime": sim.clock.is_realtime}
+    return SpeedStatusOut(speed=sim.clock.speed, is_realtime=sim.clock.is_realtime)
 
 
-@router.post("/ppo/renew")
-async def renew_ppos(user: CurrentUser, sim: SimulatorDep, days: int = 30) -> dict:
+@router.post("/ppo/renew", response_model=PpoRenewStartOut)
+async def renew_ppos(user: CurrentUser, sim: SimulatorDep, days: int = 30) -> PpoRenewStartOut:
     """Retrain the PPO warm-start on the latest `days` of real CAISO price + weather, then
     hot-reload every live online policy (standalone PPOs, mirrors, and hybrid executors).
     Runs in the background — poll GET /market/ppo/status for progress. Auth-gated like /speed."""
     if not sim.start_ppo_renew(days=max(1, min(days, 60))):
         raise HTTPException(status.HTTP_409_CONFLICT, "a PPO renew is already running")
-    return {"status": "started", **sim.ppo_renew_status()}
+    return PpoRenewStartOut(status="started", **sim.ppo_renew_status())
 
 
-@router.get("/ppo/status")
-async def ppo_renew_status(sim: SimulatorDep) -> dict:
+@router.get("/ppo/status", response_model=PpoRenewStatusOut)
+async def ppo_renew_status(sim: SimulatorDep) -> PpoRenewStatusOut:
     """Current state of the background PPO renew (idle | training | reloading | done | error)."""
-    return sim.ppo_renew_status()
+    return PpoRenewStatusOut(**sim.ppo_renew_status())

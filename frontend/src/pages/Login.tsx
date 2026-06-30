@@ -1,7 +1,9 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { ArrowLeft, KeyRound, Mail, Send } from "lucide-react";
 
 import { consumeToken, requestMagicLink } from "../api/client";
+import BrandLogo from "../components/BrandLogo";
 import { useAuth } from "../state/auth";
 
 type Step = "email" | "token";
@@ -50,21 +52,29 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center px-4">
-      <div className="w-full max-w-md rounded-xl border border-slate-800 bg-slate-900/60 p-8 shadow-2xl">
-        <h1 className="text-2xl font-semibold text-white mb-1">Sign in</h1>
-        <p className="text-sm text-slate-400 mb-6">Passwordless — magic link to your email.</p>
+    <div className="flex min-h-[calc(100vh-64px)] items-center justify-center px-4 py-10">
+      <div className="eflux-card w-full max-w-md p-8">
+        <div className="mb-6 flex items-center gap-3">
+          <BrandLogo size={34} />
+          <div>
+            <h1 className="text-2xl font-semibold text-[var(--text)]">Sign in</h1>
+            <p className="text-sm text-[var(--text-muted)]">Passwordless magic link to your email.</p>
+          </div>
+        </div>
 
         {step === "email" && (
           <form onSubmit={submitEmail} className="space-y-4">
             <label className="block">
-              <span className="text-sm text-slate-300">Email</span>
+              <span className="flex items-center gap-1.5 text-sm font-medium text-[var(--text-muted)]">
+                <Mail size={14} />
+                Email
+              </span>
               <input
                 type="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-white outline-none focus:border-sky-500"
+                className="eflux-input mt-1 w-full rounded-md px-3 py-2 text-sm outline-none"
                 placeholder="you@hku.hk"
                 autoFocus
               />
@@ -72,9 +82,10 @@ export default function Login() {
             <button
               type="submit"
               disabled={busy}
-              className="w-full rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-50 px-4 py-2 text-white font-medium"
+              className="eflux-btn eflux-btn-primary h-10 w-full px-4 font-semibold disabled:opacity-50"
             >
-              {busy ? "Sending…" : "Send magic link"}
+              <Send size={16} />
+              {busy ? "Sending..." : "Send magic link"}
             </button>
           </form>
         )}
@@ -82,19 +93,22 @@ export default function Login() {
         {step === "token" && (
           <form onSubmit={submitToken} className="space-y-4">
             {devToken && (
-              <div className="rounded border border-amber-700/60 bg-amber-950/40 p-3 text-xs text-amber-200">
-                <div className="font-semibold mb-1">Dev mode</div>
-                Token auto-filled below — paste a real one from your email in production.
+              <div className="rounded-lg border border-[color-mix(in_srgb,var(--warning)_42%,transparent)] bg-[var(--warning-soft)] p-3 text-xs text-[var(--warning)]">
+                <div className="mb-1 font-semibold">Dev mode</div>
+                Token auto-filled below - paste a real one from your email in production.
               </div>
             )}
             <label className="block">
-              <span className="text-sm text-slate-300">Token</span>
+              <span className="flex items-center gap-1.5 text-sm font-medium text-[var(--text-muted)]">
+                <KeyRound size={14} />
+                Token
+              </span>
               <input
                 type="text"
                 required
                 value={token}
                 onChange={(e) => setToken(e.target.value)}
-                className="mt-1 w-full rounded border border-slate-700 bg-slate-800 px-3 py-2 text-white outline-none focus:border-sky-500 font-mono text-xs"
+                className="eflux-input mt-1 w-full rounded-md px-3 py-2 font-mono text-xs outline-none"
                 autoFocus
               />
             </label>
@@ -102,22 +116,24 @@ export default function Login() {
               <button
                 type="button"
                 onClick={() => setStep("email")}
-                className="rounded border border-slate-700 hover:border-slate-500 px-4 py-2 text-slate-300"
+                className="eflux-btn h-10 px-4"
               >
+                <ArrowLeft size={16} />
                 Back
               </button>
               <button
                 type="submit"
                 disabled={busy}
-                className="flex-1 rounded bg-sky-600 hover:bg-sky-500 disabled:opacity-50 px-4 py-2 text-white font-medium"
+                className="eflux-btn eflux-btn-primary h-10 flex-1 px-4 font-semibold disabled:opacity-50"
               >
-                {busy ? "Signing in…" : "Sign in"}
+                <KeyRound size={16} />
+                {busy ? "Signing in..." : "Sign in"}
               </button>
             </div>
           </form>
         )}
 
-        {error && <p className="mt-4 text-sm text-rose-400">{error}</p>}
+        {error && <p className="mt-4 text-sm text-[var(--danger)]">{error}</p>}
       </div>
     </div>
   );

@@ -55,6 +55,7 @@ Thumbs.db
 
 # Frontend (later)
 node_modules/
+.pnpm-store/
 frontend/dist/
 frontend/.vite/
 *.tsbuildinfo

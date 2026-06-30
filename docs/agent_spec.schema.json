@@ -2,13 +2,13 @@
   "$defs": {
     "ExecutorSpec": {
       "additionalProperties": false,
-      "description": "Tactical executor (the policy that selects each StrategyAction) for strategy /\nhybrid agents. `scripted` (default) uses the deterministic baseline; `ppo` loads a\nlearned policy from a checkpoint trained on the structured action space. A missing\ncheckpoint / 'ai' extras falls back to scripted at load (never crashes startup).",
+      "description": "Tactical executor (the policy that selects each StrategyAction) for strategy /\nhybrid agents. `scripted` (default) uses the deterministic baseline; `ppo_online` loads\nthe custom live-learning torch PPO policy (warm-started from a BC/online checkpoint) that\nupdates during the sim. A missing checkpoint / 'ai' extras falls back to scripted at load\n(never crashes startup).",
       "properties": {
         "kind": {
           "default": "scripted",
           "enum": [
             "scripted",
-            "ppo"
+            "ppo_online"
           ],
           "title": "Kind",
           "type": "string"
@@ -24,6 +24,11 @@
           ],
           "default": null,
           "title": "Checkpoint"
+        },
+        "online_learning": {
+          "default": true,
+          "title": "Online Learning",
+          "type": "boolean"
         }
       },
       "title": "ExecutorSpec",
@@ -71,7 +76,10 @@
         "gas",
         "strategy",
         "hybrid",
-        "reflective"
+        "reflective",
+        "zip",
+        "gd",
+        "aa"
       ],
       "title": "Agent",
       "type": "string"
@@ -230,6 +238,11 @@
         }
       ],
       "default": null
+    },
+    "mirror": {
+      "default": false,
+      "title": "Mirror",
+      "type": "boolean"
     }
   },
   "required": [

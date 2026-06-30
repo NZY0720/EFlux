@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
+import { BrainCircuit } from "lucide-react";
 
 import { fetchMarketReflections } from "../api/client";
 import type { MarketReflection } from "../api/types";
+import { EmptyState, StatusPill } from "./DashboardCard";
 
 /**
  * Live LLM guidance feed for the market page — the LLM-steered agents'
@@ -14,12 +16,12 @@ import type { MarketReflection } from "../api/types";
 // Stable per-agent badge palette: hash of the agent name, so a badge color
 // never shifts when other agents enter or slide out of the feed window.
 const AGENT_BADGES = [
-  "border-emerald-800 bg-emerald-950/40 text-emerald-300",
-  "border-sky-800 bg-sky-950/40 text-sky-300",
-  "border-violet-800 bg-violet-950/40 text-violet-300",
-  "border-amber-800 bg-amber-950/40 text-amber-300",
-  "border-rose-800 bg-rose-950/40 text-rose-300",
-  "border-teal-800 bg-teal-950/40 text-teal-300",
+  "#059669",
+  "#0284c7",
+  "#7c3aed",
+  "#d97706",
+  "#e11d48",
+  "#0d9488",
 ];
 
 function badgeForName(name: string): string {
@@ -83,7 +85,7 @@ export default function AgentThoughtsFeed({ variant = "p2p" }: Props) {
     return names.map((name) => ({
       name,
       health: byName.get(name) ?? "offline",
-      badge: badgeForName(name),
+      color: badgeForName(name),
     }));
   }, [entries]);
 
@@ -99,8 +101,8 @@ export default function AgentThoughtsFeed({ variant = "p2p" }: Props) {
   return (
     <div className="flex h-72 flex-col">
       <div className="mb-2 flex items-center justify-between text-xs">
-        <span className="text-slate-400">
-          <span className="font-medium text-emerald-300">{agents.length || "The"} LLM agents</span>{" "}
+        <span className="text-[var(--text-muted)]">
+          <span className="font-medium text-[var(--success)]">{agents.length || "The"} LLM agents</span>{" "}
           {variant === "realprice"
             ? "consult an LLM strategist every ~minute to steer grid-price timing and PPO learning"
             : "consult an LLM strategist every ~minute to bias their trading primitives"}
@@ -115,43 +117,43 @@ export default function AgentThoughtsFeed({ variant = "p2p" }: Props) {
               key={a.name}
               label={a.name}
               active={filter === a.name}
-              badge={a.badge}
+              color={a.color}
               onClick={() => setFilter(filter === a.name ? null : a.name)}
             />
           ))}
         </div>
       )}
-      <div className="min-h-0 flex-1 space-y-1.5 overflow-auto rounded border border-slate-800 bg-slate-950/40 p-2">
-        {entries === null && <p className="px-1 py-2 text-center text-xs text-slate-500">Loading…</p>}
+      <div className="eflux-inset min-h-0 flex-1 space-y-1.5 overflow-auto rounded-lg p-2">
+        {entries === null && <EmptyState icon={BrainCircuit} title="Loading guidance..." className="min-h-full" />}
         {entries !== null && entries.length === 0 && (
-          <p className="px-1 py-4 text-center text-xs text-slate-500">
-            No guidance yet. The agents consult the LLM every ~minute when the link is live —
+          <div className="px-1 py-4 text-center text-xs text-[var(--text-subtle)]">
+            No guidance yet. The agents consult the LLM every ~minute when the link is live -
             otherwise they trade on the hybrid PPO baseline. See{" "}
-            <Link to="/vpps" className="text-sky-400 hover:text-sky-300">
+            <Link to="/vpps" className="text-[var(--accent)] hover:underline">
               My VPPs
             </Link>{" "}
             for full performance.
-          </p>
+          </div>
         )}
         {visible?.map((r) => (
-          <div key={`${r.vpp_id}-${r.ts}`} className="rounded border border-slate-800/80 bg-slate-900/40 px-2 py-1.5">
+          <div key={`${r.vpp_id}-${r.ts}`} className="rounded-md border border-[var(--border)] bg-[var(--surface-muted)] px-2 py-1.5">
             <div className="flex flex-wrap items-center gap-2 text-[11px]">
-              <span className={`rounded border px-1.5 ${badgeForName(r.vpp_name)}`}>{r.vpp_name}</span>
-              <span className="text-slate-400 tabular-nums">
+              <AgentBadge name={r.vpp_name} />
+              <span className="text-[var(--text-muted)] tabular-nums">
                 {new Date(r.ts).toLocaleTimeString("en-GB", { hour12: false })}
               </span>
               {r.ok ? (
                 <>
-                  <span className="rounded bg-emerald-950/60 px-1.5 text-emerald-300">ok</span>
-                  <span className="text-sky-300 tabular-nums">{guidanceSummary(r)}</span>
+                  <StatusPill tone="success" className="py-0 text-[11px]">ok</StatusPill>
+                  <span className="text-[var(--accent)] tabular-nums">{guidanceSummary(r)}</span>
                 </>
               ) : (
-                <span className="rounded bg-rose-950/60 px-1.5 text-rose-300">failed</span>
+                <StatusPill tone="danger" className="py-0 text-[11px]">failed</StatusPill>
               )}
             </div>
-            <p className="mt-0.5 text-xs text-slate-300">{r.ok ? guidanceText(r) : r.error}</p>
+            <p className="mt-0.5 text-xs text-[var(--text)]">{r.ok ? guidanceText(r) : r.error}</p>
             {r.ok && r.lesson && (
-              <p className="mt-0.5 text-[11px] italic text-slate-500">lesson: {r.lesson}</p>
+              <p className="mt-0.5 text-[11px] italic text-[var(--text-subtle)]">lesson: {r.lesson}</p>
             )}
           </div>
         ))}
@@ -161,40 +163,45 @@ export default function AgentThoughtsFeed({ variant = "p2p" }: Props) {
 }
 
 function HealthSummary({ live, total }: { live: number; total: number }) {
-  const style =
-    live === total
-      ? "border-emerald-800 bg-emerald-950/40 text-emerald-300"
-      : live > 0
-        ? "border-amber-800 bg-amber-950/40 text-amber-300"
-        : "border-slate-700 bg-slate-900 text-slate-400";
-  return (
-    <span className={`rounded border px-2 py-0.5 ${style}`}>
-      LLM {live}/{total} live
-    </span>
-  );
+  const tone = live === total ? "success" : live > 0 ? "amber" : "muted";
+  return <StatusPill tone={tone}>LLM {live}/{total} live</StatusPill>;
 }
 
 function FilterChip({
   label,
   active,
-  badge,
+  color,
   onClick,
 }: {
   label: string;
   active: boolean;
-  badge?: string;
+  color?: string;
   onClick: () => void;
 }) {
+  const activeStyle = color
+    ? { borderColor: `${color}66`, backgroundColor: `${color}1f`, color }
+    : undefined;
   return (
     <button
       onClick={onClick}
-      className={`rounded border px-1.5 py-0.5 transition-colors ${
-        active
-          ? (badge ?? "border-sky-700 bg-sky-950/60 text-sky-200")
-          : "border-slate-800 bg-slate-900/40 text-slate-500 hover:text-slate-300"
+      style={active ? activeStyle : undefined}
+      className={`rounded-full border px-2 py-0.5 transition-colors ${
+        active ? "font-medium" : "border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text-subtle)] hover:text-[var(--text)]"
       }`}
     >
       {label}
     </button>
+  );
+}
+
+function AgentBadge({ name }: { name: string }) {
+  const color = badgeForName(name);
+  return (
+    <span
+      className="rounded-full border px-2 py-0.5 font-medium"
+      style={{ borderColor: `${color}66`, backgroundColor: `${color}1f`, color }}
+    >
+      {name}
+    </span>
   );
 }

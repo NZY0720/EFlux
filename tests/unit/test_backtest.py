@@ -191,8 +191,9 @@ def test_sample_aggregate_records_p2p_book_prices():
         state = St()
 
     class Sim:
-        vpps = {1: VPP()}
-        engine = Engine()
+        def __init__(self):
+            self.vpps = {1: VPP()}
+            self.engine = Engine()
 
     row = _sample_aggregate(Sim(), datetime(2026, 1, 1, tzinfo=UTC), 0, -3.5)  # type: ignore[arg-type]
     assert row["lmp"] == -3.5  # CAISO reference unchanged
@@ -221,8 +222,9 @@ def test_sample_aggregate_blank_p2p_prices_without_book():
         state = St()
 
     class Sim:
-        vpps = {1: VPP()}
-        engine = Engine()
+        def __init__(self):
+            self.vpps = {1: VPP()}
+            self.engine = Engine()
 
     row = _sample_aggregate(Sim(), datetime(2026, 1, 1, tzinfo=UTC), 0, 42.0)  # type: ignore[arg-type]
     assert row["p2p_last_price"] is None

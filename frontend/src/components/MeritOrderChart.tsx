@@ -4,6 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchSupplyCurve } from "../api/client";
 import type { SupplyCurve } from "../api/types";
 import { CATEGORY_ORDER, categoryMeta } from "../lib/categories";
+import { EmptyState } from "./DashboardCard";
+import { chartAxis, chartLegend, chartTooltip, useChartTheme } from "./chartTheme";
 
 interface Segment {
   x0: number;
@@ -16,7 +18,7 @@ interface Segment {
 interface RenderApi {
   value: (i: number) => number;
   coord: (p: [number, number]) => [number, number];
-  style: () => Record<string, unknown>;
+  visual: (key: string) => unknown;
 }
 
 /**
@@ -28,6 +30,7 @@ interface RenderApi {
  */
 export default function MeritOrderChart() {
   const [curve, setCurve] = useState<SupplyCurve | null>(null);
+  const theme = useChartTheme();
 
   useEffect(() => {
     let cancelled = false;
@@ -71,13 +74,15 @@ export default function MeritOrderChart() {
   }, [curve]);
 
   if (!curve) {
-    return <div className="h-72 flex items-center justify-center text-slate-500">Loading supply stack…</div>;
+    return <EmptyState className="h-72" title="Loading supply stack..." />;
   }
   if (curve.asks.length === 0 && curve.bids.length === 0) {
     return (
-      <div className="h-72 flex items-center justify-center text-center text-sm text-slate-500">
-        Order book is empty right now — the stack rebuilds within seconds as agents quote.
-      </div>
+      <EmptyState
+        className="h-72"
+        title="Order book is empty"
+        body="The stack rebuilds within seconds as agents quote."
+      />
     );
   }
 
@@ -92,7 +97,12 @@ export default function MeritOrderChart() {
         width: Math.max(bottomRight[0] - topLeft[0], 1), // keep slivers visible
         height: bottomRight[1] - topLeft[1],
       },
-      style: api.style(),
+      style: {
+        fill: api.visual("color") as string,
+        stroke: theme.grid,
+        lineWidth: 0.5,
+        opacity: 0.86,
+      },
     };
   };
 
@@ -113,31 +123,25 @@ export default function MeritOrderChart() {
     grid: { left: 55, right: 20, top: 44, bottom: 42 },
     legend: {
       top: 0,
-      textStyle: { color: "#94a3b8", fontSize: 11 },
-      itemWidth: 12,
-      itemHeight: 8,
+      ...chartLegend(theme),
     },
     xAxis: {
       type: "value",
       name: "cumulative qty (kWh)",
       nameLocation: "middle",
       nameGap: 28,
-      nameTextStyle: { color: "#64748b", fontSize: 11 },
-      axisLabel: { color: "#94a3b8" },
-      splitLine: { lineStyle: { color: "#1e293b" } },
+      nameTextStyle: { color: theme.muted, fontSize: 11 },
+      ...chartAxis(theme),
     },
     yAxis: {
       type: "value",
       name: "price ($/MWh)",
-      nameTextStyle: { color: "#64748b", fontSize: 11 },
-      axisLabel: { color: "#94a3b8" },
-      splitLine: { lineStyle: { color: "#1e293b" } },
+      nameTextStyle: { color: theme.muted, fontSize: 11 },
+      ...chartAxis(theme),
     },
     tooltip: {
       trigger: "item",
-      backgroundColor: "#1e293b",
-      borderWidth: 0,
-      textStyle: { color: "#e2e8f0" },
+      ...chartTooltip(theme),
       formatter: (p: { seriesName: string; value: number[] | [number, number] }) => {
         const v = p.value as number[];
         if (v.length >= 4) {
@@ -154,7 +158,7 @@ export default function MeritOrderChart() {
         type: "line",
         data: demand,
         symbol: "none",
-        lineStyle: { color: "#e2e8f0", width: 1.5, type: "dashed" },
+        lineStyle: { color: theme.text, width: 1.6, type: "dashed" },
       },
     ],
     animation: false,

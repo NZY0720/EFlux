@@ -1,67 +1,371 @@
 @import "tailwindcss";
 
-html, body, #root {
-  height: 100%;
-  margin: 0;
-  color: #e6e8f0;
-  font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  -webkit-font-smoothing: antialiased;
+:root,
+:root[data-theme="dark"] {
+  --bg: #080d18;
+  --bg-elevated: #0d1422;
+  --bg-muted: #111a2a;
+  --surface: rgba(15, 23, 42, 0.72);
+  --surface-solid: #111827;
+  --surface-muted: rgba(30, 41, 59, 0.56);
+  --surface-hover: rgba(51, 65, 85, 0.48);
+  --surface-inset: rgba(2, 6, 23, 0.42);
+  --border: rgba(148, 163, 184, 0.18);
+  --border-strong: rgba(148, 163, 184, 0.28);
+  --text: #eef4ff;
+  --text-muted: #a8b4c7;
+  --text-subtle: #6f7f96;
+  --text-inverse: #07111f;
+  --accent: #22b7e8;
+  --accent-strong: #0ea5e9;
+  --accent-soft: rgba(14, 165, 233, 0.16);
+  --accent-contrast: #e8f8ff;
+  --success: #12c99b;
+  --success-soft: rgba(16, 185, 129, 0.16);
+  --warning: #f2a51d;
+  --warning-soft: rgba(245, 158, 11, 0.17);
+  --danger: #f04f72;
+  --danger-soft: rgba(244, 63, 94, 0.17);
+  --violet: #a78bfa;
+  --violet-soft: rgba(139, 92, 246, 0.16);
+  --chart-grid: rgba(148, 163, 184, 0.16);
+  --chart-axis: #9fb0c7;
+  --chart-tooltip-bg: #111827;
+  --chart-tooltip-border: rgba(148, 163, 184, 0.22);
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 18px 42px -30px rgba(0, 0, 0, 0.9);
+  --shadow-card-hover: 0 1px 0 rgba(255, 255, 255, 0.08) inset, 0 22px 48px -28px rgba(14, 165, 233, 0.44);
+  --ring: rgba(34, 183, 232, 0.42);
+  --page-gradient:
+    linear-gradient(180deg, rgba(14, 24, 41, 0.94) 0%, rgba(8, 13, 24, 1) 42%, rgba(7, 12, 20, 1) 100%),
+    linear-gradient(115deg, rgba(34, 183, 232, 0.10) 0%, transparent 34%, rgba(18, 201, 155, 0.08) 72%, transparent 100%);
 }
 
-/* Layered deep-space backdrop: two faint energy-toned glows over the base navy,
-   fixed so it stays put while content scrolls. */
+:root[data-theme="light"] {
+  --bg: #eef3f8;
+  --bg-elevated: #f8fafc;
+  --bg-muted: #e5edf5;
+  --surface: rgba(255, 255, 255, 0.86);
+  --surface-solid: #ffffff;
+  --surface-muted: rgba(241, 245, 249, 0.9);
+  --surface-hover: rgba(226, 232, 240, 0.74);
+  --surface-inset: rgba(226, 232, 240, 0.58);
+  --border: rgba(51, 65, 85, 0.16);
+  --border-strong: rgba(51, 65, 85, 0.28);
+  --text: #0f172a;
+  --text-muted: #475569;
+  --text-subtle: #718096;
+  --text-inverse: #f8fafc;
+  --accent: #047da8;
+  --accent-strong: #0369a1;
+  --accent-soft: rgba(2, 132, 199, 0.12);
+  --accent-contrast: #f0fbff;
+  --success: #047857;
+  --success-soft: rgba(5, 150, 105, 0.12);
+  --warning: #b45309;
+  --warning-soft: rgba(217, 119, 6, 0.13);
+  --danger: #be123c;
+  --danger-soft: rgba(225, 29, 72, 0.12);
+  --violet: #6d28d9;
+  --violet-soft: rgba(124, 58, 237, 0.12);
+  --chart-grid: rgba(71, 85, 105, 0.16);
+  --chart-axis: #4b6078;
+  --chart-tooltip-bg: #ffffff;
+  --chart-tooltip-border: rgba(51, 65, 85, 0.18);
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.9) inset, 0 18px 42px -32px rgba(15, 23, 42, 0.4);
+  --shadow-card-hover: 0 1px 0 rgba(255, 255, 255, 0.95) inset, 0 22px 48px -32px rgba(2, 132, 199, 0.38);
+  --ring: rgba(3, 105, 161, 0.28);
+  --page-gradient:
+    linear-gradient(180deg, rgba(248, 250, 252, 1) 0%, rgba(238, 243, 248, 1) 48%, rgba(228, 236, 244, 1) 100%),
+    linear-gradient(115deg, rgba(2, 132, 199, 0.08) 0%, transparent 38%, rgba(5, 150, 105, 0.07) 76%, transparent 100%);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  color: var(--text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
 body {
-  background-color: #0b1020;
-  background-image:
-    radial-gradient(900px 500px at 12% -8%, rgba(56, 189, 248, 0.12), transparent 60%),
-    radial-gradient(800px 520px at 100% 0%, rgba(52, 211, 153, 0.10), transparent 55%),
-    radial-gradient(700px 700px at 50% 120%, rgba(99, 102, 241, 0.08), transparent 60%);
+  background-color: var(--bg);
+  background-image: var(--page-gradient);
   background-attachment: fixed;
 }
 
-/* Gradient brand wordmark. */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
 .eflux-wordmark {
-  background: linear-gradient(90deg, #7dd3fc 0%, #38bdf8 45%, #34d399 100%);
+  background: linear-gradient(90deg, var(--accent) 0%, #22c1f1 42%, var(--success) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
   letter-spacing: 0.01em;
 }
 
-/* Slim, theme-matched scrollbars for the scrolling feeds/tables. */
+.eflux-card,
+.eflux-panel {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+  backdrop-filter: blur(14px);
+}
+
+.eflux-card {
+  border-radius: 8px;
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease,
+    transform 160ms ease,
+    background-color 160ms ease;
+}
+
+.eflux-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-card-hover);
+  transform: translateY(-1px);
+}
+
+.eflux-panel {
+  border-radius: 8px;
+}
+
+.eflux-inset {
+  border: 1px solid var(--border);
+  background: var(--surface-inset);
+}
+
+.eflux-table-shell {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+
+.eflux-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.eflux-table thead {
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface-solid) 86%, var(--bg) 14%);
+}
+
+.eflux-table th,
+.eflux-table td {
+  border-bottom: 1px solid var(--border);
+}
+
+.eflux-table tbody tr {
+  transition: background-color 140ms ease;
+}
+
+.eflux-table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--surface-muted) 34%, transparent);
+}
+
+.eflux-table tbody tr:hover {
+  background: var(--surface-hover);
+}
+
+.eflux-input,
+.eflux-select {
+  border: 1px solid var(--border-strong);
+  background: var(--surface-inset);
+  color: var(--text);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    background-color 140ms ease;
+}
+
+.eflux-input::placeholder {
+  color: var(--text-subtle);
+}
+
+.eflux-input:focus,
+.eflux-select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--ring);
+}
+
+.eflux-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  border-radius: 6px;
+  border: 1px solid var(--border-strong);
+  color: var(--text);
+  background: var(--surface-muted);
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
+}
+
+.eflux-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.eflux-btn:active {
+  transform: translateY(1px);
+}
+
+.eflux-btn-primary {
+  border-color: color-mix(in srgb, var(--accent-strong) 78%, white 22%);
+  background: var(--accent-strong);
+  color: var(--accent-contrast);
+}
+
+.eflux-btn-primary:hover {
+  background: var(--accent);
+}
+
+.eflux-btn-success {
+  border-color: color-mix(in srgb, var(--success) 74%, white 26%);
+  background: var(--success);
+  color: var(--text-inverse);
+}
+
+.eflux-btn-danger {
+  border-color: color-mix(in srgb, var(--danger) 74%, white 26%);
+  background: var(--danger);
+  color: var(--text-inverse);
+}
+
+.eflux-chip {
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  color: var(--text-muted);
+  border-radius: 9999px;
+  transition:
+    color 140ms ease,
+    background-color 140ms ease,
+    border-color 140ms ease;
+}
+
+.eflux-chip:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+}
+
+.eflux-chip-active {
+  border-color: color-mix(in srgb, var(--accent) 52%, transparent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.eflux-tab-active {
+  border-color: color-mix(in srgb, var(--accent) 36%, transparent);
+  background: var(--accent-soft);
+  color: var(--text);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.07) inset;
+}
+
+.eflux-live-dot {
+  position: relative;
+}
+
+.eflux-live-dot::after {
+  position: absolute;
+  inset: -4px;
+  content: "";
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0.18;
+  animation: eflux-ping 1.9s ease-out infinite;
+}
+
 * {
   scrollbar-width: thin;
-  scrollbar-color: #334155 transparent;
+  scrollbar-color: color-mix(in srgb, var(--text-subtle) 58%, transparent) transparent;
 }
-*::-webkit-scrollbar { width: 8px; height: 8px; }
-*::-webkit-scrollbar-track { background: transparent; }
-*::-webkit-scrollbar-thumb {
-  background: #283449;
-  border-radius: 9999px;
-}
-*::-webkit-scrollbar-thumb:hover { background: #3b4a63; }
 
-/* Soft lift on the dashboard cards — a faint top highlight + outer shadow that
-   warms slightly on hover. Opt-in via the `eflux-card` class. */
-.eflux-card {
-  box-shadow:
-    0 1px 0 0 rgba(255, 255, 255, 0.03) inset,
-    0 10px 30px -18px rgba(0, 0, 0, 0.7);
-  transition: border-color 160ms ease, box-shadow 160ms ease;
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
 }
-.eflux-card:hover {
-  border-color: rgba(56, 189, 248, 0.28);
-  box-shadow:
-    0 1px 0 0 rgba(255, 255, 255, 0.05) inset,
-    0 14px 38px -16px rgba(2, 132, 199, 0.35);
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--text-subtle) 58%, transparent);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--text-subtle);
 }
 
 @keyframes eflux-pulse {
-  0%, 100% { opacity: 0.4; transform: scale(0.92); }
-  50% { opacity: 1; transform: scale(1); }
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
-.eflux-pulse { animation: eflux-pulse 1.8s ease-in-out infinite; }
+
+@keyframes eflux-ping {
+  0% {
+    transform: scale(0.7);
+    opacity: 0.24;
+  }
+  80%,
+  100% {
+    transform: scale(1.9);
+    opacity: 0;
+  }
+}
+
+.eflux-pulse {
+  animation: eflux-pulse 1.8s ease-in-out infinite;
+}
 
 @media (prefers-reduced-motion: reduce) {
-  .eflux-pulse { animation: none; }
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+
+  .eflux-card:hover {
+    transform: none;
+  }
 }

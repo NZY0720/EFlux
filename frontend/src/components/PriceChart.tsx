@@ -1,8 +1,9 @@
 import ReactECharts from "echarts-for-react";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 
 import type { MarketEvent } from "../api/types";
-import { FULL_ZOOM, readZoomEvent, timeZoom, type ZoomWindow } from "./chartZoom";
+import { chartAxis, chartLegend, chartTooltip, useChartTheme } from "./chartTheme";
+import { FULL_ZOOM, timeZoom, usePersistentTimeZoom } from "./chartZoom";
 
 interface PricePoint {
   ts: number; // ms
@@ -52,28 +53,14 @@ const fmtTime = (ms: number) => new Date(ms).toLocaleTimeString("en-GB", { hour1
 export default function PriceChart({ events, initialPrice, initialExternalPrice, variant = "p2p" }: Props) {
   const [mode, setMode] = useState<Mode>("line");
   const [intervalSec, setIntervalSec] = useState<number>(30);
+  const theme = useChartTheme();
   const allowCandles = variant === "p2p";
   const effectiveMode: Mode = allowCandles ? mode : "line";
 
   // Persist the user's zoom window (absolute time) across streaming rebuilds.
   // Mutated on the echarts "datazoom" event and re-applied to the option each
   // render, so a 1Hz data tick (notMerge) doesn't snap the view back to full range.
-  const zoomRef = useRef<ZoomWindow>(FULL_ZOOM);
-  const onEvents = useMemo(
-    () => ({
-      datazoom: (params: {
-        start?: number;
-        end?: number;
-        startValue?: number;
-        endValue?: number;
-        batch?: Array<{ start?: number; end?: number; startValue?: number; endValue?: number }>;
-      }) => {
-        const w = readZoomEvent(params);
-        if (w) zoomRef.current = w;
-      },
-    }),
-    [],
-  );
+  const { zoomRef, onEvents } = usePersistentTimeZoom();
 
   // All price points in the buffer (oldest first): trade prints + per-tick
   // last_price. Full session history — the time-zoom slider trims the view.
@@ -143,25 +130,31 @@ export default function PriceChart({ events, initialPrice, initialExternalPrice,
     return [...byBucket.values()].sort((a, b) => a.t - b.t);
   }, [primaryPoints, effectiveMode, intervalSec]);
 
-  const baseAxis = {
-    axisLabel: { color: "#94a3b8" },
-    splitLine: { lineStyle: { color: "#1e293b" } },
+  const baseAxis = chartAxis(theme);
+  const zoomTheme = {
+    bg: theme.surface,
+    border: theme.tooltipBorder,
+    filler: "rgba(34, 183, 232, 0.14)",
+    handle: theme.axis,
+    axis: theme.axis,
+    grid: theme.grid,
+    accent: theme.accent,
   };
 
   const lineOption = {
     backgroundColor: "transparent",
-    legend: { top: 0, right: 12, textStyle: { color: "#94a3b8" } },
+    legend: { top: 0, right: 12, ...chartLegend(theme) },
     grid: { left: 50, right: 20, top: 32, bottom: 56 },
     xAxis: { type: "time", ...baseAxis },
     yAxis: {
       type: "value",
       scale: true,
       name: "price ($/MWh)",
-      nameTextStyle: { color: "#64748b", fontSize: 11 },
+      nameTextStyle: { color: theme.muted, fontSize: 11 },
       ...baseAxis,
     },
-    tooltip: { trigger: "axis", backgroundColor: "#1e293b", borderWidth: 0, textStyle: { color: "#e2e8f0" } },
-    dataZoom: timeZoom(zoomRef.current),
+    tooltip: { trigger: "axis", ...chartTooltip(theme) },
+    dataZoom: timeZoom(zoomRef.current, zoomTheme),
     series:
       variant === "realprice"
         ? [
@@ -173,8 +166,8 @@ export default function PriceChart({ events, initialPrice, initialExternalPrice,
               smooth: false,
               sampling: "lttb",
               data: lineExternalPoints.map((p) => [p.ts, p.price]),
-              lineStyle: { color: "#f59e0b", width: 1.5 },
-              areaStyle: { color: "rgba(245, 158, 11, 0.1)" },
+              lineStyle: { color: theme.warning, width: 1.8 },
+              areaStyle: { color: "rgba(245, 158, 11, 0.12)" },
             },
           ]
         : [
@@ -186,8 +179,8 @@ export default function PriceChart({ events, initialPrice, initialExternalPrice,
               smooth: false,
               sampling: "lttb",
               data: linePoints.map((p) => [p.ts, p.price]),
-              lineStyle: { color: "#38bdf8", width: 1.5 },
-              areaStyle: { color: "rgba(56, 189, 248, 0.1)" },
+              lineStyle: { color: theme.accent, width: 1.8 },
+              areaStyle: { color: "rgba(34, 183, 232, 0.12)" },
             },
           ],
     animation: false,
@@ -200,34 +193,32 @@ export default function PriceChart({ events, initialPrice, initialExternalPrice,
       type: "category",
       data: candles.map((c) => fmtTime(c.t)),
       boundaryGap: true,
-      axisLabel: { color: "#94a3b8", hideOverlap: true },
-      axisLine: { lineStyle: { color: "#334155" } },
+      ...baseAxis,
+      axisLabel: { color: theme.axis, hideOverlap: true },
     },
     yAxis: {
       type: "value",
       scale: true,
       name: "price ($/MWh)",
-      nameTextStyle: { color: "#64748b", fontSize: 11 },
+      nameTextStyle: { color: theme.muted, fontSize: 11 },
       ...baseAxis,
     },
     tooltip: {
       trigger: "axis",
       axisPointer: { type: "cross" },
-      backgroundColor: "#1e293b",
-      borderWidth: 0,
-      textStyle: { color: "#e2e8f0" },
+      ...chartTooltip(theme),
     },
-    dataZoom: timeZoom(zoomRef.current),
+    dataZoom: timeZoom(zoomRef.current, zoomTheme),
     series: [
       {
         type: "candlestick",
         // ECharts candlestick value order: [open, close, low, high].
         data: candles.map((c) => [c.o, c.c, c.l, c.h]),
         itemStyle: {
-          color: "#10b981", // bullish body (close ≥ open)
-          color0: "#f43f5e", // bearish body
-          borderColor: "#34d399",
-          borderColor0: "#fb7185",
+          color: theme.success, // bullish body (close >= open)
+          color0: theme.danger, // bearish body
+          borderColor: theme.success,
+          borderColor0: theme.danger,
         },
       },
     ],
@@ -237,8 +228,8 @@ export default function PriceChart({ events, initialPrice, initialExternalPrice,
   const hasCandles = candles.length > 0;
 
   const segBtn = (active: boolean) =>
-    `px-2.5 py-1 text-xs transition-colors ${
-      active ? "bg-sky-600 text-white" : "bg-slate-800 text-slate-300 hover:bg-slate-700"
+    `px-2.5 py-1 text-xs font-medium transition-colors ${
+      active ? "bg-[var(--accent-strong)] text-[var(--accent-contrast)]" : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
     }`;
 
   return (
@@ -246,7 +237,7 @@ export default function PriceChart({ events, initialPrice, initialExternalPrice,
       {allowCandles && (
         <div className="flex items-center justify-end gap-2">
           {effectiveMode === "candles" && (
-            <div className="inline-flex overflow-hidden rounded border border-slate-700">
+            <div className="inline-flex overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-inset)]">
               {INTERVALS.map((iv) => (
                 <button key={iv.sec} onClick={() => setIntervalSec(iv.sec)} className={segBtn(intervalSec === iv.sec)}>
                   {iv.label}
@@ -254,7 +245,7 @@ export default function PriceChart({ events, initialPrice, initialExternalPrice,
               ))}
             </div>
           )}
-          <div className="inline-flex overflow-hidden rounded border border-slate-700">
+          <div className="inline-flex overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-inset)]">
             <button
               onClick={() => {
                 setMode("line");
@@ -278,7 +269,7 @@ export default function PriceChart({ events, initialPrice, initialExternalPrice,
       )}
       <div className="h-72 w-full">
         {effectiveMode === "candles" && !hasCandles ? (
-          <div className="flex h-full items-center justify-center text-sm text-slate-500">
+          <div className="flex h-full items-center justify-center text-sm text-[var(--text-subtle)]">
             Waiting for trades to aggregate…
           </div>
         ) : (

@@ -1,6 +1,8 @@
+import { BrainCircuit, ChartCandlestick, ListChecks, Scale, Zap } from "lucide-react";
+
 import AgentThoughtsFeed from "../components/AgentThoughtsFeed";
+import { CardTitle, DashboardCard } from "../components/DashboardCard";
 import DataSourceBanner from "../components/DataSourceBanner";
-import { BoltIcon, LlmIcon, MarketIcon, ScaleIcon, type IconProps } from "../components/icons";
 import IntroStrip from "../components/IntroStrip";
 import KpiBar from "../components/KpiBar";
 import MeritOrderChart from "../components/MeritOrderChart";
@@ -9,15 +11,6 @@ import PriceChart from "../components/PriceChart";
 import RenewPpoButton from "../components/RenewPpoButton";
 import TradeTape from "../components/TradeTape";
 import { useMarket } from "../state/marketStream";
-
-function CardTitle({ icon: Icon, children }: { icon: (p: IconProps) => React.ReactElement; children: React.ReactNode }) {
-  return (
-    <h3 className="mb-3 flex items-center gap-2 text-sm uppercase tracking-wide text-slate-400">
-      <Icon size={15} className="text-sky-400/80" />
-      {children}
-    </h3>
-  );
-}
 
 /**
  * P2P market dashboard: peer-to-peer continuous double auction. The story is
@@ -30,7 +23,7 @@ export default function P2PMarketOverview() {
   const { recent, snapshot } = useMarket();
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="mx-auto w-full max-w-[1800px] space-y-6 px-4 py-5 md:p-6">
       <IntroStrip variant="p2p" />
       <KpiBar snapshot={snapshot} builtinVpps={snapshot?.num_builtin_vpps ?? 0} />
       <DataSourceBanner dataSource={snapshot?.data_source} showExternalPrice={false} />
@@ -39,35 +32,35 @@ export default function P2PMarketOverview() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4 lg:col-span-2">
-          <CardTitle icon={MarketIcon}>Merit order — who supplies at what price</CardTitle>
+        <DashboardCard className="lg:col-span-2">
+          <CardTitle icon={ChartCandlestick}>Merit order - who supplies at what price</CardTitle>
           <MeritOrderChart />
-        </section>
-        <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-          <CardTitle icon={LlmIcon}>Agent thoughts (LLM)</CardTitle>
+        </DashboardCard>
+        <DashboardCard>
+          <CardTitle icon={BrainCircuit}>Agent thoughts (LLM)</CardTitle>
           <AgentThoughtsFeed variant="p2p" />
-        </section>
+        </DashboardCard>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-          <CardTitle icon={BoltIcon}>Price — emergent local P2P price</CardTitle>
+        <DashboardCard>
+          <CardTitle icon={Zap}>Price - emergent local P2P price</CardTitle>
           <PriceChart
             variant="p2p"
             events={recent}
             initialPrice={snapshot?.last_price ? Number(snapshot.last_price) : null}
           />
-        </section>
-        <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-          <CardTitle icon={ScaleIcon}>Order book depth</CardTitle>
+        </DashboardCard>
+        <DashboardCard>
+          <CardTitle icon={Scale}>Order book depth</CardTitle>
           <OrderBookDepth snapshot={snapshot} />
-        </section>
+        </DashboardCard>
       </div>
 
-      <section className="eflux-card rounded-lg border border-slate-800 bg-slate-900/40 p-4">
-        <CardTitle icon={MarketIcon}>Recent trades (peer-to-peer)</CardTitle>
+      <DashboardCard>
+        <CardTitle icon={ListChecks}>Recent trades (peer-to-peer)</CardTitle>
         <TradeTape events={recent} />
-      </section>
+      </DashboardCard>
     </div>
   );
 }

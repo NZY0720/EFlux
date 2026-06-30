@@ -12,7 +12,7 @@ export default function MarketOverview() {
   // Wait for the backend meta so we don't flash the wrong dashboard's layout
   // (the two compositions differ) before the mode resolves.
   if (!ready) {
-    return <div className="p-6 text-sm text-slate-500">Loading market…</div>;
+    return <div className="p-6 text-sm text-[var(--text-subtle)]">Loading market...</div>;
   }
   return mode === "realprice" ? <RealTimeMarketOverview /> : <P2PMarketOverview />;
 }

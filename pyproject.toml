@@ -16,13 +16,8 @@ dependencies = [
     "alembic>=1.14",
     "redis[hiredis]>=5.2",
     "sortedcontainers>=2.4",
-    "itsdangerous>=2.2",
     "httpx>=0.28",
-    "structlog>=24.4",
-    "orjson>=3.10",
-    "python-multipart>=0.0.20",
     "click>=8.1",
-    "rich>=13.9",
     "pyyaml>=6.0",
 ]
 
