@@ -19,7 +19,7 @@ from eflux.config import get_settings
 from eflux.db.base import Base
 from eflux.db.session import get_engine
 from eflux.simulator.runner import Simulator
-from eflux.simulator.scenarios import load_default_scenario
+from eflux.simulator.scenarios import load_default_scenario, provision_managed_vpp
 
 log = logging.getLogger(__name__)
 
@@ -38,6 +38,45 @@ async def _build_bus(settings) -> EventBus:
             await bus.close()
     log.info("Using InMemoryBus")
     return InMemoryBus()
+
+
+async def _rehydrate_managed_vpps(sim: Simulator) -> None:
+    """Re-provision persisted managed agents (Tier 0) so they survive a restart. Only the agent
+    *definitions* persist (vpps.is_managed rows); the live market state is ephemeral."""
+    from sqlalchemy import select
+
+    from eflux.db.models import VPP
+    from eflux.db.session import get_sessionmaker
+
+    count = 0
+    async with get_sessionmaker()() as session:
+        rows = (
+            (
+                await session.execute(
+                    select(VPP).where(VPP.is_managed.is_(True), VPP.is_active.is_(True))
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for row in rows:
+            cfg = row.managed_config or {}
+            try:
+                provision_managed_vpp(
+                    sim,
+                    owner_id=row.owner_id,
+                    name=row.name,
+                    params=row.params,
+                    persona_prompt=cfg.get("persona"),
+                    agent_params=cfg.get("agent_params") or {},
+                    seed=cfg.get("seed"),
+                    managed_def_id=row.id,
+                )
+                count += 1
+            except Exception:
+                log.exception("Failed to rehydrate managed VPP id=%s name=%s", row.id, row.name)
+    if count:
+        log.info("Rehydrated %d managed VPP(s) from the DB", count)
 
 
 @asynccontextmanager

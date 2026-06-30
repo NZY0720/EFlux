@@ -3,6 +3,8 @@
 **Originally drafted:** 2026-06-22 · **Last reviewed:** 2026-06-28  
 **Purpose:** Captures the high-level design intent behind EFlux — the architectural vision and the agreed relationship between the LLM strategist, PPO policy, and Truthful valuation layers. This is the "why"; refer to the code and to [AGENT_SPEC.md](AGENT_SPEC.md) for current implementation detail.
 
+**See also:** [EXTERNAL_PARTICIPATION.md](EXTERNAL_PARTICIPATION.md) — external-user onboarding: participation modes, policies, and the leaderboard (builds on §3 and §9 below).
+
 > Before implementing changes, verify these notes against the current repository state. They record the architectural understanding and decisions reached in discussion, not an immutable description of the codebase.
 
 ## 1. Project Overview

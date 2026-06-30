@@ -13,6 +13,7 @@ from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
 from eflux.db.models import VPP
 from eflux.market.units import internal_cash_to_usd
 from eflux.simulator.agent_spec import validate_vpp_params
+from eflux.simulator.scenarios import provision_managed_vpp, validate_managed_agent_params
 
 router = APIRouter(prefix="/vpps", tags=["vpps"])
 
@@ -47,6 +48,7 @@ class ManagedVPPOut(BaseModel):
     # "live" | "degraded" | "offline" — computed from the agent's recent
     # reflection outcomes so the UI badge reflects reality, not startup state.
     llm_health_state: str
+    persona: str | None = None  # the strategy brief, so the UI can pre-fill the tune form
 
 
 class ManagedTradeOut(BaseModel):
@@ -108,7 +110,11 @@ class ManagedVPPPerformanceOut(BaseModel):
 
 @router.get("", response_model=list[VPPOut])
 async def list_my_vpps(session: DbSession, user: CurrentUser) -> list[VPPOut]:
-    stmt = select(VPP).where(VPP.owner_id == user.id).order_by(VPP.created_at.desc())
+    stmt = (
+        select(VPP)
+        .where(VPP.owner_id == user.id, VPP.is_managed.is_(False))
+        .order_by(VPP.created_at.desc())
+    )
     rows = (await session.execute(stmt)).scalars().all()
     return [
         VPPOut(
@@ -153,32 +159,32 @@ def _llm_health(vpp) -> tuple[str, LLMHealthOut | None]:
     return state, health
 
 
+def _managed_vpp_out(vpp) -> ManagedVPPOut:
+    state, health = _llm_health(vpp)
+    status = vpp.llm_status
+    if health is not None and (health.ok_count or health.fail_count):
+        status = f"{status} — {health.ok_count} ok / {health.fail_count} failed"
+    return ManagedVPPOut(
+        id=vpp.managed_def_id if vpp.managed_def_id is not None else vpp.vpp_id,
+        name=vpp.name,
+        params=vpp.params.to_dict(),
+        is_active=True,
+        is_external=False,
+        agent_kind=vpp.agent.__class__.__name__,
+        strategy=vpp.strategy,
+        llm_live=vpp.llm_live,
+        llm_status=status,
+        llm_health_state=state,
+        persona=getattr(vpp.agent, "persona_prompt", None),
+    )
+
+
 @router.get("/managed", response_model=list[ManagedVPPOut])
 async def list_my_managed_vpps(
     user: CurrentUser,
     sim: SimulatorDep,
 ) -> list[ManagedVPPOut]:
-    out: list[ManagedVPPOut] = []
-    for vpp in sim.my_managed_vpps():
-        state, health = _llm_health(vpp)
-        status = vpp.llm_status
-        if health is not None and (health.ok_count or health.fail_count):
-            status = f"{status} — {health.ok_count} ok / {health.fail_count} failed"
-        out.append(
-            ManagedVPPOut(
-                id=vpp.vpp_id,
-                name=vpp.name,
-                params=vpp.params.to_dict(),
-                is_active=True,
-                is_external=False,
-                agent_kind=vpp.agent.__class__.__name__,
-                strategy=vpp.strategy,
-                llm_live=vpp.llm_live,
-                llm_status=status,
-                llm_health_state=state,
-            )
-        )
-    return out
+    return [_managed_vpp_out(vpp) for vpp in sim.my_managed_vpps(user.id)]
 
 
 @router.get("/managed/{vpp_id}/performance", response_model=ManagedVPPPerformanceOut)
@@ -187,7 +193,7 @@ async def get_my_managed_vpp_performance(
     user: CurrentUser,
     sim: SimulatorDep,
 ) -> ManagedVPPPerformanceOut:
-    vpp = next((v for v in sim.my_managed_vpps() if v.vpp_id == vpp_id), None)
+    vpp = next((v for v in sim.my_managed_vpps(user.id) if v.managed_def_id == vpp_id), None)
     if vpp is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "managed VPP not found")
     _, health = _llm_health(vpp)
@@ -214,6 +220,203 @@ def _managed_trade_out(record: dict) -> ManagedTradeOut:
     # converted from internal units to USD for display (see market.units).
     out = {**record, "cash": str(internal_cash_to_usd(Decimal(str(record["cash"]))))}
     return ManagedTradeOut(**out)
+
+
+MAX_MANAGED_VPPS_PER_USER = 5
+
+
+class ManagedVPPCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    params: dict[str, object] = Field(default_factory=dict)
+    # Optional LLM strategy brief (the Tier-0 persona) and tactical agent_params
+    # (e.g. demand_beta, price_cap_mult) — validated against the HybridPolicyAgent.
+    persona: str | None = Field(default=None, max_length=600)
+    agent_params: dict[str, object] = Field(default_factory=dict)
+    seed: int | None = None
+
+
+class ManagedVPPUpdate(BaseModel):
+    # Only provided fields change: params merges into the stored DER config, agent_params
+    # replaces the stored set, persona "" clears it / null leaves it unchanged.
+    params: dict[str, object] | None = None
+    persona: str | None = Field(default=None, max_length=600)
+    agent_params: dict[str, object] | None = None
+
+
+@router.post("/managed", response_model=ManagedVPPOut, status_code=status.HTTP_201_CREATED)
+async def create_managed_vpp(
+    payload: ManagedVPPCreate,
+    session: DbSession,
+    user: CurrentUser,
+    sim: SimulatorDep,
+) -> ManagedVPPOut:
+    """Provision a cloud-hosted, LLM-steered managed agent — Tier 0 of
+    docs/EXTERNAL_PARTICIPATION.md. The platform runs the HybridPolicyAgent (LLM strategist +
+    PPO executor + Truthful oracle + RiskGate) autonomously on the user's behalf; the user
+    supplies only a DER endowment and an optional persona/preferences. Params and agent_params
+    are validated against the same schema as the built-in roster (422 on bad input)."""
+    # Quota + name pre-check against the durable record (the DB).
+    existing = (
+        (
+            await session.execute(
+                select(VPP).where(
+                    VPP.owner_id == user.id, VPP.is_managed.is_(True), VPP.is_active.is_(True)
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if any(v.name == payload.name for v in existing):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"you already have a managed agent named {payload.name!r}"
+        )
+    if len(existing) >= MAX_MANAGED_VPPS_PER_USER:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"managed-agent limit reached ({MAX_MANAGED_VPPS_PER_USER} per account)",
+        )
+    # Validate the DER params up front (same 422 shape as POST /vpps).
+    try:
+        parsed = validate_vpp_params(payload.params)
+    except ValidationError as e:
+        detail = [
+            {"loc": ["body", "params", *err["loc"]], "msg": err["msg"], "type": err["type"]}
+            for err in e.errors(include_url=False)
+        ]
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail) from e
+    except ValueError as e:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            [{"loc": ["body", "params"], "msg": str(e), "type": "value_error"}],
+        ) from e
+    # Persist the definition first — its row id is the stable handle the agent is bound to.
+    row = VPP(
+        owner_id=user.id,
+        name=payload.name,
+        params=parsed,
+        is_external=True,
+        is_managed=True,
+        managed_config={
+            "persona": payload.persona,
+            "agent_params": dict(payload.agent_params),
+            "seed": payload.seed,
+        },
+    )
+    session.add(row)
+    try:
+        await session.flush()
+    except Exception as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"name conflict: {e}") from e
+    # Provision the live agent bound to the stable id. agent_params validation happens here; on
+    # failure the exception propagates and get_db rolls the row back — no orphaned definition.
+    try:
+        async with sim._lock:
+            vpp = provision_managed_vpp(
+                sim,
+                owner_id=user.id,
+                name=payload.name,
+                params=parsed,
+                persona_prompt=payload.persona,
+                agent_params=payload.agent_params,
+                seed=payload.seed,
+                managed_def_id=row.id,
+            )
+    except (ValueError, ValidationError) as e:
+        msg = e.errors()[0]["msg"] if isinstance(e, ValidationError) else str(e)
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            [{"loc": ["body", "agent_params"], "msg": msg, "type": "value_error"}],
+        ) from e
+    return _managed_vpp_out(vpp)
+
+
+@router.patch("/managed/{managed_id}", response_model=ManagedVPPOut)
+async def update_managed_vpp(
+    managed_id: int,
+    payload: ManagedVPPUpdate,
+    session: DbSession,
+    user: CurrentUser,
+    sim: SimulatorDep,
+) -> ManagedVPPOut:
+    """Adjust a managed agent's trading preferences (persona, agent_params, DER params) and
+    re-provision it. Applying changes restarts the agent's trading session — open orders reset
+    and SOC returns to default — but the PnL scoreboard (realized PnL, energy traded, trade
+    count) carries over. Ownership enforced; validation mirrors creation (422 on bad input)."""
+    row = (
+        await session.execute(
+            select(VPP).where(
+                VPP.id == managed_id, VPP.owner_id == user.id, VPP.is_managed.is_(True)
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "managed agent not found")
+
+    cfg = dict(row.managed_config or {})
+    new_params = {**row.params, **payload.params} if payload.params else dict(row.params)
+    new_persona = cfg.get("persona") if payload.persona is None else (payload.persona or None)
+    new_agent_params = (
+        dict(cfg.get("agent_params") or {})
+        if payload.agent_params is None
+        else dict(payload.agent_params)
+    )
+    new_seed = cfg.get("seed")
+
+    # Validate everything BEFORE touching the live agent, so a bad patch can't strand it.
+    try:
+        parsed = validate_vpp_params(new_params)
+        validate_managed_agent_params(row.name, new_agent_params)
+    except ValidationError as e:
+        detail = [
+            {"loc": ["body", *err["loc"]], "msg": err["msg"], "type": err["type"]}
+            for err in e.errors(include_url=False)
+        ]
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail) from e
+    except ValueError as e:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            [{"loc": ["body"], "msg": str(e), "type": "value_error"}],
+        ) from e
+
+    # Update the stored definition (re-assign so SQLAlchemy tracks the JSON change).
+    row.params = parsed
+    row.managed_config = {"persona": new_persona, "agent_params": new_agent_params, "seed": new_seed}
+
+    # Re-provision the live agent, carrying over the PnL scoreboard.
+    async with sim._lock:
+        old = next((v for v in sim.vpps.values() if v.managed_def_id == managed_id), None)
+        carry = (
+            (
+                old.state.pnl,
+                old.state.cumulative_energy_bought_kwh,
+                old.state.cumulative_energy_sold_kwh,
+                old.trade_count,
+                list(old.recent_trades),
+            )
+            if old is not None
+            else None
+        )
+        sim.remove_managed_vpp(managed_id)
+        vpp = provision_managed_vpp(
+            sim,
+            owner_id=user.id,
+            name=row.name,
+            params=parsed,
+            persona_prompt=new_persona,
+            agent_params=new_agent_params,
+            seed=new_seed,
+            managed_def_id=managed_id,
+        )
+        if carry is not None:
+            (
+                vpp.state.pnl,
+                vpp.state.cumulative_energy_bought_kwh,
+                vpp.state.cumulative_energy_sold_kwh,
+                vpp.trade_count,
+                vpp.recent_trades,
+            ) = carry
+    return _managed_vpp_out(vpp)
 
 
 @router.post("", response_model=VPPOut, status_code=status.HTTP_201_CREATED)
@@ -261,9 +464,33 @@ async def create_vpp(payload: VPPCreate, session: DbSession, user: CurrentUser) 
 
 @router.delete("/{vpp_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def deactivate_vpp(vpp_id: int, session: DbSession, user: CurrentUser) -> None:
-    stmt = select(VPP).where(VPP.id == vpp_id, VPP.owner_id == user.id)
+    # Passive (order-driven) VPPs only; managed agents go through DELETE /vpps/managed/{id}.
+    stmt = select(VPP).where(
+        VPP.id == vpp_id, VPP.owner_id == user.id, VPP.is_managed.is_(False)
+    )
     vpp = (await session.execute(stmt)).scalar_one_or_none()
     if vpp is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "VPP not found")
     vpp.is_active = False
+    return None
+
+
+@router.delete("/managed/{managed_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_managed_vpp(
+    managed_id: int,
+    session: DbSession,
+    user: CurrentUser,
+    sim: SimulatorDep,
+) -> None:
+    """Remove a managed agent: drop it from the simulator (cancelling its resting orders) and
+    delete its persisted definition. Ownership enforced (404 on anything that isn't yours)."""
+    stmt = select(VPP).where(
+        VPP.id == managed_id, VPP.owner_id == user.id, VPP.is_managed.is_(True)
+    )
+    row = (await session.execute(stmt)).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "managed agent not found")
+    async with sim._lock:
+        sim.remove_managed_vpp(managed_id)
+    await session.delete(row)
     return None

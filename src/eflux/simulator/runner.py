@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 from zoneinfo import ZoneInfo
 
 from eflux.agents.base import AgentContext, BaseAgent, MarketSnapshot, OrderIntent
@@ -31,6 +31,9 @@ from eflux.market.events import EventKind, ExternalTradeEvent, TickEvent, TradeE
 from eflux.market.matching_engine import MatchingEngine
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad, WindTurbine
+
+if TYPE_CHECKING:
+    from eflux.agents.reflective.pool import SharedLLM
 
 log = logging.getLogger(__name__)
 
@@ -81,6 +84,12 @@ class SimulatorVPP:
     battery: Battery
     load: FlexibleLoad
     wind: WindTurbine | None = None
+    # The DB user who provisioned this managed agent via the API. None for built-in /
+    # house roster agents. Scopes my_managed_vpps() so a user sees only their own.
+    owner_id: int | None = None
+    # Stable DB id (vpps.id) of the managed-agent definition this VPP was provisioned from, so
+    # the API can address it across restarts (the negative vpp_id is reassigned on each boot).
+    managed_def_id: int | None = None
     rng: random.Random = field(default_factory=random.Random)
     open_order_ids: list[int] = field(default_factory=list)
     recent_trades: list[dict] = field(default_factory=list)
@@ -101,6 +110,10 @@ class Simulator:
             tick_sim_sec=settings.market_tick_sec,
         )
         self.vpps: dict[int, SimulatorVPP] = {}
+        # One Semaphore-gated LLM connection shared by every managed agent, retained so
+        # the API can provision new managed agents at runtime. Set by the scenario loader
+        # at startup (None until then).
+        self.shared_llm: SharedLLM | None = None
         # "p2p" = peer-to-peer CDA (agents trade each other; CAISO is reference-only).
         # "realprice" = pure price-taking against the live CAISO price (orders settle
         # vs the grid, no peer matching). Selected per launch via EFLUX_MARKET_MODE.
@@ -176,6 +189,7 @@ class Simulator:
         seed: int = 0,
         strategy: str | None = None,
         is_my_vpp: bool = False,
+        owner_id: int | None = None,
         mirror_of: str | None = None,
         llm_live: bool = False,
         llm_status: str = "",
@@ -198,6 +212,7 @@ class Simulator:
             agent=agent,
             strategy=strategy or agent.__class__.__name__,
             is_my_vpp=is_my_vpp,
+            owner_id=owner_id,
             mirror_of=mirror_of,
             llm_live=llm_live,
             llm_status=llm_status,
@@ -225,8 +240,31 @@ class Simulator:
         log.info("Added built-in VPP id=%d name=%s", vpp_id, name)
         return vpp
 
-    def my_managed_vpps(self) -> list[SimulatorVPP]:
-        return [vpp for vpp in self.vpps.values() if vpp.is_my_vpp]
+    def my_managed_vpps(self, owner_id: int | None = None) -> list[SimulatorVPP]:
+        """Managed (is_my_vpp) agents. With owner_id, scope to that user's provisioned
+        agents; without it (internal tick-loop callers) every managed agent, house
+        roster agents included."""
+        managed = [vpp for vpp in self.vpps.values() if vpp.is_my_vpp]
+        if owner_id is not None:
+            managed = [vpp for vpp in managed if vpp.owner_id == owner_id]
+        return managed
+
+    def remove_managed_vpp(self, managed_def_id: int) -> bool:
+        """Remove a provisioned managed VPP (by its stable DB id): cancel its resting orders and
+        drop it from the roster so the tick loop stops driving it. Returns False if not found.
+        Call under self._lock to stay race-free with the tick loop and external submits."""
+        target = next(
+            (v for v in self.vpps.values() if v.managed_def_id == managed_def_id), None
+        )
+        if target is None:
+            return False
+        now_sim = self.clock.now_sim()
+        now_wall = datetime.now(UTC)
+        for order_id in list(target.open_order_ids):
+            self.engine.cancel(order_id, sim_ts=now_sim, wall_ts=now_wall)
+        self.vpps.pop(target.vpp_id, None)
+        log.info("Removed managed VPP id=%s (def=%s)", target.vpp_id, managed_def_id)
+        return True
 
     # How long a data-source check stays fresh before data_source_status()
     # re-inspects weather coverage (cheap, purely in-memory).

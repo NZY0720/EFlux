@@ -36,8 +36,8 @@ data/raw/
 data/agent_memory/
 *.parquet
 
-# Manuscript reference PDFs (large binaries; kept locally, not tracked)
-manuscript/references/*.pdf
+# Manuscript files (kept locally, not tracked)
+manuscript/
 
 # Logs / runtime
 *.log

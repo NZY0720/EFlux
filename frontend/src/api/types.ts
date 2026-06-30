@@ -73,6 +73,7 @@ export interface ManagedVPP {
   llm_live: boolean;
   llm_status: string;
   llm_health_state: "live" | "degraded" | "offline" | string;
+  persona?: string | null;
 }
 
 export interface ReflectionEntry {

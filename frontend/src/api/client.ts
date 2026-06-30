@@ -114,6 +114,39 @@ export async function createVPP(name: string, params: Record<string, number>): P
   return data;
 }
 
+// --- Managed agents (Tier 0: platform-hosted, LLM-steered) ---
+
+export interface ManagedVPPCreatePayload {
+  name: string;
+  params: Record<string, number>;
+  persona?: string | null;
+  agent_params?: Record<string, number>;
+  seed?: number | null;
+}
+
+export async function createManagedVPP(payload: ManagedVPPCreatePayload): Promise<ManagedVPP> {
+  const { data } = await api.post<ManagedVPP>("/vpps/managed", payload);
+  return data;
+}
+
+export interface ManagedVPPUpdatePayload {
+  params?: Record<string, number>;
+  persona?: string | null;
+  agent_params?: Record<string, number>;
+}
+
+export async function updateManagedVPP(
+  id: number,
+  payload: ManagedVPPUpdatePayload,
+): Promise<ManagedVPP> {
+  const { data } = await api.patch<ManagedVPP>(`/vpps/managed/${id}`, payload);
+  return data;
+}
+
+export async function deleteManagedVPP(id: number): Promise<void> {
+  await api.delete(`/vpps/managed/${id}`);
+}
+
 // --- Orders ---
 
 export async function submitOrder(payload: {

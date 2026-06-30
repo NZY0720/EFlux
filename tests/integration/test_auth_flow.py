@@ -28,13 +28,36 @@ async def test_magic_link_consume_then_session_protected_route(client):
     assert r.status_code == 200, r.text
     assert isinstance(r.json(), list)
 
-    # 3b. The LLM fleet is exposed as managed My VPPs.
+    # 3b. A fresh user owns no managed agents yet — the house roster's LLM fleet is
+    #     scoped out (owner_id=None) under per-user onboarding.
+    r = await client.get("/vpps/managed", headers={"Authorization": f"Bearer {sess_token}"})
+    assert r.status_code == 200, r.text
+    assert r.json() == []
+
+    # 3c. Provision a cloud-hosted managed agent (Tier 0); it then appears for this user.
+    r = await client.post(
+        "/vpps/managed",
+        headers={"Authorization": f"Bearer {sess_token}"},
+        json={
+            "name": "my-managed",
+            "params": {"pv_kw_peak": 4.0, "battery_kwh": 10.0},
+            "persona": "Prefer maker orders; stay near 0.5 SOC.",
+            "agent_params": {"demand_beta": 0.5},
+        },
+    )
+    assert r.status_code == 201, r.text
+    created = r.json()
+    assert created["name"] == "my-managed"
+    assert created["agent_kind"] == "HybridPolicyAgent"
+
     r = await client.get("/vpps/managed", headers={"Authorization": f"Bearer {sess_token}"})
     assert r.status_code == 200, r.text
     managed = r.json()
-    assert len(managed) == 6
-    assert managed[0]["name"] == "my-llm-vpp"
+    assert len(managed) == 1
+    assert managed[0]["name"] == "my-managed"
     assert all(m["agent_kind"] == "HybridPolicyAgent" for m in managed)
+
+    # 3d. Its performance is queryable.
     r = await client.get(
         f"/vpps/managed/{managed[0]['id']}/performance",
         headers={"Authorization": f"Bearer {sess_token}"},
@@ -43,6 +66,14 @@ async def test_magic_link_consume_then_session_protected_route(client):
     perf = r.json()
     assert "pnl" in perf
     assert "recent_trades" in perf
+
+    # 3e. Duplicate name for the same user is rejected.
+    r = await client.post(
+        "/vpps/managed",
+        headers={"Authorization": f"Bearer {sess_token}"},
+        json={"name": "my-managed", "params": {"pv_kw_peak": 1.0}},
+    )
+    assert r.status_code == 409, r.text
 
     # 4. No auth → 401.
     r = await client.get("/vpps")

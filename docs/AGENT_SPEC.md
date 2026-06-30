@@ -1,5 +1,7 @@
 # EFlux Agent Specification
 
+**See also:** [EXTERNAL_PARTICIPATION.md](EXTERNAL_PARTICIPATION.md) — how external users onboard and participate (modes, policies, leaderboard), built on this schema.
+
 One schema describes every market participant — the built-in YAML roster and
 external VPPs joining over the API validate against the **same** code path
 (`src/eflux/simulator/agent_spec.py`). The machine-readable contract lives at

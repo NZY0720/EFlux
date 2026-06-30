@@ -116,6 +116,11 @@ class VPP(Base):
     params: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     is_external: Mapped[bool] = mapped_column(default=False, nullable=False)  # external SDK vs built-in
+    # Platform-driven managed agent (Tier 0 of docs/EXTERNAL_PARTICIPATION.md): the simulator
+    # runs a HybridPolicyAgent for the user. managed_config carries the non-DER bits needed to
+    # re-instantiate it on restart: {"persona": str|None, "agent_params": {...}, "seed": int|None}.
+    is_managed: Mapped[bool] = mapped_column(default=False, nullable=False)
+    managed_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )

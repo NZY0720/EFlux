@@ -30,7 +30,7 @@ from eflux.agents.zip_agent import ZIPAgent
 from eflux.config import PROJECT_ROOT, get_settings
 from eflux.data.caiso_reference import caiso_reference_price
 from eflux.simulator.agent_spec import AgentSpec, validate_vpp_params
-from eflux.simulator.runner import Simulator
+from eflux.simulator.runner import Simulator, SimulatorVPP
 from eflux.vpp.base import VPPParams
 
 log = logging.getLogger(__name__)
@@ -173,7 +173,10 @@ def load_default_scenario(sim: Simulator) -> None:
 
     use_real_weather = _real_pv_available()
     managed_specs = [s for s in specs if s.agent in ("hybrid", "reflective")]
-    shared = SharedLLM.from_settings(settings) if managed_specs else None
+    # Build the shared LLM connection unconditionally and retain it on the simulator, so the
+    # API can provision managed agents at runtime even when the roster declares none.
+    shared = SharedLLM.from_settings(settings)
+    sim.shared_llm = shared
 
     counts: dict[str, int] = {}
     managed_index = 0
@@ -182,7 +185,7 @@ def load_default_scenario(sim: Simulator) -> None:
             _add_hybrid_vpp(
                 sim,
                 spec,
-                shared=shared,  # type: ignore[arg-type]  # set when managed_specs is non-empty
+                shared=shared,
                 use_real_weather=use_real_weather,
                 default_seed=42 + i,
                 offset_index=managed_index,
@@ -297,7 +300,8 @@ def _add_hybrid_vpp(
     default_seed: int,
     offset_index: int,
     n_managed: int,
-) -> None:
+    owner_id: int | None = None,
+) -> SimulatorVPP:
     """Add one HybridPolicyAgent VPP sharing the SharedLLM connection.
 
     Offsets are spread evenly over the reflection interval (index-based —
@@ -331,13 +335,14 @@ def _add_hybrid_vpp(
         refresh_offset_ticks=offset,
         persona_prompt=spec.persona.prompt if spec.persona else None,
     )
-    sim.add_builtin_vpp(
+    vpp = sim.add_builtin_vpp(
         name=spec.name,
         params=_build_params(spec, use_real_weather),
         agent=agent,
         seed=seed,
         strategy=f"HybridPolicyAgent ({shared.strategy_suffix})",
         is_my_vpp=True,
+        owner_id=owner_id,
         llm_live=shared.live,
         llm_status=shared.status,
     )
@@ -348,6 +353,60 @@ def _add_hybrid_vpp(
         offset,
         shared.live,
     )
+    return vpp
+
+
+def provision_managed_vpp(
+    sim: Simulator,
+    *,
+    owner_id: int,
+    name: str,
+    params: dict,
+    persona_prompt: str | None = None,
+    agent_params: dict | None = None,
+    seed: int | None = None,
+    managed_def_id: int | None = None,
+) -> SimulatorVPP:
+    """Provision a cloud-hosted managed (LLM-steered HybridPolicyAgent) VPP for an external
+    user at runtime — the same construction and validation as the roster's hybrid entries,
+    but attributed to ``owner_id`` so ``my_managed_vpps(owner_id)`` scopes it to that user.
+    The agent is then driven autonomously by the simulator tick loop.
+
+    Raises ``ValueError`` / pydantic ``ValidationError`` on invalid params or agent_params
+    (the API layer maps these to HTTP 422). Nothing is added to the simulator on failure.
+    """
+    if sim.shared_llm is None:
+        # The scenario loader sets this at startup; build on demand as a defensive fallback.
+        sim.shared_llm = SharedLLM.from_settings(get_settings())
+    spec = AgentSpec(
+        name=name,
+        agent="hybrid",
+        seed=seed,
+        params=dict(params),
+        agent_params=dict(agent_params or {}),
+        persona={"name": name, "prompt": persona_prompt} if persona_prompt else None,
+    )
+    # Stagger this agent's strategist refresh against the managed agents already running so
+    # the single shared LLM endpoint is not hit concurrently (the gate also enforces this).
+    existing = len(sim.my_managed_vpps())
+    vpp = _add_hybrid_vpp(
+        sim,
+        spec,
+        shared=sim.shared_llm,
+        use_real_weather=_real_pv_available(),
+        default_seed=seed if seed is not None else 42,
+        offset_index=existing,
+        n_managed=existing + 1,
+        owner_id=owner_id,
+    )
+    vpp.managed_def_id = managed_def_id
+    return vpp
+
+
+def validate_managed_agent_params(name: str, agent_params: dict | None) -> None:
+    """Raise ValueError if agent_params aren't accepted by HybridPolicyAgent — the same check
+    provisioning runs, exposed so callers can pre-validate before mutating a live agent."""
+    _validate_agent_params(name, dict(agent_params or {}), HybridPolicyAgent)
 
 
 def _add_mirror_vpp(

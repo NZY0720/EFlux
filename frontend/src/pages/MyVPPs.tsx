@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   BatteryCharging,
+  Bot,
   BrainCircuit,
   ChevronDown,
   ChevronRight,
@@ -10,16 +11,22 @@ import {
   ListChecks,
   MapPinned,
   PlusCircle,
+  Save,
+  Settings2,
   ShoppingCart,
+  Trash2,
   Zap,
 } from "lucide-react";
 
 import {
+  createManagedVPP,
   createVPP,
+  deleteManagedVPP,
   fetchManagedVPPPerformance,
   listManagedVPPs,
   listVPPs,
   submitOrder,
+  updateManagedVPP,
 } from "../api/client";
 import type { ManagedVPP, ManagedVPPPerformance, ReflectionEntry, VPP } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
@@ -41,6 +48,15 @@ export default function MyVPPs() {
   const [pvLon, setPvLon] = useState<string>("");
   const [pvTilt, setPvTilt] = useState(30);
   const [pvAzimuth, setPvAzimuth] = useState(180);
+
+  // Managed (Tier 0) agent creation.
+  const [mgName, setMgName] = useState("");
+  const [mgPv, setMgPv] = useState(4);
+  const [mgBatt, setMgBatt] = useState(10);
+  const [mgLoad, setMgLoad] = useState(2);
+  const [mgPersona, setMgPersona] = useState("");
+  const [mgDemandBeta, setMgDemandBeta] = useState(0.5);
+  const [mgBusy, setMgBusy] = useState(false);
 
   const [orderVpp, setOrderVpp] = useState<number | null>(null);
   const [side, setSide] = useState<"buy" | "sell">("buy");
@@ -112,6 +128,40 @@ export default function MyVPPs() {
     }
   };
 
+  const onCreateManaged = async (e: FormEvent) => {
+    e.preventDefault();
+    setMgBusy(true);
+    setError(null);
+    try {
+      const created = await createManagedVPP({
+        name: mgName.trim(),
+        params: { pv_kw_peak: mgPv, battery_kwh: mgBatt, load_kw_base: mgLoad },
+        persona: mgPersona.trim() || null,
+        agent_params: { demand_beta: mgDemandBeta },
+      });
+      setMgName("");
+      setMgPersona("");
+      await reload();
+      setSelectedManaged(created.id);
+      await loadPerformance(created.id);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setMgBusy(false);
+    }
+  };
+
+  const onDeleteManaged = async (id: number) => {
+    setError(null);
+    try {
+      await deleteManagedVPP(id);
+      if (selectedManaged === id) setSelectedManaged(null);
+      await reload();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
   const onOrder = async (e: FormEvent) => {
     e.preventDefault();
     if (orderVpp === null) return;
@@ -130,6 +180,59 @@ export default function MyVPPs() {
 
   return (
     <div className="mx-auto grid w-full max-w-[1800px] grid-cols-1 gap-6 px-4 py-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] md:p-6">
+      <DashboardCard className="lg:col-span-2">
+        <CardTitle icon={Bot}>Deploy a cloud-hosted agent</CardTitle>
+        <p className="mb-4 text-sm text-[var(--text-muted)]">
+          We run an LLM-steered trading agent for you — no code, no infrastructure. Pick a DER
+          endowment and a strategy brief; the platform&apos;s HybridPolicyAgent (LLM strategist + PPO
+          executor + risk gate) trades on your behalf. Tune or remove it anytime.
+        </p>
+        <form onSubmit={onCreateManaged} className="grid grid-cols-1 gap-4 md:grid-cols-2">
+          <div className="space-y-3">
+            <input
+              placeholder="agent name"
+              required
+              value={mgName}
+              onChange={(e) => setMgName(e.target.value)}
+              className="eflux-input w-full rounded-md px-3 py-2 text-sm outline-none"
+            />
+            <div className="grid grid-cols-3 gap-2">
+              <NumberField label="PV peak (kW)" value={mgPv} step="0.5" onChange={setMgPv} />
+              <NumberField label="Battery (kWh)" value={mgBatt} step="1" onChange={setMgBatt} />
+              <NumberField label="Load (kW)" value={mgLoad} step="0.5" onChange={setMgLoad} />
+            </div>
+            <SliderField
+              label={`Demand response (demand_beta ${mgDemandBeta.toFixed(2)})`}
+              value={mgDemandBeta}
+              min={0}
+              max={1}
+              step={0.05}
+              onChange={setMgDemandBeta}
+            />
+          </div>
+          <div className="flex flex-col">
+            <label className="flex flex-1 flex-col text-xs font-medium text-[var(--text-muted)]">
+              Strategy brief (persona) — optional
+              <textarea
+                value={mgPersona}
+                onChange={(e) => setMgPersona(e.target.value)}
+                rows={4}
+                maxLength={600}
+                placeholder="e.g. Prefer maker orders and capture spreads; avoid crossing unless imbalance is urgent. Hold SOC near 55%."
+                className="eflux-input mt-1 min-h-[96px] flex-1 resize-none rounded-md px-3 py-2 text-sm outline-none"
+              />
+            </label>
+            <button
+              disabled={mgBusy}
+              className="eflux-btn eflux-btn-primary mt-3 h-9 px-4 text-sm font-semibold disabled:opacity-50"
+            >
+              <Bot size={15} />
+              {mgBusy ? "Deploying..." : "Deploy agent"}
+            </button>
+          </div>
+        </form>
+      </DashboardCard>
+
       <DashboardCard>
         <CardTitle icon={Layers3}>My VPPs</CardTitle>
 
@@ -162,7 +265,20 @@ export default function MyVPPs() {
                   </div>
                   <LLMBadge state={v.llm_health_state} />
                 </button>
-                {selectedManaged === v.id && <ManagedPerformancePanel data={performance[v.id]} />}
+                {selectedManaged === v.id && (
+                  <>
+                    <ManagedPerformancePanel data={performance[v.id]} />
+                    <ManagedControls
+                      vpp={v}
+                      onSaved={async () => {
+                        await reload();
+                        await loadPerformance(v.id);
+                      }}
+                      onDelete={() => onDeleteManaged(v.id)}
+                      onError={setError}
+                    />
+                  </>
+                )}
               </li>
             ))}
 
@@ -302,6 +418,124 @@ export default function MyVPPs() {
         </div>
       )}
     </div>
+  );
+}
+
+function ManagedControls({
+  vpp,
+  onSaved,
+  onDelete,
+  onError,
+}: {
+  vpp: ManagedVPP;
+  onSaved: () => Promise<void> | void;
+  onDelete: () => void;
+  onError: (msg: string | null) => void;
+}) {
+  const [persona, setPersona] = useState(vpp.persona ?? "");
+  const [demandBeta, setDemandBeta] = useState(0.5);
+  const [betaDirty, setBetaDirty] = useState(false);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const onSave = async () => {
+    setBusy(true);
+    onError(null);
+    try {
+      await updateManagedVPP(vpp.id, {
+        persona: persona.trim(),
+        // Only send agent_params if the slider was touched, so a persona-only edit
+        // doesn't silently reset demand_beta to the form default.
+        ...(betaDirty ? { agent_params: { demand_beta: demandBeta } } : {}),
+      });
+      await onSaved();
+      setOpen(false);
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)] px-3 py-2">
+      <button type="button" onClick={() => setOpen((o) => !o)} className="eflux-btn h-8 px-3 text-xs">
+        <Settings2 size={14} />
+        {open ? "Close" : "Tune preferences"}
+      </button>
+      <button type="button" onClick={onDelete} className="eflux-btn eflux-btn-danger h-8 px-3 text-xs">
+        <Trash2 size={14} />
+        Delete
+      </button>
+      {open && (
+        <div className="mt-2 w-full space-y-3 rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3">
+          <p className="text-[11px] text-[var(--text-subtle)]">
+            Applying changes restarts the agent&apos;s trading session (open orders reset; PnL is kept).
+          </p>
+          <label className="block text-xs font-medium text-[var(--text-muted)]">
+            Strategy brief (persona)
+            <textarea
+              value={persona}
+              onChange={(e) => setPersona(e.target.value)}
+              rows={3}
+              maxLength={600}
+              className="eflux-input mt-1 w-full resize-none rounded-md px-3 py-2 text-sm outline-none"
+            />
+          </label>
+          <SliderField
+            label={`Demand response (demand_beta ${demandBeta.toFixed(2)})`}
+            value={demandBeta}
+            min={0}
+            max={1}
+            step={0.05}
+            onChange={(v) => {
+              setDemandBeta(v);
+              setBetaDirty(true);
+            }}
+          />
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onSave}
+            className="eflux-btn eflux-btn-primary h-8 px-3 text-xs disabled:opacity-50"
+          >
+            <Save size={14} />
+            {busy ? "Saving..." : "Save & restart agent"}
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SliderField({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label className="block text-xs font-medium text-[var(--text-muted)]">
+      {label}
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="mt-1 w-full accent-[var(--accent)]"
+      />
+    </label>
   );
 }
 
