@@ -163,6 +163,73 @@ async def test_backtest_strict_llm_refresh_retries_transient_failure():
     assert strat.calls == 2  # failed once, succeeded on the retry
 
 
+def test_sample_aggregate_records_p2p_book_prices():
+    from eflux.backtest.runner import _sample_aggregate
+
+    class Lvl:
+        def __init__(self, price):
+            self.price = price
+
+    class Book:
+        def best_bid(self):
+            return Lvl(49.0)
+
+        def best_ask(self):
+            return Lvl(51.0)
+
+    class Engine:
+        last_price = 50.0
+        book = Book()
+
+    class St:
+        load_kw = 10.0
+        pv_kw = 4.0
+        wind_kw = 1.0
+        net_kw = -5.0
+
+    class VPP:
+        state = St()
+
+    class Sim:
+        vpps = {1: VPP()}
+        engine = Engine()
+
+    row = _sample_aggregate(Sim(), datetime(2026, 1, 1, tzinfo=UTC), 0, -3.5)  # type: ignore[arg-type]
+    assert row["lmp"] == -3.5  # CAISO reference unchanged
+    assert row["p2p_last_price"] == 50.0  # peer clearing price now recorded
+    assert row["p2p_best_bid"] == 49.0
+    assert row["p2p_best_ask"] == 51.0
+    assert row["p2p_mid"] == 50.0
+    assert row["total_renew_kw"] == 5.0
+
+
+def test_sample_aggregate_blank_p2p_prices_without_book():
+    # realprice-style: no peer book -> peer-price columns are blank, not a crash.
+    from eflux.backtest.runner import _sample_aggregate
+
+    class Engine:
+        last_price = None
+        book = None
+
+    class St:
+        load_kw = 6.0
+        pv_kw = 0.0
+        wind_kw = 0.0
+        net_kw = 6.0
+
+    class VPP:
+        state = St()
+
+    class Sim:
+        vpps = {1: VPP()}
+        engine = Engine()
+
+    row = _sample_aggregate(Sim(), datetime(2026, 1, 1, tzinfo=UTC), 0, 42.0)  # type: ignore[arg-type]
+    assert row["p2p_last_price"] is None
+    assert row["p2p_best_bid"] is None and row["p2p_best_ask"] is None
+    assert row["p2p_mid"] is None
+
+
 def test_real_price_points_counts_loaded_rows():
     class RealData:
         price = (10.0, 11.0, 12.0)

@@ -272,6 +272,7 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
     manifest["expected_llm_calls"] = expected_llm_calls
 
     timeseries_rows: list[dict] = []
+    aggregate_rows: list[dict] = []
     llm_calls = 0
     sim_ts = start
     tick_no = 0
@@ -321,6 +322,7 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
                 )
             if tick_no % sample_every_ticks == 0 or tick_no == ticks - 1:
                 timeseries_rows.extend(_sample_rows(sim, sim_ts, tick_no))
+                aggregate_rows.append(_sample_aggregate(sim, sim_ts, tick_no, quote.raw_lmp))
             if tick_no > 0 and tick_no % max(1, round(86400.0 / config.tick_seconds)) == 0:
                 _log_progress(f"completed tick {tick_no} / {ticks}")
             sim_ts += step
@@ -332,7 +334,9 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
             f"backtest aborted at tick {tick_no}: {type(e).__name__}: {e}; writing partial artifacts"
         )
         try:
-            _write_artifacts(run_dir, sim, timeseries_rows, participant_metrics_path, timeseries_path)
+            _write_artifacts(
+                run_dir, sim, timeseries_rows, aggregate_rows, participant_metrics_path, timeseries_path
+            )
             manifest.update(
                 status="failed",
                 error=f"{type(e).__name__}: {e}",
@@ -347,7 +351,9 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
         raise
 
     _log_progress("writing backtest artifacts")
-    _write_artifacts(run_dir, sim, timeseries_rows, participant_metrics_path, timeseries_path)
+    _write_artifacts(
+        run_dir, sim, timeseries_rows, aggregate_rows, participant_metrics_path, timeseries_path
+    )
     manifest.update(
         status="ok",
         ticks_run=ticks,
@@ -372,6 +378,7 @@ def _write_artifacts(
     run_dir: Path,
     sim: Simulator,
     timeseries_rows: list[dict],
+    aggregate_rows: list[dict],
     participant_metrics_path: Path,
     timeseries_path: Path,
 ) -> None:
@@ -381,6 +388,143 @@ def _write_artifacts(
     _write_csv(timeseries_path, timeseries_rows)
     _write_csv(run_dir / "group_metrics.csv", group_metrics)
     _write_charts(run_dir, participant_metrics, timeseries_rows)
+    # Market-level series: the LMP the sim replayed, and aggregate supply/demand. These are
+    # computed per tick but not otherwise persisted, so emit raw CSV + standalone charts.
+    if aggregate_rows:
+        _write_csv(run_dir / "market_timeseries.csv", aggregate_rows)
+        _write_timeseries_svg(
+            run_dir / "price_lmp.svg",
+            "CAISO LMP replayed over eval window ($/MWh)",
+            aggregate_rows,
+            [("LMP $/MWh", "lmp", "#dc2626")],
+        )
+        _write_timeseries_svg(
+            run_dir / "supply_demand.svg",
+            "Total demand vs total renewable generation (kW)",
+            aggregate_rows,
+            [
+                ("total load (demand)", "total_load_kw", "#dc2626"),
+                ("total renewable (PV+wind)", "total_renew_kw", "#16a34a"),
+            ],
+        )
+        _write_timeseries_svg(
+            run_dir / "p2p_price.svg",
+            "P2P peer clearing price vs CAISO grid reference ($/MWh)",
+            aggregate_rows,
+            [
+                ("P2P last trade", "p2p_last_price", "#2563eb"),
+                ("P2P mid", "p2p_mid", "#9333ea"),
+                ("CAISO LMP", "lmp", "#dc2626"),
+            ],
+        )
+
+
+def _sample_aggregate(sim: Simulator, sim_ts: datetime, tick_no: int, lmp) -> dict:
+    """Market-wide aggregates at one sample tick: the replayed grid LMP, the *peer* book
+    prices (the actual P2P price discovery), and summed DER state (total demand vs total
+    renewable generation) across every live participant. Sampled after the tick's matching,
+    so the peer prices reflect trades up to and including this tick."""
+    total_load = total_pv = total_wind = total_net = 0.0
+    for vpp in sim.vpps.values():
+        total_load += float(vpp.state.load_kw)
+        total_pv += float(vpp.state.pv_kw)
+        total_wind += float(vpp.state.wind_kw)
+        total_net += float(vpp.state.net_kw)
+    last_price, best_bid, best_ask = _engine_prices(sim)
+    mid = (best_bid + best_ask) / 2.0 if best_bid is not None and best_ask is not None else None
+    return {
+        "tick": tick_no,
+        "sim_ts": sim_ts.isoformat(),
+        # CAISO grid LMP: a reference in p2p, the settlement price in realprice.
+        "lmp": float(lmp),
+        # Peer-book price discovery. None until the book first prints / when there is no
+        # peer book (e.g. realprice, which settles against the grid quote, not peers).
+        "p2p_last_price": last_price,
+        "p2p_best_bid": best_bid,
+        "p2p_best_ask": best_ask,
+        "p2p_mid": None if mid is None else round(mid, 4),
+        "total_load_kw": round(total_load, 4),
+        "total_pv_kw": round(total_pv, 4),
+        "total_wind_kw": round(total_wind, 4),
+        "total_renew_kw": round(total_pv + total_wind, 4),
+        "total_net_kw": round(total_net, 4),
+    }
+
+
+def _engine_prices(sim: Simulator) -> tuple[float | None, float | None, float | None]:
+    """Current peer-book prices from the matching engine: last executed trade price and
+    best bid/ask. None when the book has not printed or holds no resting orders — read
+    defensively so a mode without a peer book (realprice) simply yields blanks."""
+    engine = getattr(sim, "engine", None)
+    if engine is None:
+        return None, None, None
+    book = getattr(engine, "book", None)
+    bb = book.best_bid() if book is not None else None
+    ba = book.best_ask() if book is not None else None
+
+    def _f(x) -> float | None:
+        return None if x is None else float(x)
+
+    return (
+        _f(getattr(engine, "last_price", None)),
+        _f(bb.price if bb is not None else None),
+        _f(ba.price if ba is not None else None),
+    )
+
+
+def _write_timeseries_svg(
+    path: Path, title: str, rows: list[dict], series: list[tuple[str, str, str]]
+) -> None:
+    """Minimal multi-series line chart over the sampled ticks. `series` is a list of
+    (legend label, row key, hex color)."""
+    width, height = 1200, 480
+    left, top, plot_w, plot_h = 80, 50, 1020, 360
+    if not rows:
+        path.write_text(_svg_header(width, height) + "</svg>", encoding="utf-8")
+        return
+    xs = [float(r["tick"]) for r in rows]
+    x0, x1 = min(xs), max(xs)
+    span_x = (x1 - x0) or 1.0
+    vals = [float(r[k]) for (_, k, _) in series for r in rows if r.get(k) is not None]
+    lo, hi = min(vals + [0.0]), max(vals + [0.0])
+    if lo == hi:
+        lo -= 1.0
+        hi += 1.0
+    span_y = hi - lo
+    parts = [
+        _svg_header(width, height),
+        f'<text x="24" y="30" font-size="18">{_xml(title)}</text>',
+        f'<rect x="{left}" y="{top}" width="{plot_w}" height="{plot_h}" fill="#fff" stroke="#cbd5e1" />',
+    ]
+    y_zero = top + (hi - 0.0) / span_y * plot_h
+    if top <= y_zero <= top + plot_h:
+        parts.append(
+            f'<line x1="{left}" y1="{y_zero:.1f}" x2="{left + plot_w}" y2="{y_zero:.1f}" '
+            'stroke="#94a3b8" stroke-dasharray="4 4" />'
+        )
+    for i, (label, key, color) in enumerate(series):
+        pts = []
+        for r in rows:
+            if r.get(key) is None:
+                continue
+            x = left + (float(r["tick"]) - x0) / span_x * plot_w
+            y = top + (hi - float(r[key])) / span_y * plot_h
+            pts.append(f"{x:.1f},{y:.1f}")
+        parts.append(
+            f'<polyline fill="none" stroke="{color}" stroke-width="1.5" points="{" ".join(pts)}" />'
+        )
+        ly = top + 18 + i * 18
+        parts.append(
+            f'<line x1="{left + plot_w - 230}" y1="{ly - 4}" x2="{left + plot_w - 205}" '
+            f'y2="{ly - 4}" stroke="{color}" stroke-width="3" />'
+        )
+        parts.append(f'<text x="{left + plot_w - 198}" y="{ly}" font-size="12">{_xml(label)}</text>')
+    parts.append(
+        f'<text x="{left}" y="{height - 14}" font-size="11">'
+        f'ticks {int(x0)}..{int(x1)} (hourly samples) | y range {lo:.1f}..{hi:.1f}</text>'
+    )
+    parts.append("</svg>")
+    path.write_text("\n".join(parts), encoding="utf-8")
 
 
 def _validate_config(config: BacktestConfig) -> None:
