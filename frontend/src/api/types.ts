@@ -74,6 +74,13 @@ export interface ManagedVPP {
   llm_status: string;
   llm_health_state: "live" | "degraded" | "offline" | string;
   persona?: string | null;
+  model?: string | null;
+}
+
+export interface ChatMessage {
+  name: string;
+  wall_ts: string;
+  text: string;
 }
 
 export interface ReflectionEntry {

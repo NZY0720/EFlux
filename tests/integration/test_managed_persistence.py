@@ -139,3 +139,24 @@ async def test_managed_agent_preferences_patch(client):
     # Patch on a non-existent managed agent → 404.
     r = await client.patch("/vpps/managed/999999", headers=auth, json={"persona": "x"})
     assert r.status_code == 404, r.text
+
+
+@pytest.mark.asyncio
+async def test_managed_name_reusable_after_delete(client):
+    sess, _ = await _login(client)
+    auth = {"Authorization": f"Bearer {sess}"}
+    body = {"name": "reuse-me", "params": {"pv_kw_peak": 2.0, "battery_kwh": 5.0}}
+
+    r = await client.post("/vpps/managed", headers=auth, json=body)
+    assert r.status_code == 201, r.text
+    mid = r.json()["id"]
+
+    # A live duplicate is rejected...
+    r = await client.post("/vpps/managed", headers=auth, json=body)
+    assert r.status_code == 409, r.text
+
+    # ...but once deleted, the name is reusable again.
+    r = await client.delete(f"/vpps/managed/{mid}", headers=auth)
+    assert r.status_code == 204, r.text
+    r = await client.post("/vpps/managed", headers=auth, json=body)
+    assert r.status_code == 201, r.text

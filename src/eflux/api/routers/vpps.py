@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
+from eflux.agents.reflective.pool import CURATED_MODELS
 from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
 from eflux.db.models import VPP
 from eflux.market.units import internal_cash_to_usd
@@ -49,6 +50,7 @@ class ManagedVPPOut(BaseModel):
     # reflection outcomes so the UI badge reflects reality, not startup state.
     llm_health_state: str
     persona: str | None = None  # the strategy brief, so the UI can pre-fill the tune form
+    model: str | None = None  # the LLM model the agent's strategist runs on
 
 
 class ManagedTradeOut(BaseModel):
@@ -164,6 +166,8 @@ def _managed_vpp_out(vpp) -> ManagedVPPOut:
     status = vpp.llm_status
     if health is not None and (health.ok_count or health.fail_count):
         status = f"{status} — {health.ok_count} ok / {health.fail_count} failed"
+    strategist = getattr(vpp.agent, "strategist", None)
+    client = getattr(strategist, "client", None) if strategist is not None else None
     return ManagedVPPOut(
         id=vpp.managed_def_id if vpp.managed_def_id is not None else vpp.vpp_id,
         name=vpp.name,
@@ -176,6 +180,7 @@ def _managed_vpp_out(vpp) -> ManagedVPPOut:
         llm_status=status,
         llm_health_state=state,
         persona=getattr(vpp.agent, "persona_prompt", None),
+        model=getattr(client, "model", None),
     )
 
 
@@ -222,6 +227,33 @@ def _managed_trade_out(record: dict) -> ManagedTradeOut:
     return ManagedTradeOut(**out)
 
 
+class ModelsOut(BaseModel):
+    models: list[str]
+    default: str
+
+
+@router.get("/models", response_model=ModelsOut)
+async def list_models(user: CurrentUser) -> ModelsOut:
+    """Curated LLM models a user can pick when deploying a managed agent."""
+    from eflux.config import get_settings
+
+    return ModelsOut(models=list(CURATED_MODELS), default=get_settings().llm_model)
+
+
+def _validate_model(model: str | None) -> None:
+    if model is not None and model not in CURATED_MODELS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            [
+                {
+                    "loc": ["body", "model"],
+                    "msg": f"unknown model {model!r}; choose from {list(CURATED_MODELS)}",
+                    "type": "value_error",
+                }
+            ],
+        )
+
+
 MAX_MANAGED_VPPS_PER_USER = 5
 
 
@@ -233,14 +265,17 @@ class ManagedVPPCreate(BaseModel):
     persona: str | None = Field(default=None, max_length=600)
     agent_params: dict[str, object] = Field(default_factory=dict)
     seed: int | None = None
+    model: str | None = None
 
 
 class ManagedVPPUpdate(BaseModel):
     # Only provided fields change: params merges into the stored DER config, agent_params
-    # replaces the stored set, persona "" clears it / null leaves it unchanged.
+    # replaces the stored set, persona "" clears it / null leaves it unchanged, model null
+    # leaves it unchanged.
     params: dict[str, object] | None = None
     persona: str | None = Field(default=None, max_length=600)
     agent_params: dict[str, object] | None = None
+    model: str | None = None
 
 
 @router.post("/managed", response_model=ManagedVPPOut, status_code=status.HTTP_201_CREATED)
@@ -255,23 +290,15 @@ async def create_managed_vpp(
     PPO executor + Truthful oracle + RiskGate) autonomously on the user's behalf; the user
     supplies only a DER endowment and an optional persona/preferences. Params and agent_params
     are validated against the same schema as the built-in roster (422 on bad input)."""
-    # Quota + name pre-check against the durable record (the DB).
-    existing = (
-        (
-            await session.execute(
-                select(VPP).where(
-                    VPP.owner_id == user.id, VPP.is_managed.is_(True), VPP.is_active.is_(True)
-                )
-            )
-        )
-        .scalars()
-        .all()
-    )
-    if any(v.name == payload.name for v in existing):
+    # Quota + name checks against the LIVE agents (what the user actually sees), so a name
+    # whose agent isn't currently running is reusable even if a stale definition lingers.
+    live = sim.my_managed_vpps(user.id)
+    if any(v.name == payload.name for v in live):
         raise HTTPException(
-            status.HTTP_409_CONFLICT, f"you already have a managed agent named {payload.name!r}"
+            status.HTTP_409_CONFLICT,
+            f"a running managed agent named {payload.name!r} already exists — delete it to reuse the name",
         )
-    if len(existing) >= MAX_MANAGED_VPPS_PER_USER:
+    if len(live) >= MAX_MANAGED_VPPS_PER_USER:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             f"managed-agent limit reached ({MAX_MANAGED_VPPS_PER_USER} per account)",
@@ -290,6 +317,19 @@ async def create_managed_vpp(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             [{"loc": ["body", "params"], "msg": str(e), "type": "value_error"}],
         ) from e
+    _validate_model(payload.model)
+    # Drop any orphaned definition with this name (its agent isn't live — e.g. it failed to
+    # rehydrate) so the unique (owner, name) row is free to recreate.
+    orphan = (
+        await session.execute(
+            select(VPP).where(
+                VPP.owner_id == user.id, VPP.name == payload.name, VPP.is_managed.is_(True)
+            )
+        )
+    ).scalar_one_or_none()
+    if orphan is not None:
+        await session.delete(orphan)
+        await session.flush()
     # Persist the definition first — its row id is the stable handle the agent is bound to.
     row = VPP(
         owner_id=user.id,
@@ -301,6 +341,7 @@ async def create_managed_vpp(
             "persona": payload.persona,
             "agent_params": dict(payload.agent_params),
             "seed": payload.seed,
+            "model": payload.model,
         },
     )
     session.add(row)
@@ -320,6 +361,7 @@ async def create_managed_vpp(
                 persona_prompt=payload.persona,
                 agent_params=payload.agent_params,
                 seed=payload.seed,
+                model=payload.model,
                 managed_def_id=row.id,
             )
     except (ValueError, ValidationError) as e:
@@ -362,6 +404,8 @@ async def update_managed_vpp(
         else dict(payload.agent_params)
     )
     new_seed = cfg.get("seed")
+    new_model = cfg.get("model") if payload.model is None else payload.model
+    _validate_model(new_model)
 
     # Validate everything BEFORE touching the live agent, so a bad patch can't strand it.
     try:
@@ -381,7 +425,12 @@ async def update_managed_vpp(
 
     # Update the stored definition (re-assign so SQLAlchemy tracks the JSON change).
     row.params = parsed
-    row.managed_config = {"persona": new_persona, "agent_params": new_agent_params, "seed": new_seed}
+    row.managed_config = {
+        "persona": new_persona,
+        "agent_params": new_agent_params,
+        "seed": new_seed,
+        "model": new_model,
+    }
 
     # Re-provision the live agent, carrying over the PnL scoreboard.
     async with sim._lock:
@@ -406,6 +455,7 @@ async def update_managed_vpp(
             persona_prompt=new_persona,
             agent_params=new_agent_params,
             seed=new_seed,
+            model=new_model,
             managed_def_id=managed_id,
         )
         if carry is not None:

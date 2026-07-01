@@ -19,16 +19,55 @@ from eflux.agents.reflective.llm_client import LLMClient
 log = logging.getLogger(__name__)
 
 
+# Curated subset of the provider's catalogue offered for managed-agent (Tier-0)
+# deployment. Single source of truth for the /vpps/models endpoint + validation.
+CURATED_MODELS: tuple[str, ...] = (
+    "deepseek-v4-pro",
+    "deepseek-v4-flash",
+    "glm-5.2",
+    "qwen3.7-max",
+    "mimo-v2-pro",
+    "minimax-m3",
+    "kimi-k2.7-code",
+)
+
+
 @dataclass
 class SharedLLM:
     client: LLMClient | None
     status: str  # human-readable, surfaced as llm_status on each managed VPP
     strategy_suffix: str  # e.g. "opencode:deepseek-v4-pro" or "offline fallback"
     gate: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
+    # Connection params retained so per-model clients can be built lazily — all sharing
+    # the same endpoint/key + the single in-flight gate (Tier-0 per-agent model choice).
+    base_url: str | None = None
+    api_key: str | None = None
+    timeout_sec: float = 120.0
+    default_model: str | None = None
+    _pool: dict[str, LLMClient] = field(default_factory=dict)
 
     @property
     def live(self) -> bool:
         return self.client is not None
+
+    def client_for(self, model: str | None) -> LLMClient | None:
+        """An LLMClient for `model` (or the default), or None if no LLM is configured.
+        Per-model clients reuse base_url/api_key and the one-in-flight gate, so picking a
+        different model never opens a second concurrent lane to the endpoint."""
+        if self.client is None or self.base_url is None or self.api_key is None:
+            return None
+        if not model or model == self.default_model:
+            return self.client
+        existing = self._pool.get(model)
+        if existing is None:
+            existing = LLMClient(
+                base_url=self.base_url,
+                api_key=self.api_key,
+                model=model,
+                timeout_sec=self.timeout_sec,
+            )
+            self._pool[model] = existing
+        return existing
 
     @classmethod
     def from_settings(cls, settings) -> SharedLLM:
@@ -55,6 +94,10 @@ class SharedLLM:
                     client=client,
                     status=f"live LLM strategist via {settings.llm_base_url}",
                     strategy_suffix=f"{settings.llm_provider}:{settings.llm_model}",
+                    base_url=settings.llm_base_url,
+                    api_key=api_key,
+                    timeout_sec=settings.llm_timeout_sec,
+                    default_model=settings.llm_model,
                 )
             log.warning("LLM connection check failed: %s", detail)
             return cls(

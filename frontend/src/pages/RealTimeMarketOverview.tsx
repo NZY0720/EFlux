@@ -1,6 +1,6 @@
-import { BarChart3, BrainCircuit, ChartNoAxesCombined, ListChecks, TrendingUp, Zap } from "lucide-react";
+import { BarChart3, ChartNoAxesCombined, ListChecks, MessagesSquare, TrendingUp, Zap } from "lucide-react";
 
-import AgentThoughtsFeed from "../components/AgentThoughtsFeed";
+import Chatroom from "../components/Chatroom";
 import { CardTitle, DashboardCard } from "../components/DashboardCard";
 import DataSourceBanner from "../components/DataSourceBanner";
 import EquityCurves from "../components/EquityCurves";
@@ -48,8 +48,8 @@ export default function RealTimeMarketOverview() {
           />
         </DashboardCard>
         <DashboardCard>
-          <CardTitle icon={BrainCircuit} accent="amber">Agent thoughts (LLM)</CardTitle>
-          <AgentThoughtsFeed variant="realprice" />
+          <CardTitle icon={MessagesSquare} accent="amber">Agent chatroom</CardTitle>
+          <Chatroom />
         </DashboardCard>
       </div>
 

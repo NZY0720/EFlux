@@ -298,8 +298,9 @@ class MarketReflectionOut(BaseModel):
     soc_target: float | None = None
     execution_style: str | None = None
     rationale: str = ""
-    # Durable takeaway the LLM distilled from the latest guidance cycle.
-    lesson: str | None = None
+    # NOTE: `lesson` is deliberately NOT exposed here — it's a private, owner-only
+    # takeaway surfaced via /vpps/managed/{id}/performance. Extra keys in the spread
+    # entry (incl. "lesson") are ignored by pydantic, so it never leaks to this public feed.
     meta_control: dict[str, float] | None = None
     error: str | None
 
@@ -324,6 +325,24 @@ def market_reflections(sim: SimulatorDep, limit: int = 20) -> list[MarketReflect
             )
     out.sort(key=lambda r: r.ts, reverse=True)
     return out[:limit]
+
+
+class ChatMessageOut(BaseModel):
+    name: str
+    wall_ts: datetime
+    text: str
+
+
+@router.get("/chatter", response_model=list[ChatMessageOut])
+def market_chatter(sim: SimulatorDep, limit: int = 40) -> list[ChatMessageOut]:
+    """Agent chatroom — recent casual messages from the LLM-steered agents, newest first.
+    Public; only name, timestamp, and message are exposed (no strategy/PnL leakage)."""
+    limit = max(1, min(limit, 100))
+    msgs = list(sim.chatter)[-limit:]
+    return [
+        ChatMessageOut(name=m["name"], wall_ts=m["wall_ts"], text=m["text"])
+        for m in reversed(msgs)
+    ]
 
 
 class SpeedUpdate(BaseModel):

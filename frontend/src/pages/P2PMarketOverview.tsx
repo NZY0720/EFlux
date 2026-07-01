@@ -1,6 +1,6 @@
-import { BrainCircuit, ChartCandlestick, ListChecks, Scale, Zap } from "lucide-react";
+import { ChartCandlestick, ListChecks, MessagesSquare, Scale, Zap } from "lucide-react";
 
-import AgentThoughtsFeed from "../components/AgentThoughtsFeed";
+import Chatroom from "../components/Chatroom";
 import { CardTitle, DashboardCard } from "../components/DashboardCard";
 import DataSourceBanner from "../components/DataSourceBanner";
 import IntroStrip from "../components/IntroStrip";
@@ -37,8 +37,8 @@ export default function P2PMarketOverview() {
           <MeritOrderChart />
         </DashboardCard>
         <DashboardCard>
-          <CardTitle icon={BrainCircuit}>Agent thoughts (LLM)</CardTitle>
-          <AgentThoughtsFeed variant="p2p" />
+          <CardTitle icon={MessagesSquare}>Agent chatroom</CardTitle>
+          <Chatroom />
         </DashboardCard>
       </div>
 

@@ -1,6 +1,7 @@
 import axios from "axios";
 
 import type {
+  ChatMessage,
   ManagedVPPPerformance,
   ManagedVPP,
   MarketAgent,
@@ -118,10 +119,11 @@ export async function createVPP(name: string, params: Record<string, number>): P
 
 export interface ManagedVPPCreatePayload {
   name: string;
-  params: Record<string, number>;
+  params: Record<string, number | string>;
   persona?: string | null;
   agent_params?: Record<string, number>;
   seed?: number | null;
+  model?: string | null;
 }
 
 export async function createManagedVPP(payload: ManagedVPPCreatePayload): Promise<ManagedVPP> {
@@ -130,9 +132,10 @@ export async function createManagedVPP(payload: ManagedVPPCreatePayload): Promis
 }
 
 export interface ManagedVPPUpdatePayload {
-  params?: Record<string, number>;
+  params?: Record<string, number | string>;
   persona?: string | null;
   agent_params?: Record<string, number>;
+  model?: string | null;
 }
 
 export async function updateManagedVPP(
@@ -145,6 +148,16 @@ export async function updateManagedVPP(
 
 export async function deleteManagedVPP(id: number): Promise<void> {
   await api.delete(`/vpps/managed/${id}`);
+}
+
+export interface ModelsInfo {
+  models: string[];
+  default: string;
+}
+
+export async function listModels(): Promise<ModelsInfo> {
+  const { data } = await api.get<ModelsInfo>("/vpps/models");
+  return data;
 }
 
 // --- Orders ---
@@ -188,6 +201,11 @@ export async function fetchMarketAgents(): Promise<MarketAgent[]> {
 
 export async function fetchMarketReflections(limit = 20): Promise<MarketReflection[]> {
   const { data } = await api.get<MarketReflection[]>("/market/reflections", { params: { limit } });
+  return data;
+}
+
+export async function fetchChatter(limit = 40): Promise<ChatMessage[]> {
+  const { data } = await api.get<ChatMessage[]>("/market/chatter", { params: { limit } });
   return data;
 }
 

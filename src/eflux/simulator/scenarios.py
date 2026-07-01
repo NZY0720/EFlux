@@ -301,6 +301,7 @@ def _add_hybrid_vpp(
     offset_index: int,
     n_managed: int,
     owner_id: int | None = None,
+    model: str | None = None,
 ) -> SimulatorVPP:
     """Add one HybridPolicyAgent VPP sharing the SharedLLM connection.
 
@@ -312,14 +313,15 @@ def _add_hybrid_vpp(
     interval = settings.reflective_interval_ticks
     offset = round(offset_index * interval / max(1, n_managed))
     _validate_agent_params(spec.name, spec.agent_params, HybridPolicyAgent)
+    model_client = shared.client_for(model)
     strategist = (
         LLMStrategist(
-            client=shared.client,
+            client=model_client,
             persona_prompt=spec.persona.prompt if spec.persona else None,
             hard_timeout_sec=max(settings.llm_timeout_sec, 1.0) + 60.0,
             llm_gate=shared.gate,
         )
-        if shared.client is not None
+        if model_client is not None
         else None
     )
     seed = spec.seed if spec.seed is not None else default_seed
@@ -340,7 +342,7 @@ def _add_hybrid_vpp(
         params=_build_params(spec, use_real_weather),
         agent=agent,
         seed=seed,
-        strategy=f"HybridPolicyAgent ({shared.strategy_suffix})",
+        strategy=f"HybridPolicyAgent ({model or shared.default_model or shared.strategy_suffix})",
         is_my_vpp=True,
         owner_id=owner_id,
         llm_live=shared.live,
@@ -365,6 +367,7 @@ def provision_managed_vpp(
     persona_prompt: str | None = None,
     agent_params: dict | None = None,
     seed: int | None = None,
+    model: str | None = None,
     managed_def_id: int | None = None,
 ) -> SimulatorVPP:
     """Provision a cloud-hosted managed (LLM-steered HybridPolicyAgent) VPP for an external
@@ -398,6 +401,7 @@ def provision_managed_vpp(
         offset_index=existing,
         n_managed=existing + 1,
         owner_id=owner_id,
+        model=model,
     )
     vpp.managed_def_id = managed_def_id
     return vpp

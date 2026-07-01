@@ -24,10 +24,13 @@ import {
   deleteManagedVPP,
   fetchManagedVPPPerformance,
   listManagedVPPs,
+  listModels,
   listVPPs,
   submitOrder,
   updateManagedVPP,
 } from "../api/client";
+
+const LOAD_PROFILES = ["residential", "industrial", "commercial", "flat"];
 import type { ManagedVPP, ManagedVPPPerformance, ReflectionEntry, VPP } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
 import { useMarket } from "../state/marketStream";
@@ -56,6 +59,10 @@ export default function MyVPPs() {
   const [mgLoad, setMgLoad] = useState(2);
   const [mgPersona, setMgPersona] = useState("");
   const [mgDemandBeta, setMgDemandBeta] = useState(0.5);
+  const [mgModel, setMgModel] = useState("");
+  const [mgWind, setMgWind] = useState(0);
+  const [mgLoadProfile, setMgLoadProfile] = useState("residential");
+  const [models, setModels] = useState<string[]>([]);
   const [mgBusy, setMgBusy] = useState(false);
 
   const [orderVpp, setOrderVpp] = useState<number | null>(null);
@@ -77,6 +84,12 @@ export default function MyVPPs() {
 
   useEffect(() => {
     reload();
+    listModels()
+      .then((m) => {
+        setModels(m.models);
+        setMgModel((cur) => cur || m.default);
+      })
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -133,11 +146,19 @@ export default function MyVPPs() {
     setMgBusy(true);
     setError(null);
     try {
+      const params: Record<string, number | string> = {
+        pv_kw_peak: mgPv,
+        battery_kwh: mgBatt,
+        load_kw_base: mgLoad,
+        load_profile: mgLoadProfile,
+      };
+      if (mgWind > 0) params.wind_kw_rated = mgWind;
       const created = await createManagedVPP({
         name: mgName.trim(),
-        params: { pv_kw_peak: mgPv, battery_kwh: mgBatt, load_kw_base: mgLoad },
+        params,
         persona: mgPersona.trim() || null,
         agent_params: { demand_beta: mgDemandBeta },
+        model: mgModel || null,
       });
       setMgName("");
       setMgPersona("");
@@ -196,11 +217,19 @@ export default function MyVPPs() {
               onChange={(e) => setMgName(e.target.value)}
               className="eflux-input w-full rounded-md px-3 py-2 text-sm outline-none"
             />
-            <div className="grid grid-cols-3 gap-2">
+            <SelectField label="LLM model" value={mgModel} options={models} onChange={setMgModel} />
+            <div className="grid grid-cols-2 gap-2">
               <NumberField label="PV peak (kW)" value={mgPv} step="0.5" onChange={setMgPv} />
               <NumberField label="Battery (kWh)" value={mgBatt} step="1" onChange={setMgBatt} />
               <NumberField label="Load (kW)" value={mgLoad} step="0.5" onChange={setMgLoad} />
+              <NumberField label="Wind (kW)" value={mgWind} step="0.5" onChange={setMgWind} />
             </div>
+            <SelectField
+              label="Load profile"
+              value={mgLoadProfile}
+              options={LOAD_PROFILES}
+              onChange={setMgLoadProfile}
+            />
             <SliderField
               label={`Demand response (demand_beta ${mgDemandBeta.toFixed(2)})`}
               value={mgDemandBeta}
@@ -255,7 +284,7 @@ export default function MyVPPs() {
                         <ChevronRight size={15} className="text-[var(--text-subtle)]" />
                       )}
                       <span className="font-medium text-[var(--text)]">{v.name}</span>
-                      <StatusPill tone="accent" className="py-0 text-[10px] uppercase">built-in</StatusPill>
+                      <StatusPill tone="accent" className="py-0 text-[10px]">{v.model ?? "managed"}</StatusPill>
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-muted)]">
                       PV {v.params.pv_kw_peak}kW / Batt {v.params.battery_kwh}kWh / Load {v.params.load_kw_base}kW
@@ -270,6 +299,7 @@ export default function MyVPPs() {
                     <ManagedPerformancePanel data={performance[v.id]} />
                     <ManagedControls
                       vpp={v}
+                      models={models}
                       onSaved={async () => {
                         await reload();
                         await loadPerformance(v.id);
@@ -423,16 +453,19 @@ export default function MyVPPs() {
 
 function ManagedControls({
   vpp,
+  models,
   onSaved,
   onDelete,
   onError,
 }: {
   vpp: ManagedVPP;
+  models: string[];
   onSaved: () => Promise<void> | void;
   onDelete: () => void;
   onError: (msg: string | null) => void;
 }) {
   const [persona, setPersona] = useState(vpp.persona ?? "");
+  const [model, setModel] = useState(vpp.model ?? "");
   const [demandBeta, setDemandBeta] = useState(0.5);
   const [betaDirty, setBetaDirty] = useState(false);
   const [open, setOpen] = useState(false);
@@ -444,6 +477,7 @@ function ManagedControls({
     try {
       await updateManagedVPP(vpp.id, {
         persona: persona.trim(),
+        ...(model ? { model } : {}),
         // Only send agent_params if the slider was touched, so a persona-only edit
         // doesn't silently reset demand_beta to the form default.
         ...(betaDirty ? { agent_params: { demand_beta: demandBeta } } : {}),
@@ -482,6 +516,7 @@ function ManagedControls({
               className="eflux-input mt-1 w-full resize-none rounded-md px-3 py-2 text-sm outline-none"
             />
           </label>
+          <SelectField label="LLM model" value={model} options={models} onChange={setModel} />
           <SliderField
             label={`Demand response (demand_beta ${demandBeta.toFixed(2)})`}
             value={demandBeta}
@@ -505,6 +540,35 @@ function ManagedControls({
         </div>
       )}
     </div>
+  );
+}
+
+function SelectField({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block text-xs font-medium text-[var(--text-muted)]">
+      {label}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="eflux-select mt-1 w-full rounded-md px-3 py-2 text-sm outline-none"
+      >
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 
@@ -744,6 +808,9 @@ function ReflectionTimeline({ data }: { data: ManagedVPPPerformance }) {
               )}
             </div>
             <p className="mt-0.5 text-xs text-[var(--text)]">{r.ok ? guidanceText(r) : r.error}</p>
+            {r.ok && r.lesson && (
+              <p className="mt-0.5 text-[11px] italic text-[var(--text-muted)]">💡 {r.lesson}</p>
+            )}
           </div>
         ))}
       </div>

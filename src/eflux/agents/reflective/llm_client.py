@@ -28,7 +28,13 @@ class LLMClient:
         self._model = model
         self._client = httpx.AsyncClient(timeout=timeout_sec)
 
-    async def chat(self, messages: list[dict[str, str]], *, temperature: float = 0.2) -> str:
+    @property
+    def model(self) -> str:
+        return self._model
+
+    async def chat(
+        self, messages: list[dict[str, str]], *, temperature: float = 0.2, max_tokens: int = 4096
+    ) -> str:
         """POST /chat/completions, return the assistant content string."""
         url = f"{self._base_url}/chat/completions"
         payload: dict[str, Any] = {
@@ -37,9 +43,9 @@ class LLMClient:
             "temperature": temperature,
             # Reflection hints are a tiny JSON blob, but reasoning models spend
             # most of the budget thinking before emitting content — too small a
-            # cap yields an empty completion. 4096 bounds runaway responses
-            # while leaving room to reason.
-            "max_tokens": 4096,
+            # cap yields an empty completion. The default bounds runaway responses
+            # while leaving room to reason; callers (e.g. chat) can lower it.
+            "max_tokens": max_tokens,
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",

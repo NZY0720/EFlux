@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from eflux.agents.base import AgentContext, BaseAgent, MarketSnapshot, OrderIntent
 from eflux.agents.hybrid import RiskGate, RiskLimits, RiskRejected
+from eflux.agents.reflective.chat import build_chat_messages, clean_chat_line
 from eflux.bridge.bus import EventBus
 from eflux.config import get_settings
 from eflux.data.electricity_market import (
@@ -36,6 +37,20 @@ if TYPE_CHECKING:
     from eflux.agents.reflective.pool import SharedLLM
 
 log = logging.getLogger(__name__)
+
+# Agent chatroom cadence: every N ticks one LLM agent (round-robin) posts a line. Bounded
+# further by a single in-flight chat task + the shared strategist gate, so cost stays low.
+CHAT_INTERVAL_TICKS = 15
+# Conversation balance: base chance a post replies to recent chat (agents always reply when
+# mentioned), capped so the room can't devolve into an endless reply chain with no new topics.
+CHAT_REPLY_PROB = 0.45
+CHAT_MAX_REPLY_STREAK = 3
+
+
+def _agent_chat_client(agent: BaseAgent):
+    """The agent's strategist LLM client (its deployed model), or None for non-LLM agents."""
+    strategist = getattr(agent, "strategist", None)
+    return getattr(strategist, "client", None) if strategist is not None else None
 
 
 PpoRenewState = Literal["idle", "training", "reloading", "done", "error"]
@@ -114,6 +129,12 @@ class Simulator:
         # the API can provision new managed agents at runtime. Set by the scenario loader
         # at startup (None until then).
         self.shared_llm: SharedLLM | None = None
+        # Agent chatroom — LLM agents post casual, in-character small talk (in-memory, like
+        # the rest of market state). Round-robin index + at most one chat call in flight.
+        self.chatter: deque[dict] = deque(maxlen=80)
+        self._chat_rr = 0
+        self._chat_reply_streak = 0
+        self._chat_task: asyncio.Task | None = None
         # "p2p" = peer-to-peer CDA (agents trade each other; CAISO is reference-only).
         # "realprice" = pure price-taking against the live CAISO price (orders settle
         # vs the grid, no peer matching). Selected per launch via EFLUX_MARKET_MODE.
@@ -265,6 +286,82 @@ class Simulator:
         self.vpps.pop(target.vpp_id, None)
         log.info("Removed managed VPP id=%s (def=%s)", target.vpp_id, managed_def_id)
         return True
+
+    def _maybe_chat(self, tick_no: int) -> None:
+        """On the chat cadence, fire one agent's small-talk LLM call off the tick path —
+        round-robin across LLM agents, one in flight at a time, sharing the strategist gate."""
+        if self.shared_llm is None or not self.shared_llm.live:
+            return
+        if tick_no % CHAT_INTERVAL_TICKS != 0:
+            return
+        if self._chat_task is not None and not self._chat_task.done():
+            return
+        eligible = [v for v in self.vpps.values() if _agent_chat_client(v.agent) is not None]
+        if not eligible:
+            return
+        vpp = eligible[self._chat_rr % len(eligible)]
+        self._chat_rr += 1
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._chat_task = loop.create_task(self._generate_chat(vpp))
+
+    async def _generate_chat(self, vpp: SimulatorVPP) -> None:
+        client = _agent_chat_client(vpp.agent)
+        if client is None or self.shared_llm is None:
+            return
+        # Read recent history, then decide reply-vs-fresh: always reply when mentioned by
+        # another agent, otherwise a capped random chance, so the room mixes banter with new
+        # topics and never becomes an endless reply chain.
+        recent = [{"name": m["name"], "text": m["text"]} for m in list(self.chatter)[-6:]]
+        mentioned = any(
+            vpp.name.lower() in m["text"].lower() for m in recent if m["name"] != vpp.name
+        )
+        force_fresh = self._chat_reply_streak >= CHAT_MAX_REPLY_STREAK
+        reply = bool(recent) and not force_fresh and (mentioned or random.random() < CHAT_REPLY_PROB)
+        try:
+            messages = build_chat_messages(
+                name=vpp.name,
+                persona=getattr(vpp.agent, "persona_prompt", None),
+                context=self._chat_context(vpp),
+                recent_chat=recent,
+                reply=reply,
+                mentioned=mentioned,
+            )
+            async with self.shared_llm.gate:
+                content = await asyncio.wait_for(
+                    client.chat(messages, temperature=0.9, max_tokens=2048),
+                    timeout=self.shared_llm.timeout_sec + 30.0,
+                )
+            text = clean_chat_line(str(content))
+            if text:
+                self.chatter.append(
+                    {"name": vpp.name, "wall_ts": datetime.now(UTC), "text": text}
+                )
+                self._chat_reply_streak = self._chat_reply_streak + 1 if reply else 0
+        except Exception:
+            log.warning("chat generation failed for %s", vpp.name)
+
+    def _chat_context(self, vpp: SimulatorVPP) -> dict:
+        """Compact social snapshot for chat: recent fills, a small PnL leaderboard, the
+        market price, and this agent's own standing."""
+        ranked = sorted(self.vpps.values(), key=lambda v: float(v.state.pnl), reverse=True)
+        board = [
+            {"name": v.name, "pnl": round(float(v.state.pnl), 2)}
+            for v in (ranked[:3] + ranked[-2:])
+        ]
+        last = self.engine.last_price
+        return {
+            "market_last_price": float(last) if last is not None else None,
+            "recent_trades": self._recent_market_trades(limit=6),
+            "pnl_leaderboard": board,
+            "me": {
+                "name": vpp.name,
+                "pnl": round(float(vpp.state.pnl), 2),
+                "soc": round(vpp.battery.soc_frac, 2),
+            },
+        }
 
     # How long a data-source check stays fresh before data_source_status()
     # re-inspects weather coverage (cheap, purely in-memory).
@@ -794,6 +891,7 @@ class Simulator:
                         ask_depth=ba.total_qty if ba else Decimal("0"),
                     )
                 )
+            self._maybe_chat(tick_no)
 
     def _recent_market_trades(self, limit: int = 8) -> list[dict]:
         """Latest market-wide fills with party names — prompt context for

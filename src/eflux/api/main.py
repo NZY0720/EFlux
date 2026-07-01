@@ -49,32 +49,40 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
     from eflux.db.session import get_sessionmaker
 
     count = 0
-    async with get_sessionmaker()() as session:
-        rows = (
-            (
-                await session.execute(
-                    select(VPP).where(VPP.is_managed.is_(True), VPP.is_active.is_(True))
+    # Never let an optional-feature startup hook crash the server: a DB outage or a
+    # not-yet-migrated schema (missing is_managed/managed_config) must degrade gracefully.
+    try:
+        async with get_sessionmaker()() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(VPP).where(VPP.is_managed.is_(True), VPP.is_active.is_(True))
+                    )
                 )
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
-        for row in rows:
-            cfg = row.managed_config or {}
-            try:
-                provision_managed_vpp(
-                    sim,
-                    owner_id=row.owner_id,
-                    name=row.name,
-                    params=row.params,
-                    persona_prompt=cfg.get("persona"),
-                    agent_params=cfg.get("agent_params") or {},
-                    seed=cfg.get("seed"),
-                    managed_def_id=row.id,
-                )
-                count += 1
-            except Exception:
-                log.exception("Failed to rehydrate managed VPP id=%s name=%s", row.id, row.name)
+            for row in rows:
+                cfg = row.managed_config or {}
+                try:
+                    provision_managed_vpp(
+                        sim,
+                        owner_id=row.owner_id,
+                        name=row.name,
+                        params=row.params,
+                        persona_prompt=cfg.get("persona"),
+                        agent_params=cfg.get("agent_params") or {},
+                        seed=cfg.get("seed"),
+                        model=cfg.get("model"),
+                        managed_def_id=row.id,
+                    )
+                    count += 1
+                except Exception:
+                    log.exception(
+                        "Failed to rehydrate managed VPP id=%s name=%s", row.id, row.name
+                    )
+    except Exception:
+        log.exception("Managed-VPP rehydration skipped (DB unavailable or schema not migrated?)")
     if count:
         log.info("Rehydrated %d managed VPP(s) from the DB", count)
 
