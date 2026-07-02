@@ -8,8 +8,21 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+
+
+@pytest.fixture(autouse=True)
+def _reset_order_router_state():
+    """Clear the order router's in-memory rate-limit buckets + idempotency cache between
+    tests. User ids restart per fresh DB, so this module-level state would otherwise leak
+    across tests (a depleted bucket or a stale cached response for a reused user id)."""
+    from eflux.api.routers import orders as _orders
+
+    _orders._buckets.clear()
+    _orders._idempotency.clear()
+    yield
 
 
 @pytest_asyncio.fixture

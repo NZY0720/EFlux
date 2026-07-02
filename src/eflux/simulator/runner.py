@@ -135,6 +135,9 @@ class Simulator:
         self._chat_rr = 0
         self._chat_reply_streak = 0
         self._chat_task: asyncio.Task | None = None
+        # Latest processed tick number — surfaced as the Agent Protocol tick_id so external
+        # agents can detect stale context / order responses against the current market tick.
+        self._last_tick_no = 0
         # "p2p" = peer-to-peer CDA (agents trade each other; CAISO is reference-only).
         # "realprice" = pure price-taking against the live CAISO price (orders settle
         # vs the grid, no peer matching). Selected per launch via EFLUX_MARKET_MODE.
@@ -576,7 +579,28 @@ class Simulator:
         price: Decimal,
         qty: Decimal,
     ) -> ExternalSubmitResult:
-        """Entry point for SDK-submitted orders. Honors realtime-only constraint."""
+        """Entry point for a single SDK-submitted order. Honors the realtime-only constraint."""
+        if not self.clock.is_realtime:
+            raise PermissionError(
+                f"external orders rejected: market speed is {self.clock.speed}x (realtime required)"
+            )
+        async with self._lock:
+            return self._submit_one_external(
+                vpp_id=vpp_id,
+                side=side,
+                price=price,
+                qty=qty,
+                now_sim=self.clock.now_sim(),
+                now_wall=datetime.now(UTC),
+            )
+
+    async def submit_external_batch(
+        self, *, orders: list[dict], cancels: list[int]
+    ) -> dict:
+        """A batch of external orders + cancels under one lock (Agent Protocol v1). Cancels
+        run first, so a cancel-then-replace frees open-order budget; each order is gated
+        independently, so one rejection never aborts the batch. Ownership, rate limits, and
+        idempotency are enforced by the REST layer before this is called."""
         if not self.clock.is_realtime:
             raise PermissionError(
                 f"external orders rejected: market speed is {self.clock.speed}x (realtime required)"
@@ -584,53 +608,88 @@ class Simulator:
         async with self._lock:
             now_sim = self.clock.now_sim()
             now_wall = datetime.now(UTC)
-            # Same gate as built-in agents (principle #7). External VPPs carry no
-            # in-memory battery/DER state here, so only the universal static and
-            # rate limits apply; ownership was already checked at the REST layer.
-            decision = self.risk_gate.validate(
-                [OrderIntent(side=side, price=price, qty=qty)],
-                vpp_id=vpp_id,
-                open_order_count=self._open_order_counts_by_vpp().get(vpp_id, 0),
-            )
-            if not decision.accepted:
-                self._record_rejections(vpp_id, len(decision.rejected) or 1)
-                reason = decision.rejected[0].reason if decision.rejected else "rejected by risk gate"
-                raise RiskRejected(reason)
-            intent = decision.accepted[0]
-            external_quote = self._external_quote_for_intent(intent)
-            result = self.engine.submit(
-                vpp_id=vpp_id,
-                side=intent.side,
-                price=intent.price,
-                qty=intent.qty,
-                sim_ts=now_sim,
-                wall_ts=now_wall,
-                ttl_sec=self.order_ttl_sec or None,
-                rest_unfilled=external_quote is None,
-            )
-            self._record_trades(result.trades)
-            external_events: list[ExternalTradeEvent] = []
-            if external_quote is not None and result.order.remaining_qty > 0:
-                # SDK/REST VPPs carry no in-memory state here (see above), so the
-                # external fill is only *published* (for the tape/chart/WS) — unlike
-                # the built-in path in _submit_intent, it is not applied to a
-                # SimulatorVPP. Ownership accounting for these orders lives at the
-                # REST layer.
-                external_events.append(
-                    self._publish_external_trade_for_vpp_id(
-                        vpp_id=vpp_id,
-                        side=intent.side,
-                        qty=result.order.remaining_qty,
-                        quote=external_quote,
-                        sim_ts=now_sim,
+            cancelled = [
+                {"order_id": oid, "ok": bool(self.engine.cancel(oid, sim_ts=now_sim, wall_ts=now_wall))}
+                for oid in cancels
+            ]
+            results: list[dict] = []
+            for i, spec in enumerate(orders):
+                item: dict = {"index": i, "client_ref": spec.get("client_ref")}
+                try:
+                    item.update(
+                        status="accepted",
+                        **self._submit_one_external(
+                            vpp_id=spec["vpp_id"],
+                            side=spec["side"],
+                            price=spec["price"],
+                            qty=spec["qty"],
+                            now_sim=now_sim,
+                            now_wall=now_wall,
+                        ),
                     )
+                except RiskRejected as e:
+                    item.update(
+                        status="rejected",
+                        reason=e.reason,
+                        order_id=None,
+                        remaining_qty=None,
+                        expires_at_sim=None,
+                        trades=[],
+                    )
+                results.append(item)
+            return {"tick_id": self._last_tick_no, "results": results, "cancelled": cancelled}
+
+    def _submit_one_external(
+        self, *, vpp_id: int, side: str, price: Decimal, qty: Decimal, now_sim, now_wall
+    ) -> ExternalSubmitResult:
+        """Risk-gate + submit one external order. The caller must hold self._lock. Raises
+        RiskRejected when the gate vetoes the order.
+
+        Same gate as built-in agents (principle #7). External VPPs carry no in-memory
+        battery/DER state here, so only the universal static and rate limits apply; ownership
+        was already checked at the REST layer."""
+        decision = self.risk_gate.validate(
+            [OrderIntent(side=side, price=price, qty=qty)],
+            vpp_id=vpp_id,
+            open_order_count=self._open_order_counts_by_vpp().get(vpp_id, 0),
+        )
+        if not decision.accepted:
+            self._record_rejections(vpp_id, len(decision.rejected) or 1)
+            reason = decision.rejected[0].reason if decision.rejected else "rejected by risk gate"
+            raise RiskRejected(reason)
+        intent = decision.accepted[0]
+        external_quote = self._external_quote_for_intent(intent)
+        result = self.engine.submit(
+            vpp_id=vpp_id,
+            side=intent.side,
+            price=intent.price,
+            qty=intent.qty,
+            sim_ts=now_sim,
+            wall_ts=now_wall,
+            ttl_sec=self.order_ttl_sec or None,
+            rest_unfilled=external_quote is None,
+        )
+        self._record_trades(result.trades)
+        external_events: list[ExternalTradeEvent] = []
+        if external_quote is not None and result.order.remaining_qty > 0:
+            # SDK/REST VPPs carry no in-memory state here, so the external fill is only
+            # *published* (tape/chart/WS) — not applied to a SimulatorVPP. Ownership
+            # accounting for these orders lives at the REST layer.
+            external_events.append(
+                self._publish_external_trade_for_vpp_id(
+                    vpp_id=vpp_id,
+                    side=intent.side,
+                    qty=result.order.remaining_qty,
+                    quote=external_quote,
+                    sim_ts=now_sim,
                 )
-                result.order.remaining_qty = Decimal("0")
+            )
+            result.order.remaining_qty = Decimal("0")
         return {
             "order_id": result.order.order_id,
             "remaining_qty": str(result.order.remaining_qty),
-            # Surface the TTL so API integrators know unfilled remainders are
-            # swept at this sim time (order.cancelled event) instead of resting.
+            # Surface the TTL so integrators know unfilled remainders are swept at this
+            # sim time (order.cancelled event) instead of resting.
             "expires_at_sim": result.order.expires_at,
             "trades": [
                 *[t.model_dump(mode="json") for t in result.trades],
@@ -837,6 +896,7 @@ class Simulator:
         log.info("Simulator loop started (speed=%sx, tick=%ss)", self.clock.speed, self.clock.tick_sim_sec)
         tick_h = self.clock.tick_sim_sec / 3600.0
         async for tick_no, sim_ts in self.clock.ticks():
+            self._last_tick_no = tick_no
             async with self._lock:
                 self._expire_orders(sim_ts)
                 snapshot = self.engine.snapshot(depth_levels=5)

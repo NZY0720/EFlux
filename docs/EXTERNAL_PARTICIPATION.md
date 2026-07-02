@@ -149,10 +149,13 @@ Each mode maps to a participant persona:
 - **Reuses:** today's `POST /orders` path and the `RiskRejected`→HTTP mapping
   (`routers/orders.py:61`). This is the closest mode to what already works; an
   external bot can trade *today* via single orders.
-- **Exists vs. build:** single-order submit/cancel exist. **To build:** the
-  Agent Protocol envelope (§4), **batch** submit/cancel + a server-side
-  **state/open-orders** endpoint (so an async agent can reconcile without
-  scraping), idempotency, and per-account rate limits.
+- **Exists vs. build:** single-order submit/cancel exist.
+  - **✅ Now implemented (P1, 2026-07-01).** Agent Protocol v1 `POST /orders/batch`
+    (envelope: `protocol_version` / `idempotency_key` / `deadline`; per-item results;
+    cancels-first), the `GET /orders/open` state read, per-account **idempotency** replay,
+    and a per-account **token-bucket rate limit** (120 burst / 2·s⁻¹ → 429). See
+    `AGENT_SPEC.md` §5. **Still to build:** Python SDK + MCP adapter (P2), per-participant
+    audit segmentation.
 - **Leaderboard role:** the open-class tier — bring any code.
 
 ### Tier A2 — Networked RL environment (train locally)
@@ -391,8 +394,8 @@ front-loading the lowest-barrier tier and the contract everything else depends o
 | Phase | Deliverable | Mostly exists? |
 |---|---|---|
 | **P0** | **Tier 0 provisioning**: endpoint to instantiate a `HybridPolicyAgent` for an external user from params+persona+preferences; preferences UI; reuse managed read APIs | ✅ **done** — provision / PATCH / DELETE + persistence (migration `0002`) + UI |
-| **P1** | **Agent Protocol v1** (§4) + **batch** submit/cancel + **state/open-orders** read + idempotency + **per-account rate limits** + **per-account audit segmentation** (Tier A1) | single-order ✅, rest ❌ |
-| **P2** | **Python SDK** over the protocol, then an **MCP adapter** exposing the same gateway tools (`get_market_snapshot`, `submit_orders_batch`, …) | ❌ |
+| **P1** | **Agent Protocol v1** (§4) + **batch** submit/cancel + **state/open-orders** read + idempotency + **per-account rate limits** + **per-account audit segmentation** (Tier A1) | ✅ **done** — protocol/batch/state/idempotency/rate-limit (`AGENT_SPEC.md` §5); audit segmentation still open |
+| **P2** | **Python SDK** over the protocol, then an **MCP adapter** exposing the same gateway tools (`get_market_snapshot`, `submit_orders_batch`, …) | ✅ **done** — `eflux.sdk.EFluxClient` + `examples/market_maker.py` + `eflux.mcp.server` (7 tools); `AGENT_SPEC.md` §5 |
 | **P3** | **Networked RL env** (Tier A2) over the wire + **sandbox training market** + step budgets; reuse the existing encoding/reward | codec+reward ✅, transport+sandbox ❌ |
 | **P4** | **External `StrategyGuidance` ingestion** (Tier A3) bound to a user's managed VPP + source auth + cadence limits | contract ✅, ingestion ❌ |
 | **P5** | **Leaderboard service** + standardized **evaluation harness** on the backtest runner (durable results, held-out scenarios, scoring) | backtest ✅, leaderboard ❌ |

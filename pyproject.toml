@@ -47,8 +47,15 @@ data = [
     "pandas>=2.2",
 ]
 
+# MCP adapter (`python -m eflux.mcp.server`) — exposes the Agent Protocol v1 gateway as MCP
+# tools for LLM hosts. Optional; the SDK (httpx, a core dep) is all an external agent needs.
+mcp = [
+    "mcp>=1.2",
+]
+
 [project.scripts]
 eflux = "eflux.cli:main"
+eflux-mcp = "eflux.mcp.server:main"
 
 [build-system]
 requires = ["hatchling"]

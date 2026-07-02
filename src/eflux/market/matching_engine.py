@@ -212,6 +212,13 @@ class MatchingEngine:
             # Every order at this crossing level is the taker's own → look deeper.
         return None
 
+    def open_orders_for_vpp(self, vpp_id: int) -> list[LimitOrder]:
+        """All resting orders belonging to a VPP, both sides — for the external state read."""
+        out: list[LimitOrder] = []
+        for side in ("buy", "sell"):
+            out.extend(o for o in self.book.iter_orders(side) if o.vpp_id == vpp_id)
+        return out
+
     def snapshot(self, depth_levels: int = 10) -> dict:
         bb = self.book.best_bid()
         ba = self.book.best_ask()

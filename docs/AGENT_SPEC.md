@@ -159,7 +159,92 @@ curl -s -X POST $BASE/orders -H "Authorization: Bearer $KEY" \
 payload shapes as the REST backfill endpoints. Reconnect + replay from
 `GET /market/trades`.
 
-## 5. Versioning notes
+## 5. Agent Protocol v1 — batch orders, state & governance (Tier A1)
+
+An async agent runs its own loop: read state → decide → submit a **batch** of orders and
+cancels in one authenticated call → reconcile. Realtime-only (rejected at 10x/100x); every
+order passes the same `RiskGate` as the built-in fleet.
+
+### Read your resting orders
+
+```bash
+curl -s "$BASE/orders/open?vpp_id=$VPP_ID" -H "Authorization: Bearer $KEY"
+# -> [{order_id, vpp_id, side, price, remaining_qty, expires_at_sim}, ...]
+```
+
+Ownership-scoped — you only see your own VPP's book, so an agent reconciles without scraping
+the whole market.
+
+### Submit + cancel a batch — `POST /orders/batch`
+
+The canonical Agent Protocol v1 envelope:
+
+```jsonc
+{
+  "protocol_version": 1,                 // required; the server speaks v1
+  "idempotency_key": "uuid-...",         // optional; a replay returns the original result
+  "deadline": "2026-07-01T12:00:00Z",    // optional; a stale batch is rejected (409)
+  "orders": [                            // up to 50; each risk-gated independently
+    {"vpp_id": 12, "side": "sell", "price": 55.0, "qty": 1.0, "client_ref": "a"}
+  ],
+  "cancels": [4211, 4212]                // up to 50 order_ids (only your own are touched)
+}
+```
+
+Response:
+
+```jsonc
+{
+  "protocol_version": 1,
+  "tick_id": 84213,                      // current market tick, for staleness detection
+  "results": [
+    {"index": 0, "client_ref": "a", "status": "accepted",
+     "order_id": 4310, "remaining_qty": "1.0", "expires_at_sim": "...", "trades": [ ... ]}
+    // a "rejected" item carries a `reason` instead of an order_id
+  ],
+  "cancelled": [{"order_id": 4211, "ok": true}, {"order_id": 4212, "ok": false}],
+  "rate_limit_remaining": 108
+}
+```
+
+Semantics:
+
+- **Per-item, non-atomic** — one gate-rejected order never aborts the batch; each result
+  carries its own `status`/`reason`, and `client_ref` is echoed back so you can match results
+  to inputs.
+- **Cancels run first**, so a cancel-then-replace frees open-order budget within the batch. A
+  cancel of an order that isn't yours (or is already gone) reports `ok: false`, not an error.
+- **Ownership** — every order's `vpp_id` must be yours (else 404); cancels only ever touch
+  your own resting orders.
+- **Idempotency** — resend the same `idempotency_key` (e.g. after a network timeout) to get
+  the original result back instead of double-submitting.
+- **Deadline / late-response** — set `deadline` to have the server drop a batch whose window
+  has passed (409) rather than act on stale intent.
+
+### Rate limits
+
+Per account, a token bucket: **120 orders burst, refilling at 2/s**. Each order costs one
+token; cancels are free. Exceeding it returns **429** with the remaining budget. Read
+endpoints and the single-order `POST /orders` path are unaffected.
+
+### Python SDK & MCP
+
+- **Python SDK** — `eflux.sdk.EFluxClient` (async) wraps all of the above (auth, market reads,
+  batch/state orders), so an agent is just a `read → decide → submit_batch` loop. `httpx` (a
+  core dep) is all it needs. Runnable example: [`examples/market_maker.py`](../examples/market_maker.py).
+
+  ```python
+  async with EFluxClient("http://localhost:8000", token=API_KEY) as c:
+      vpp = await c.create_vpp("my-bot", {"pv_kw_peak": 4.0, "battery_kwh": 10.0})
+      await c.submit_batch([Order(vpp["id"], "sell", 55.0, 1.0, client_ref="a")])
+  ```
+
+- **MCP server** — `python -m eflux.mcp.server` (needs `uv sync --extra mcp`) exposes the same
+  gateway as MCP tools (`get_market_snapshot`, `get_open_orders`, `submit_orders_batch`,
+  `cancel_orders`, `create_vpp`, …) so an LLM host (e.g. Claude Desktop) can trade. Configure
+  with `EFLUX_MCP_BASE_URL` + `EFLUX_MCP_API_KEY` (or `EFLUX_MCP_EMAIL` on a dev server).
+
+## 6. Versioning notes
 
 - Memory records carry `"v": 1`; future shape changes bump the version and
   readers skip records they don't understand.
