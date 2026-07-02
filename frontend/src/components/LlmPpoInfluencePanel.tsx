@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 
 import { fetchMarketReflections } from "../api/client";
 import type { MarketAgent, MarketReflection, PpoMetaControl } from "../api/types";
+import { latestReflectionByAgent } from "../lib/arena";
 import { formatCompactSigned } from "../lib/format";
 import { EmptyState, StatusPill } from "./DashboardCard";
 
@@ -11,14 +12,6 @@ interface Props {
 
 const fmtSigned = (n: number, digits = 2) => `${n >= 0 ? "+" : ""}${n.toFixed(digits)}`;
 const pct = (n: number | null | undefined) => (n === null || n === undefined ? "n/a" : `${(n * 100).toFixed(0)}%`);
-
-function latestReflectionByAgent(entries: MarketReflection[]): Map<string, MarketReflection> {
-  const out = new Map<string, MarketReflection>();
-  for (const r of entries) {
-    if (!out.has(r.vpp_name)) out.set(r.vpp_name, r);
-  }
-  return out;
-}
 
 function metaChips(meta: PpoMetaControl | null | undefined): Array<[string, string]> {
   if (!meta) return [];

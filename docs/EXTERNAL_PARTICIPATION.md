@@ -397,8 +397,8 @@ front-loading the lowest-barrier tier and the contract everything else depends o
 | **P1** | **Agent Protocol v1** (§4) + **batch** submit/cancel + **state/open-orders** read + idempotency + **per-account rate limits** + **per-account audit segmentation** (Tier A1) | ✅ **done** — protocol/batch/state/idempotency/rate-limit (`AGENT_SPEC.md` §5); audit segmentation still open |
 | **P2** | **Python SDK** over the protocol, then an **MCP adapter** exposing the same gateway tools (`get_market_snapshot`, `submit_orders_batch`, …) | ✅ **done** — `eflux.sdk.EFluxClient` + `examples/market_maker.py` + `eflux.mcp.server` (7 tools); `AGENT_SPEC.md` §5 |
 | **P3** | **Networked RL env** (Tier A2) over the wire + **sandbox training market** + step budgets; reuse the existing encoding/reward | codec+reward ✅, transport+sandbox ❌ |
-| **P4** | **External `StrategyGuidance` ingestion** (Tier A3) bound to a user's managed VPP + source auth + cadence limits | contract ✅, ingestion ❌ |
-| **P5** | **Leaderboard service** + standardized **evaluation harness** on the backtest runner (durable results, held-out scenarios, scoring) | backtest ✅, leaderboard ❌ |
+| **P4** | **External `StrategyGuidance` ingestion** (Tier A3) bound to a user's managed VPP + source auth + cadence limits | ✅ **done (2026-07-02)** — `PUT/DELETE /vpps/managed/{id}/guidance` (owner-scoped, clamped server-side, ~2/min token bucket, persisted in `managed_config` + rehydrated on restart, zero platform-LLM cost while active) via `ExternalStrategist` (`reflective/strategist.py`); SDK `put_guidance`/`release_guidance` + `examples/guidance_bot.py`; "externally steered" badge on My VPPs |
+| **P5** | **Leaderboard service** + standardized **evaluation harness** on the backtest runner (durable results, held-out scenarios, scoring) | ✅ **live-results half done (2026-07-02)** — durable `market_sessions` + `vpp_stat_snapshots` (migration `0003`; wall-clock-gated snapshotter off the tick path), endowment-normalized **score v1** (`stats/score.py`), public `GET /leaderboard` + `/sessions` + `/history` and a Leaderboard page (per-session + all-time, survives restarts); `GET /benchmarks*` + a Benchmarks page serve backtest artifacts read-only. **Still open:** submit-for-evaluation service (held-out scenarios, scoring queue) — hosted-only |
 
 Rationale for the order: P0 ships the lowest-barrier mode fastest and exercises
 provisioning; P1 establishes the contract + governance every other tier needs; P2
@@ -410,16 +410,20 @@ harness is wrapped, since the offline path already exists).
 
 ## 8. Gaps & open decisions
 
-**Implementation gaps this spec surfaces** (none block the spec; all block the build):
+**Implementation gaps this spec surfaces** (struck through = since built; see §7 table):
 
-- No canonical Agent Protocol / gateway / `remote/` module (P1).
-- No batch endpoints or server-side agent **state/open-orders** read (P1).
-- No **per-account** rate limiting/quota or **model-cost metering** (§5.2–5.3).
+- ~~No canonical Agent Protocol / gateway module (P1).~~ ✅ batch endpoint + envelope (P1).
+- ~~No batch endpoints or server-side agent **state/open-orders** read (P1).~~ ✅
+- **Partial:** per-account rate limits exist for order batches and guidance ingestion
+  (shared `api/ratelimit.py` token buckets); no limits yet on magic-link/single-order
+  paths, and no **model-cost metering** (§5.2–5.3).
 - No **per-participant audit segmentation** — the event bus is global (§5.5).
 - No **networked RL env** or **sandbox training market** (P3).
-- No **Tier-0 provisioning** path — `POST /vpps` makes a passive record (§3 Tier 0).
+- ~~No **Tier-0 provisioning** path.~~ ✅ `POST /vpps/managed` (P0).
 - No **collusion/wash-trade detection** (§5.6).
-- No **durable leaderboard** store — live market state is ephemeral (§1, P5).
+- ~~No **durable leaderboard** store — live market state is ephemeral (§1, P5).~~
+  ✅ `market_sessions` + `vpp_stat_snapshots` + `GET /leaderboard` (P5); the live market
+  itself stays ephemeral by design — only periodic results persist.
 
 **Decisions to make before/while building:**
 

@@ -1,4 +1,4 @@
-"""SQLAlchemy ORM models for users, VPPs, orders, trades."""
+"""SQLAlchemy ORM models for users, VPPs, orders, trades, and market-result durability."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from sqlalchemy import (
     JSON,
     DateTime,
     Enum,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -154,6 +155,83 @@ class Order(Base):
     )
 
     vpp: Mapped[VPP] = relationship(back_populates="orders")
+
+
+class MarketSession(Base):
+    """One row per backend boot — the durable identity of an otherwise ephemeral market.
+
+    Live market state (orders, trades, PnL) is in-memory by design; snapshots reference
+    a session so leaderboard results survive restarts and stay comparable (same
+    market_mode + price_ref) across runs. ended_at is set on clean shutdown and stays
+    NULL for the running (or crashed) session.
+    """
+
+    __tablename__ = "market_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    market_mode: Mapped[str] = mapped_column(String(16), nullable=False)
+    started_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The run's cost-basis anchor ($/MWh) — also the normalized score's denominator.
+    price_ref: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    scenario_file: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    scenario_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    market_speed: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+    tick_sim_sec: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
+
+    snapshots: Mapped[list[VppStatSnapshot]] = relationship(
+        back_populates="session", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class VppStatSnapshot(Base):
+    """Periodic per-agent stat sample — the durable substrate of the leaderboard.
+
+    Identity across restarts: built-in roster agents are keyed by ``name`` (stable via the
+    scenario file); user-provisioned managed agents by ``managed_def_id`` (their DB row id).
+    The runtime ``vpp_id`` is informational only (negative, reassigned every boot).
+    Endowment fields are denormalized per row so scoring never joins back to live params.
+    """
+
+    __tablename__ = "vpp_stat_snapshots"
+    __table_args__ = (
+        Index("ix_snap_session_identity", "session_id", "name", "id"),
+        Index("ix_snap_session_wall", "session_id", "wall_ts"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("market_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    vpp_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    managed_def_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    strategy: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    category: Mapped[str] = mapped_column(String(20), nullable=False, default="")
+    is_llm: Mapped[bool] = mapped_column(default=False, nullable=False)
+    llm_model: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    tick_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    sim_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    wall_ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    pnl_usd: Mapped[Decimal] = mapped_column(Numeric(14, 4), nullable=False)
+    soc_kwh: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    soc_frac: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    energy_bought_kwh: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    energy_sold_kwh: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    trade_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    pv_kw_peak: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    wind_kw_rated: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    battery_kwh: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    battery_kw_max: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    load_kw_base: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    gas_kw_max: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    session: Mapped[MarketSession] = relationship(back_populates="snapshots")
 
 
 class Trade(Base):

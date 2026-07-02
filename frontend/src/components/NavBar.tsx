@@ -1,12 +1,15 @@
 import { Link, useLocation } from "react-router-dom";
 import {
   Activity,
+  FlaskConical,
   Layers3,
   LoaderCircle,
   LogIn,
   LogOut,
   Moon,
   Sun,
+  Swords,
+  Trophy,
   UsersRound,
   Wifi,
   WifiOff,
@@ -70,6 +73,9 @@ export default function NavBar() {
           <div className="flex items-center gap-1 overflow-x-auto">
             {link("/market", "Market", Activity)}
             {link("/participants", "Participants", UsersRound)}
+            {link("/leaderboard", "Leaderboard", Trophy)}
+            {link("/arena", "Arena", Swords)}
+            {link("/benchmarks", "Benchmarks", FlaskConical)}
             {link("/vpps", "My VPPs", Layers3)}
           </div>
         </div>

@@ -1,7 +1,12 @@
 import axios from "axios";
 
 import type {
+  BenchmarkDetail,
+  BenchmarkSummary,
   ChatMessage,
+  LeaderboardHistory,
+  LeaderboardOut,
+  LeaderboardSession,
   ManagedVPPPerformance,
   ManagedVPP,
   MarketAgent,
@@ -150,6 +155,27 @@ export async function deleteManagedVPP(id: number): Promise<void> {
   await api.delete(`/vpps/managed/${id}`);
 }
 
+export interface GuidancePayload {
+  preferred_modes?: string[];
+  avoid_modes?: string[];
+  risk_budget?: number;
+  soc_target?: number;
+  execution_style?: string;
+  lesson?: string;
+  meta_control?: Record<string, number> | null;
+}
+
+/** Steer a managed agent with your own model (Tier A3). Values are clamped server-side. */
+export async function putGuidance(managedId: number, payload: GuidancePayload): Promise<unknown> {
+  const { data } = await api.put(`/vpps/managed/${managedId}/guidance`, payload);
+  return data;
+}
+
+/** Hand steering back to the platform LLM strategist. */
+export async function releaseGuidance(managedId: number): Promise<void> {
+  await api.delete(`/vpps/managed/${managedId}/guidance`);
+}
+
 export interface ModelsInfo {
   models: string[];
   default: string;
@@ -212,6 +238,50 @@ export async function fetchChatter(limit = 40): Promise<ChatMessage[]> {
 export async function setMarketSpeed(speed: number): Promise<{ speed: number; is_realtime: boolean }> {
   const { data } = await api.post("/market/speed", { speed });
   return data;
+}
+
+// --- Leaderboard (durable results across backend restarts) ---
+
+export async function fetchLeaderboardSessions(): Promise<LeaderboardSession[]> {
+  const { data } = await api.get<LeaderboardSession[]>("/leaderboard/sessions");
+  return data;
+}
+
+export async function fetchLeaderboard(params: {
+  scope: "session" | "alltime";
+  session_id?: number;
+  category?: string;
+}): Promise<LeaderboardOut> {
+  const { data } = await api.get<LeaderboardOut>("/leaderboard", { params });
+  return data;
+}
+
+/** One identity's server-side equity curve. Pass exactly one of name / managed_def_id. */
+export async function fetchLeaderboardHistory(params: {
+  name?: string;
+  managed_def_id?: number;
+  session_id?: number;
+  max_points?: number;
+}): Promise<LeaderboardHistory> {
+  const { data } = await api.get<LeaderboardHistory>("/leaderboard/history", { params });
+  return data;
+}
+
+// --- Benchmarks (offline backtest artifacts) ---
+
+export async function fetchBenchmarks(): Promise<BenchmarkSummary[]> {
+  const { data } = await api.get<BenchmarkSummary[]>("/benchmarks");
+  return data;
+}
+
+export async function fetchBenchmarkDetail(runId: string): Promise<BenchmarkDetail> {
+  const { data } = await api.get<BenchmarkDetail>(`/benchmarks/${encodeURIComponent(runId)}`);
+  return data;
+}
+
+/** Chart URL for <img> tags (served through the same /api proxy). */
+export function benchmarkChartUrl(runId: string, filename: string): string {
+  return `/api/benchmarks/${encodeURIComponent(runId)}/charts/${encodeURIComponent(filename)}`;
 }
 
 // --- PPO renew (retrain on latest real data + hot-reload) ---

@@ -184,6 +184,9 @@ Useful market endpoints (all public, no auth):
 - `GET /market/supply_curve` — every resting order with per-VPP category attribution (the merit-order chart)
 - `GET /market/agents` — live roster: strategy, endowment, SOC, PnL, current output per built-in VPP
 - `GET /market/reflections?limit=N` — LLM guidance feed across managed agents, newest first
+- `GET /leaderboard?scope=session|alltime` — durable rankings (endowment-normalized score v1);
+  results persist across restarts (`/leaderboard/sessions`, `/leaderboard/history` for equity curves)
+- `GET /benchmarks` — recorded offline backtest runs (manifest, per-agent metrics, charts)
 - `POST /market/speed` (auth) — switch the rolling clock between 1x/10x/100x at runtime
 
 The *My VPPs* page surfaces the LLM agent end-to-end: click the `my-llm-vpp`
@@ -314,4 +317,4 @@ If Redis is unreachable on startup, lifespan logs a warning and silently falls b
 
 ## License
 
-TBD
+All rights reserved (pre-release; license to be determined at public release).

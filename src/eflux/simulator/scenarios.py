@@ -413,6 +413,40 @@ def validate_managed_agent_params(name: str, agent_params: dict | None) -> None:
     _validate_agent_params(name, dict(agent_params or {}), HybridPolicyAgent)
 
 
+def apply_external_guidance(vpp: SimulatorVPP, guidance_dict: dict, *, market_mode: str) -> dict:
+    """Steer a managed VPP with externally supplied guidance (Tier A3): swap its strategist
+    for an ExternalStrategist (idempotent — an existing one is reused) seeded with the
+    clamped payload. Shared by the guidance API and by startup rehydration, so a restart
+    neither burns platform LLM calls nor forgets the user's last guidance.
+
+    Returns the recorded reflection entry (the clamped echo). Call under sim._lock when the
+    tick loop is running. Releasing external control is the inverse:
+    ``vpp.agent.strategist = ext.prior`` (the API's DELETE handler does this).
+    """
+    from collections import deque
+
+    from eflux.agents.reflective.strategist import (
+        ExternalStrategist,
+        external_guidance_from_dict,
+    )
+
+    agent = vpp.agent
+    prior = getattr(agent, "strategist", None)
+    if isinstance(prior, ExternalStrategist):
+        ext = prior
+    else:
+        prior_log = getattr(prior, "reflection_log", None)
+        ext = ExternalStrategist(
+            prior=prior,
+            client=getattr(prior, "client", None),
+            # Adopt the platform strategist's log so the audit timeline stays continuous.
+            reflection_log=prior_log if prior_log is not None else deque(maxlen=50),
+        )
+        agent.strategist = ext
+    guidance, meta = external_guidance_from_dict(guidance_dict, market_mode=market_mode)
+    return ext.set_guidance(guidance, meta)
+
+
 def _add_mirror_vpp(
     sim: Simulator, spec: AgentSpec, *, use_real_weather: bool, default_seed: int
 ) -> None:

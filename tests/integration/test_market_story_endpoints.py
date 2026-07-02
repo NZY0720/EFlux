@@ -40,6 +40,8 @@ async def test_agents_roster_is_public_and_complete(client):
     llm = next(a for a in agents if a["is_llm"])
     assert llm["name"] == "my-llm-vpp"
     assert llm["llm_health_state"] in ("live", "degraded", "offline")
+    assert "llm_model" in llm  # arena display field (None when the LLM is unconfigured)
+    assert all(a["llm_model"] is None for a in agents if not a["is_llm"])
     mirrors = [a for a in agents if a["mirror_of"] is not None]
     assert len(mirrors) == 6
     assert all(a["name"] == f"{a['mirror_of']}-ppo-mirror" for a in mirrors)

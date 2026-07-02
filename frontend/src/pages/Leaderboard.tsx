@@ -1,0 +1,268 @@
+import { useEffect, useMemo, useState } from "react";
+import { ChartSpline, Info, Trophy } from "lucide-react";
+
+import { fetchLeaderboard, fetchLeaderboardSessions } from "../api/client";
+import type { LeaderboardOut, LeaderboardRow, LeaderboardSession } from "../api/types";
+import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
+import EquityCurves from "../components/EquityCurves";
+import { CATEGORY_ORDER, categoryMeta } from "../lib/categories";
+import { useServerEquity } from "../state/useServerEquity";
+
+type Scope = "session" | "alltime";
+type SortKey = "score" | "pnl" | "trades" | "hours";
+
+const fmtUsd = (s: string) => {
+  const n = Number(s);
+  return `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
+};
+const fmtScore = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(3)}`;
+
+/**
+ * Durable leaderboard — rankings persist across backend restarts (unlike the live
+ * dashboards, whose market state is in-memory). "This session" ranks the current
+ * boot; "All-time" folds every recorded session of this market mode together.
+ * Rows rank by score v1: PnL normalized by endowment size and observed hours, so
+ * a big battery doesn't automatically win.
+ */
+export default function Leaderboard() {
+  const [scope, setScope] = useState<Scope>("session");
+  const [sessions, setSessions] = useState<LeaderboardSession[]>([]);
+  const [sessionId, setSessionId] = useState<number | undefined>(undefined);
+  const [board, setBoard] = useState<LeaderboardOut | null>(null);
+  const [category, setCategory] = useState<string | null>(null);
+  const [sortKey, setSortKey] = useState<SortKey>("score");
+  const [selected, setSelected] = useState<string[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchLeaderboardSessions().then(setSessions).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const data = await fetchLeaderboard({
+          scope,
+          ...(scope === "session" && sessionId !== undefined ? { session_id: sessionId } : {}),
+          ...(category ? { category } : {}),
+        });
+        if (!cancelled) {
+          setBoard(data);
+          setError(null);
+        }
+      } catch (e) {
+        if (!cancelled) setError((e as Error).message);
+      }
+    };
+    load();
+    const id = setInterval(load, 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [scope, sessionId, category]);
+
+  const rows = useMemo(() => {
+    const r = [...(board?.rows ?? [])];
+    const key: (x: LeaderboardRow) => number =
+      sortKey === "pnl"
+        ? (x) => Number(x.pnl_usd)
+        : sortKey === "trades"
+          ? (x) => x.trade_count
+          : sortKey === "hours"
+            ? (x) => x.hours
+            : (x) => x.score;
+    r.sort((a, b) => key(b) - key(a));
+    return r;
+  }, [board, sortKey]);
+
+  // Equity overlay: selected identities (click rows), defaulting to the top 5.
+  const chartIdentities = selected.length > 0 ? selected : rows.slice(0, 5).map((r) => r.identity);
+  const historySessionId = scope === "session" ? (sessionId ?? board?.session_id ?? undefined) : undefined;
+  const equity = useServerEquity(chartIdentities, historySessionId);
+
+  const toggleSelected = (identity: string) =>
+    setSelected((cur) =>
+      cur.includes(identity) ? cur.filter((i) => i !== identity) : [...cur, identity].slice(-8),
+    );
+
+  const th = (label: string, key?: SortKey, align = "text-right") => (
+    <th
+      className={`px-3 py-2 ${align} font-semibold ${key ? "cursor-pointer select-none hover:text-[var(--text)]" : ""}`}
+      onClick={key ? () => setSortKey(key) : undefined}
+    >
+      {label}
+      {key && sortKey === key ? " ▾" : ""}
+    </th>
+  );
+
+  return (
+    <div className="mx-auto w-full max-w-[1400px] space-y-6 px-4 py-5 md:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="flex items-center gap-2 text-2xl font-semibold text-[var(--text)]">
+            <Trophy size={22} className="text-[var(--warning)]" />
+            Leaderboard
+          </h1>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">
+            Durable results — survives backend restarts. Ranked by <b>score v1</b>: PnL
+            normalized by endowment size and hours observed, so bigger assets don't auto-win.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex overflow-hidden rounded-md border border-[var(--border)]">
+            {(["session", "alltime"] as const).map((s) => (
+              <button
+                key={s}
+                onClick={() => setScope(s)}
+                className={`px-3 py-1.5 text-sm font-medium ${
+                  scope === s
+                    ? "bg-[var(--accent-soft)] text-[var(--accent)]"
+                    : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)]"
+                }`}
+              >
+                {s === "session" ? "This session" : "All-time"}
+              </button>
+            ))}
+          </div>
+          {scope === "session" && sessions.length > 0 && (
+            <select
+              className="eflux-select rounded-md px-2 py-1.5 text-sm"
+              value={sessionId ?? ""}
+              onChange={(e) => setSessionId(e.target.value ? Number(e.target.value) : undefined)}
+            >
+              <option value="">Current session</option>
+              {sessions.map((s) => (
+                <option key={s.id} value={s.id}>
+                  #{s.id} · {s.market_mode} · {new Date(s.started_at).toLocaleString()}
+                  {s.is_current ? " (running)" : ""}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button
+          onClick={() => setCategory(null)}
+          className={`eflux-chip ${category === null ? "eflux-chip-active" : ""}`}
+        >
+          All
+        </button>
+        {CATEGORY_ORDER.map((c) => {
+          const meta = categoryMeta(c);
+          return (
+            <button
+              key={c}
+              onClick={() => setCategory(category === c ? null : c)}
+              className={`eflux-chip ${category === c ? "eflux-chip-active" : ""}`}
+            >
+              {meta.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {error && <p className="text-sm text-[var(--danger)]">{error}</p>}
+
+      <DashboardCard>
+        <CardTitle icon={Trophy}>
+          {scope === "session" ? "Session ranking" : `All-time ranking (${board?.market_mode ?? ""})`}
+        </CardTitle>
+        <TableShell className="max-h-[520px]">
+          <table className="eflux-table text-xs">
+            <thead className="sticky top-0 z-10">
+              <tr>
+                {th("#", undefined, "text-left")}
+                {th("Agent", undefined, "text-left")}
+                {th("Type", undefined, "text-left")}
+                {th("Score v1", "score")}
+                {th("PnL ($)", "pnl")}
+                {th("Trades", "trades")}
+                {th("Hours", "hours")}
+                {scope === "alltime" && th("Sessions")}
+                {th("Last seen")}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => {
+                const meta = categoryMeta(r.category);
+                const isSelected = chartIdentities.includes(r.identity);
+                return (
+                  <tr
+                    key={r.identity}
+                    onClick={() => toggleSelected(r.identity)}
+                    className={`cursor-pointer ${isSelected ? "bg-[var(--accent-soft)]" : ""}`}
+                    title="Click to add/remove from the equity chart"
+                  >
+                    <td className="px-3 py-1.5 text-[var(--text-subtle)] tabular-nums">{i + 1}</td>
+                    <td className="px-3 py-1.5 text-[var(--text)]">
+                      {r.name}
+                      {r.llm_model && (
+                        <span className="ml-1.5 text-[10px] text-[var(--violet)]">{r.llm_model}</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <StatusPill tone={r.is_llm ? "violet" : "muted"} className="py-0 text-[10px]">
+                        {meta.label}
+                      </StatusPill>
+                    </td>
+                    <td
+                      className={`px-3 py-1.5 text-right font-semibold tabular-nums ${
+                        r.score >= 0 ? "text-[var(--success)]" : "text-[var(--danger)]"
+                      }`}
+                    >
+                      {fmtScore(r.score)}
+                    </td>
+                    <td
+                      className={`px-3 py-1.5 text-right tabular-nums ${
+                        Number(r.pnl_usd) >= 0 ? "text-[var(--success)]" : "text-[var(--danger)]"
+                      }`}
+                    >
+                      {fmtUsd(r.pnl_usd)}
+                    </td>
+                    <td className="px-3 py-1.5 text-right text-[var(--text-muted)] tabular-nums">{r.trade_count}</td>
+                    <td className="px-3 py-1.5 text-right text-[var(--text-muted)] tabular-nums">{r.hours.toFixed(1)}</td>
+                    {scope === "alltime" && (
+                      <td className="px-3 py-1.5 text-right text-[var(--text-muted)] tabular-nums">{r.sessions_count}</td>
+                    )}
+                    <td className="px-3 py-1.5 text-right text-[var(--text-subtle)] tabular-nums">
+                      {new Date(r.last_seen_at).toLocaleTimeString()}
+                    </td>
+                  </tr>
+                );
+              })}
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="p-3">
+                    <EmptyState
+                      icon={Trophy}
+                      title="No results recorded yet"
+                      body="Results accrue every ~30s while the market runs; they survive restarts."
+                    />
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </TableShell>
+        <p className="mt-2 flex items-center gap-1.5 text-[11px] text-[var(--text-subtle)]">
+          <Info size={12} />
+          Score v1 = PnL ÷ (endowment nameplate power × reference price × hours observed) — the
+          fraction of the endowment's flat-out revenue captured as profit.
+        </p>
+      </DashboardCard>
+
+      {scope === "session" && (
+        <DashboardCard>
+          <CardTitle icon={ChartSpline}>
+            Equity curves — server history (click rows to compare, top 5 by default)
+          </CardTitle>
+          <EquityCurves history={equity} topN={8} />
+        </DashboardCard>
+      )}
+    </div>
+  );
+}

@@ -15,12 +15,14 @@ from httpx import ASGITransport, AsyncClient
 
 @pytest.fixture(autouse=True)
 def _reset_order_router_state():
-    """Clear the order router's in-memory rate-limit buckets + idempotency cache between
-    tests. User ids restart per fresh DB, so this module-level state would otherwise leak
-    across tests (a depleted bucket or a stale cached response for a reused user id)."""
+    """Clear in-memory rate-limit buckets (all registered limiters) + the order router's
+    idempotency cache between tests. User ids restart per fresh DB, so this module-level
+    state would otherwise leak across tests (a depleted bucket or a stale cached response
+    for a reused user id)."""
+    from eflux.api.ratelimit import reset_all_limiters
     from eflux.api.routers import orders as _orders
 
-    _orders._buckets.clear()
+    reset_all_limiters()
     _orders._idempotency.clear()
     yield
 

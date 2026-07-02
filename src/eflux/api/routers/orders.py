@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from collections import OrderedDict
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -14,6 +13,7 @@ from sqlalchemy import select
 
 from eflux.agents.hybrid import RiskRejected
 from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
+from eflux.api.ratelimit import RateLimiter
 from eflux.db.models import VPP
 from eflux.market.events import ExternalTradeEvent, TradeEvent
 
@@ -178,33 +178,14 @@ class BatchResult(BaseModel):
 
 
 # Per-account order rate limit (token bucket): burst capacity + sustained refill rate.
+# Implementation lives in eflux.api.ratelimit (shared with guidance ingestion).
 _RATE_CAPACITY = 120
 _RATE_REFILL_PER_SEC = 2.0
-
-
-class _TokenBucket:
-    __slots__ = ("tokens", "last")
-
-    def __init__(self) -> None:
-        self.tokens = float(_RATE_CAPACITY)
-        self.last = time.monotonic()
-
-    def take(self, n: int) -> tuple[bool, int]:
-        now = time.monotonic()
-        self.tokens = min(_RATE_CAPACITY, self.tokens + (now - self.last) * _RATE_REFILL_PER_SEC)
-        self.last = now
-        if self.tokens >= n:
-            self.tokens -= n
-            return True, int(self.tokens)
-        return False, int(self.tokens)
-
-
-_buckets: dict[int, _TokenBucket] = {}
+_order_limiter = RateLimiter(_RATE_CAPACITY, _RATE_REFILL_PER_SEC)
 
 
 def _rate_check(user_id: int, cost: int) -> tuple[bool, int]:
-    bucket = _buckets.get(user_id) or _buckets.setdefault(user_id, _TokenBucket())
-    return bucket.take(cost)
+    return _order_limiter.check(user_id, cost)
 
 
 # Idempotency: a repeated key from the same account returns the original response instead of

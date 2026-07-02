@@ -145,6 +145,72 @@ class EFluxClient:
     async def list_vpps(self) -> list[dict]:
         return await self._request("GET", "/vpps")
 
+    # --- Managed agents (Tier 0) + external guidance (Tier A3) ---
+
+    async def create_managed_vpp(
+        self,
+        name: str,
+        params: dict,
+        *,
+        persona: str | None = None,
+        agent_params: dict | None = None,
+        seed: int | None = None,
+        model: str | None = None,
+    ) -> dict:
+        """Provision a platform-hosted managed agent (Tier 0) the simulator drives."""
+        return await self._request(
+            "POST",
+            "/vpps/managed",
+            json={
+                "name": name,
+                "params": params,
+                "persona": persona,
+                "agent_params": dict(agent_params or {}),
+                "seed": seed,
+                "model": model,
+            },
+        )
+
+    async def list_managed_vpps(self) -> list[dict]:
+        return await self._request("GET", "/vpps/managed")
+
+    async def managed_performance(self, managed_id: int) -> dict:
+        """PnL, SOC, recent trades, and the guidance/reflection timeline."""
+        return await self._request("GET", f"/vpps/managed/{managed_id}/performance")
+
+    async def put_guidance(
+        self,
+        managed_id: int,
+        *,
+        preferred_modes: list[str] | tuple[str, ...] = (),
+        avoid_modes: list[str] | tuple[str, ...] = (),
+        risk_budget: float = 1.0,
+        soc_target: float = 0.5,
+        execution_style: str = "",
+        lesson: str = "",
+        meta_control: dict | None = None,
+    ) -> dict:
+        """Steer your managed agent with your own model (Tier A3). The platform LLM
+        stops being consulted while your guidance is active; values are clamped
+        server-side and the response echoes what was applied. ~2/min rate limit."""
+        return await self._request(
+            "PUT",
+            f"/vpps/managed/{managed_id}/guidance",
+            json={
+                "preferred_modes": list(preferred_modes),
+                "avoid_modes": list(avoid_modes),
+                "risk_budget": risk_budget,
+                "soc_target": soc_target,
+                "execution_style": execution_style,
+                "lesson": lesson,
+                "meta_control": meta_control,
+            },
+        )
+
+    async def release_guidance(self, managed_id: int) -> None:
+        """Hand steering back to the platform LLM strategist."""
+        await self._request("DELETE", f"/vpps/managed/{managed_id}/guidance")
+
     # --- market data (public) ---
 
     async def market_snapshot(self, depth: int = 10) -> dict:

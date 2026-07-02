@@ -11,7 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 # Ensure all models are imported before create_all.
 import eflux.db.models  # noqa: F401
 from eflux import __version__
-from eflux.api.routers import auth, health, market, orders, vpps
+from eflux.api.routers import auth, benchmarks, health, leaderboard, market, orders, vpps
 from eflux.api.ws import market as market_ws
 from eflux.bridge import InMemoryBus, set_bus
 from eflux.bridge.bus import EventBus
@@ -19,7 +19,12 @@ from eflux.config import get_settings
 from eflux.db.base import Base
 from eflux.db.session import get_engine
 from eflux.simulator.runner import Simulator
-from eflux.simulator.scenarios import load_default_scenario, provision_managed_vpp
+from eflux.simulator.scenarios import (
+    apply_external_guidance,
+    load_default_scenario,
+    provision_managed_vpp,
+)
+from eflux.stats.session import close_market_session, open_market_session, prune_old_snapshots
 
 log = logging.getLogger(__name__)
 
@@ -65,7 +70,7 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
             for row in rows:
                 cfg = row.managed_config or {}
                 try:
-                    provision_managed_vpp(
+                    vpp = provision_managed_vpp(
                         sim,
                         owner_id=row.owner_id,
                         name=row.name,
@@ -76,6 +81,11 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                         model=cfg.get("model"),
                         managed_def_id=row.id,
                     )
+                    # Restore external steering (Tier A3) so a restart neither burns
+                    # platform LLM calls nor forgets the owner's last guidance.
+                    guidance = cfg.get("external_guidance")
+                    if cfg.get("guidance_mode") == "external" and isinstance(guidance, dict):
+                        apply_external_guidance(vpp, guidance, market_mode=sim.market_mode)
                     count += 1
                 except Exception:
                     log.exception(
@@ -113,8 +123,16 @@ async def lifespan(app: FastAPI):
     # 3. Simulator.
     sim = Simulator(bus=bus)
     load_default_scenario(sim)
+    # Re-provision user-owned managed agents (Tier 0) persisted in the DB, so they
+    # rejoin the market after a restart alongside the roster.
+    await _rehydrate_managed_vpps(sim)
     sim.refresh_data_sources()
     log.info("Data sources checked: %s", sim.data_source_status().get("summary"))
+    # 4. Durable results: open this boot's market-session row (leaderboard identity)
+    #    and prune snapshots past retention. Best-effort — session_id stays None (and
+    #    the snapshot writer stays off) if the DB/schema isn't ready.
+    await prune_old_snapshots()
+    sim.session_id = await open_market_session(sim)
     await sim.start()
     app.state.simulator = sim
     log.info("Simulator started with %d built-in VPPs", len(sim.vpps))
@@ -124,6 +142,7 @@ async def lifespan(app: FastAPI):
     finally:
         log.info("EFlux shutting down")
         await sim.stop()
+        await close_market_session(sim.session_id)
         await bus.close()
 
 
@@ -150,6 +169,8 @@ def create_app() -> FastAPI:
     app.include_router(vpps.router)
     app.include_router(orders.router)
     app.include_router(market.router)
+    app.include_router(leaderboard.router)
+    app.include_router(benchmarks.router)
     app.include_router(market_ws.router)
 
     return app

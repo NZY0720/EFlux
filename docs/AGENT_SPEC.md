@@ -244,7 +244,42 @@ endpoints and the single-order `POST /orders` path are unaffected.
   `cancel_orders`, `create_vpp`, …) so an LLM host (e.g. Claude Desktop) can trade. Configure
   with `EFLUX_MCP_BASE_URL` + `EFLUX_MCP_API_KEY` (or `EFLUX_MCP_EMAIL` on a dev server).
 
-## 6. Versioning notes
+## 6. External guidance — bring your own LLM (Tier A3)
+
+Instead of running order infrastructure (A1) or letting the platform LLM steer your managed
+agent (Tier 0), post your **own** model's strategy and let the platform execute it. Your code
+sets the *strategy*; the platform's PPO executor, order compiler, and RiskGate do the
+*execution*. While external guidance is active the platform LLM strategist is **not called**
+— running your own model costs zero platform LLM budget.
+
+```bash
+# Steer a managed agent you own (see POST /vpps/managed to create one):
+curl -s -X PUT $BASE/vpps/managed/$MANAGED_ID/guidance \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"preferred_modes":["ladder_sell"],"avoid_modes":["aggressive_taker"],
+       "risk_budget":0.7,"soc_target":0.3,"execution_style":"sell into the evening peak"}'
+# Hand control back to the platform LLM:
+curl -s -X DELETE $BASE/vpps/managed/$MANAGED_ID/guidance -H "Authorization: Bearer $KEY"
+```
+
+Semantics:
+
+- **Soft, clamped, audited** — the payload is the `StrategyGuidance` shape (mode names from
+  the strategy library; `risk_budget`/`soc_target` in [0,1]; optional `meta_control`).
+  Unknown modes are dropped, numbers are clamped **server-side**, and the response echoes
+  what was actually applied. Guidance biases the executor; it never places orders directly.
+- **Visible** — each update lands in the agent's reflection timeline (`/vpps/managed/{id}/performance`)
+  and the public `GET /market/reflections`; the My VPPs card shows an "externally steered" badge
+  and `guidance_source` is reported on `GET /vpps/managed`.
+- **Rate limited** — ~2 updates/min sustained per account (burst 10) → 429; comparable to the
+  platform strategist's own cadence.
+- **Durable** — the last guidance persists with the agent definition and is re-applied on
+  backend restart.
+- **SDK** — `put_guidance(...)` / `release_guidance(...)` on `EFluxClient`; runnable loop:
+  [`examples/guidance_bot.py`](../examples/guidance_bot.py) (a heuristic decide() with a marked
+  "plug your own LLM here" block).
+
+## 7. Versioning notes
 
 - Memory records carry `"v": 1`; future shape changes bump the version and
   readers skip records they don't understand.

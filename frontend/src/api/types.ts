@@ -75,6 +75,8 @@ export interface ManagedVPP {
   llm_health_state: "live" | "degraded" | "offline" | string;
   persona?: string | null;
   model?: string | null;
+  /** Who steers the agent: platform LLM, the owner's own model (Tier A3), or nobody. */
+  guidance_source?: "platform" | "external" | "none" | string;
 }
 
 export interface ChatMessage {
@@ -165,6 +167,8 @@ export interface MarketAgent {
   is_llm: boolean;
   mirror_of: string | null;
   llm_health_state: "live" | "degraded" | "offline" | null;
+  /** The strategist's LLM model (null for non-LLM agents or unconfigured LLM). */
+  llm_model?: string | null;
   pv_kw_peak: number;
   wind_kw_rated: number;
   battery_kwh: number;
@@ -284,3 +288,100 @@ export interface TickEvent extends BaseEvent {
 }
 
 export type MarketEvent = OrderEvent | TradeEvent | ExternalTradeEvent | TickEvent;
+
+// --- Leaderboard (durable results across backend restarts) ---
+
+export interface LeaderboardSession {
+  id: number;
+  market_mode: "p2p" | "realprice" | string;
+  started_at: string;
+  ended_at: string | null;
+  price_ref: string;
+  is_current: boolean;
+}
+
+export interface LeaderboardRow {
+  /** Stable identity across restarts: "name:<name>" | "managed:<def_id>". */
+  identity: string;
+  name: string;
+  managed_def_id: number | null;
+  category: AgentCategory | string;
+  strategy: string;
+  is_llm: boolean;
+  llm_model: string | null;
+  pnl_usd: string;
+  /** Score v1 — endowment- and duration-normalized PnL (see backend stats/score.py). */
+  score: number;
+  trade_count: number;
+  energy_bought_kwh: number;
+  energy_sold_kwh: number;
+  soc_frac: number;
+  sessions_count: number;
+  hours: number;
+  last_seen_at: string;
+}
+
+export interface LeaderboardOut {
+  scope: "session" | "alltime";
+  session_id: number | null;
+  market_mode: "p2p" | "realprice" | string;
+  rows: LeaderboardRow[];
+}
+
+export interface EquityPoint {
+  tick_no: number;
+  sim_ts: string;
+  wall_ts: string;
+  pnl_usd: string;
+  soc_frac: number;
+}
+
+export interface LeaderboardHistory {
+  identity: string;
+  session_id: number;
+  points: EquityPoint[];
+}
+
+// --- Benchmarks (offline backtest artifacts) ---
+
+export interface BenchmarkSummary {
+  run_id: string;
+  market_mode: "p2p" | "realprice" | string;
+  status: "ok" | "failed" | "incomplete" | string;
+  start: string | null;
+  end: string | null;
+  months: number | null;
+  tick_seconds: number | null;
+  llm_mode: string | null;
+  llm_calls: number | null;
+  expected_llm_calls: number | null;
+  ticks_run: number | null;
+  live_participants: number | null;
+  finished_at: string | null;
+  charts: string[];
+}
+
+export interface BenchmarkParticipant {
+  vpp_id: number;
+  name: string;
+  strategy: string;
+  is_llm: boolean;
+  mirror_of: string;
+  group_id: string;
+  realized_pnl: number;
+  mark_to_market: number;
+  energy_bought_kwh: number;
+  energy_sold_kwh: number;
+  trade_count: number;
+  risk_rejections: number;
+  unresolved_imbalance_kwh: number;
+  final_soc_frac: number;
+}
+
+export interface BenchmarkDetail {
+  run_id: string;
+  manifest: Record<string, unknown>;
+  participants: BenchmarkParticipant[];
+  groups: Record<string, unknown>[];
+  charts: string[];
+}

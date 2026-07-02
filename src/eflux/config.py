@@ -82,6 +82,18 @@ class Settings(BaseSettings):
     session_ttl_day: int = 30
     api_key_prefix: str = "eflux_"
 
+    # --- Durable results (leaderboard) --------------------------------------------------
+    # Periodic per-agent stat snapshots to the DB so PnL/leaderboard survive restarts.
+    stats_enabled: bool = True
+    # Wall-clock seconds between snapshot batches. Wall-gated (not tick-modulo) so
+    # running the market at 10x/100x doesn't multiply the write volume.
+    stats_snapshot_sec: float = 30.0
+    # Snapshots older than this are pruned at startup (0 disables pruning).
+    stats_retention_days: int = 14
+    # Where the backtest runner writes run artifacts (manifest, metrics CSVs, charts);
+    # the /benchmarks API serves them read-only. Relative paths resolve to PROJECT_ROOT.
+    backtest_artifacts_dir: str = "artifacts/backtests"
+
     llm_provider: str = "opencode"
     llm_key_file: str = "key.txt"
     llm_base_url: str = ""

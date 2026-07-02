@@ -10,13 +10,23 @@ from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
 from eflux.agents.reflective.pool import CURATED_MODELS
+from eflux.agents.reflective.strategist import ExternalStrategist
 from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
+from eflux.api.ratelimit import RateLimiter
 from eflux.db.models import VPP
 from eflux.market.units import internal_cash_to_usd
 from eflux.simulator.agent_spec import validate_vpp_params
-from eflux.simulator.scenarios import provision_managed_vpp, validate_managed_agent_params
+from eflux.simulator.scenarios import (
+    apply_external_guidance,
+    provision_managed_vpp,
+    validate_managed_agent_params,
+)
 
 router = APIRouter(prefix="/vpps", tags=["vpps"])
+
+# Tier A3 guidance ingestion: ~2/min sustained per account (comparable to the platform
+# strategist's own 60-tick refresh cadence), small burst for catch-up after reconnect.
+_guidance_limiter = RateLimiter(capacity=10, refill_per_sec=1 / 30)
 
 VPPParamValue = float | int | str | None
 VPPParamsPayload = dict[str, VPPParamValue]
@@ -51,6 +61,9 @@ class ManagedVPPOut(BaseModel):
     llm_health_state: str
     persona: str | None = None  # the strategy brief, so the UI can pre-fill the tune form
     model: str | None = None  # the LLM model the agent's strategist runs on
+    # Who steers the agent: "platform" (our LLM strategist), "external" (the owner's
+    # own model via PUT /vpps/managed/{id}/guidance — Tier A3), or "none".
+    guidance_source: str = "none"
 
 
 class ManagedTradeOut(BaseModel):
@@ -161,6 +174,13 @@ def _llm_health(vpp) -> tuple[str, LLMHealthOut | None]:
     return state, health
 
 
+def _guidance_source(vpp) -> str:
+    strategist = getattr(vpp.agent, "strategist", None)
+    if isinstance(strategist, ExternalStrategist):
+        return "external"
+    return "none" if strategist is None else "platform"
+
+
 def _managed_vpp_out(vpp) -> ManagedVPPOut:
     state, health = _llm_health(vpp)
     status = vpp.llm_status
@@ -181,6 +201,7 @@ def _managed_vpp_out(vpp) -> ManagedVPPOut:
         llm_health_state=state,
         persona=getattr(vpp.agent, "persona_prompt", None),
         model=getattr(client, "model", None),
+        guidance_source=_guidance_source(vpp),
     )
 
 
@@ -467,6 +488,111 @@ async def update_managed_vpp(
                 vpp.recent_trades,
             ) = carry
     return _managed_vpp_out(vpp)
+
+
+class GuidanceIn(BaseModel):
+    """Tier A3 payload — exactly the StrategyGuidance (+ optional MetaControl) shape.
+    Soft by design: unknown mode names are dropped and numbers are clamped server-side;
+    the response echoes what was actually applied."""
+
+    preferred_modes: list[str] = Field(default_factory=list, max_length=8)
+    avoid_modes: list[str] = Field(default_factory=list, max_length=8)
+    risk_budget: float = 1.0
+    soc_target: float = 0.5
+    execution_style: str = Field(default="", max_length=200)
+    lesson: str = Field(default="", max_length=200)
+    meta_control: dict[str, float] | None = None
+
+
+class GuidanceOut(BaseModel):
+    managed_id: int
+    guidance_source: str
+    # The clamped, market-sanitized guidance as recorded — same shape as the
+    # reflections feed, so clients parse one schema everywhere.
+    applied: ReflectionEntryOut
+    applied_at: datetime
+
+
+async def _owned_managed_row(
+    session, user_id: int, managed_id: int
+) -> VPP:
+    row = (
+        await session.execute(
+            select(VPP).where(
+                VPP.id == managed_id, VPP.owner_id == user_id, VPP.is_managed.is_(True)
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "managed agent not found")
+    return row
+
+
+@router.put("/managed/{managed_id}/guidance", response_model=GuidanceOut)
+async def put_guidance(
+    managed_id: int,
+    payload: GuidanceIn,
+    session: DbSession,
+    user: CurrentUser,
+    sim: SimulatorDep,
+) -> GuidanceOut:
+    """Steer your managed agent with your own model — Tier A3 of
+    docs/EXTERNAL_PARTICIPATION.md. The posted StrategyGuidance replaces the platform
+    LLM strategist's steering (which stops being called — running your own model costs
+    zero platform LLM budget) while the platform's PPO executor, order compiler, and
+    RiskGate keep doing the execution. Guidance stays soft: clamped on arrival, biases
+    but never commands (DELETE the guidance to hand control back to the platform LLM).
+    Persisted with the agent definition, so it survives a backend restart."""
+    allowed, remaining = _guidance_limiter.check(user.id, 1)
+    if not allowed:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"guidance rate limit exceeded — {remaining} tokens left, refills at ~2/min",
+        )
+    vpp = next((v for v in sim.my_managed_vpps(user.id) if v.managed_def_id == managed_id), None)
+    if vpp is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "managed VPP not found")
+    row = await _owned_managed_row(session, user.id, managed_id)
+
+    async with sim._lock:
+        entry = apply_external_guidance(vpp, payload.model_dump(), market_mode=sim.market_mode)
+    # Persist the raw payload; rehydration re-clamps through the same path.
+    row.managed_config = {
+        **dict(row.managed_config or {}),
+        "guidance_mode": "external",
+        "external_guidance": payload.model_dump(),
+    }
+    return GuidanceOut(
+        managed_id=managed_id,
+        guidance_source="external",
+        applied=ReflectionEntryOut(**entry),
+        applied_at=entry["ts"],
+    )
+
+
+@router.delete("/managed/{managed_id}/guidance", status_code=status.HTTP_204_NO_CONTENT)
+async def release_guidance(
+    managed_id: int,
+    session: DbSession,
+    user: CurrentUser,
+    sim: SimulatorDep,
+) -> None:
+    """Hand steering back to the platform LLM strategist (idempotent — releasing an
+    agent that isn't externally steered is a no-op)."""
+    vpp = next((v for v in sim.my_managed_vpps(user.id) if v.managed_def_id == managed_id), None)
+    if vpp is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "managed VPP not found")
+    row = await _owned_managed_row(session, user.id, managed_id)
+
+    async with sim._lock:
+        strategist = getattr(vpp.agent, "strategist", None)
+        if isinstance(strategist, ExternalStrategist):
+            vpp.agent.strategist = strategist.prior
+    cfg = dict(row.managed_config or {})
+    cfg.pop("external_guidance", None)
+    cfg["guidance_mode"] = "platform"
+    row.managed_config = cfg
+    return None
 
 
 @router.post("", response_model=VPPOut, status_code=status.HTTP_201_CREATED)

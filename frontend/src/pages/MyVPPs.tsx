@@ -26,6 +26,7 @@ import {
   listManagedVPPs,
   listModels,
   listVPPs,
+  releaseGuidance,
   submitOrder,
   updateManagedVPP,
 } from "../api/client";
@@ -285,6 +286,9 @@ export default function MyVPPs() {
                       )}
                       <span className="font-medium text-[var(--text)]">{v.name}</span>
                       <StatusPill tone="accent" className="py-0 text-[10px]">{v.model ?? "managed"}</StatusPill>
+                      {v.guidance_source === "external" && (
+                        <StatusPill tone="violet" className="py-0 text-[10px]">externally steered</StatusPill>
+                      )}
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-muted)]">
                       PV {v.params.pv_kw_peak}kW / Batt {v.params.battery_kwh}kWh / Load {v.params.load_kw_base}kW
@@ -491,12 +495,37 @@ function ManagedControls({
     }
   };
 
+  const onReleaseGuidance = async () => {
+    setBusy(true);
+    onError(null);
+    try {
+      await releaseGuidance(vpp.id);
+      await onSaved();
+    } catch (e) {
+      onError((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)] px-3 py-2">
       <button type="button" onClick={() => setOpen((o) => !o)} className="eflux-btn h-8 px-3 text-xs">
         <Settings2 size={14} />
         {open ? "Close" : "Tune preferences"}
       </button>
+      {vpp.guidance_source === "external" && (
+        <button
+          type="button"
+          onClick={onReleaseGuidance}
+          disabled={busy}
+          className="eflux-btn h-8 px-3 text-xs disabled:opacity-50"
+          title="Your model is steering this agent (Tier A3). Hand strategy back to the platform LLM."
+        >
+          <BrainCircuit size={14} />
+          Return to platform LLM
+        </button>
+      )}
       <button type="button" onClick={onDelete} className="eflux-btn eflux-btn-danger h-8 px-3 text-xs">
         <Trash2 size={14} />
         Delete

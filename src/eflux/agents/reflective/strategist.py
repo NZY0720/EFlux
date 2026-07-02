@@ -19,6 +19,7 @@ import json
 import logging
 from collections import deque
 from dataclasses import asdict, dataclass, field, replace
+from dataclasses import fields as dataclass_fields
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
@@ -263,6 +264,13 @@ def _parse_modes(value) -> tuple[StrategyMode, ...]:
     return tuple(out)
 
 
+def modes_from_names(names: list[str] | tuple[str, ...]) -> tuple[StrategyMode, ...]:
+    """Public soft parser for externally supplied mode names (Tier A3 guidance
+    ingestion): unknown names are dropped, never an error — same tolerance the
+    LLM output path gets."""
+    return _parse_modes(list(names))
+
+
 def _sanitize_guidance_for_market(guidance: StrategyGuidance, market_mode: str) -> StrategyGuidance:
     if market_mode != "realprice":
         return guidance
@@ -294,6 +302,42 @@ def parse_guidance(content: str, *, market_mode: str = "p2p") -> StrategyGuidanc
         return _sanitize_guidance_for_market(guidance, market_mode)
     except (TypeError, ValueError) as e:
         raise GuidanceParseError(f"guidance object has non-numeric fields: {data!r}") from e
+
+
+def external_guidance_from_dict(
+    data: dict, *, market_mode: str = "p2p"
+) -> tuple[StrategyGuidance, MetaControl | None]:
+    """Coerce an externally supplied guidance payload (Tier A3 API body, or the copy
+    persisted in managed_config) into clamped, market-sanitized objects.
+
+    As soft as the LLM path: unknown mode names are dropped, numbers are clamped,
+    and a malformed meta_control degrades to None rather than raising. Server-side
+    clamping is authoritative — callers echo the result, never the raw input.
+    """
+    guidance = StrategyGuidance(
+        preferred_modes=modes_from_names(list(data.get("preferred_modes") or [])),
+        avoid_modes=modes_from_names(list(data.get("avoid_modes") or [])),
+        risk_budget=float(data.get("risk_budget", 1.0)),
+        soc_target=float(data.get("soc_target", 0.5)),
+        execution_style=str(data.get("execution_style") or ""),
+        lesson=str(data.get("lesson") or ""),
+    ).clamped()
+    guidance = _sanitize_guidance_for_market(guidance, market_mode)
+
+    meta: MetaControl | None = None
+    block = data.get("meta_control")
+    if isinstance(block, dict):
+        d = MetaControl()
+        try:
+            meta = MetaControl(
+                **{
+                    f.name: float(block.get(f.name, getattr(d, f.name)))
+                    for f in dataclass_fields(MetaControl)
+                }
+            ).clamped()
+        except (TypeError, ValueError):
+            meta = None  # tolerant, like parse_meta_control
+    return guidance, meta
 
 
 def apply_guidance(action: StrategyAction, guidance: StrategyGuidance | None) -> StrategyAction:
@@ -329,6 +373,72 @@ class StaticStrategist:
 
     def current_meta(self) -> MetaControl | None:
         return self.meta
+
+
+@dataclass
+class ExternalStrategist:
+    """Externally steered strategist — Tier A3 of docs/EXTERNAL_PARTICIPATION.md.
+
+    The user's own LLM (or any local process) posts StrategyGuidance over the API;
+    this object holds the latest clamped guidance and mimics LLMStrategist's audit
+    surface (reflection_log entries with the exact _entry key set, ok/fail counters,
+    last_ok_ts) so the performance panels, /market/reflections, and health badges
+    keep working unchanged.
+
+    Deliberately has NO ``arefresh`` attribute: HybridPolicyAgent._maybe_refresh_guidance
+    no-ops without it, so the platform LLM is never called while external guidance is
+    active — the documented zero-platform-cost incentive of running your own model.
+    """
+
+    # The platform strategist this one displaced; restored on release
+    # (DELETE /vpps/managed/{id}/guidance).
+    prior: object | None = None
+    # Copied from prior so model attribution (UI badges, chatroom eligibility) survives.
+    client: object | None = None
+    # Passed in from prior at swap time so the audit timeline stays continuous.
+    reflection_log: deque = field(default_factory=lambda: deque(maxlen=50))
+    ok_count: int = 0
+    fail_count: int = 0
+    skipped_count: int = 0
+    last_ok_ts: datetime | None = None
+
+    def __post_init__(self) -> None:
+        self._guidance: StrategyGuidance | None = None
+        self._meta: MetaControl | None = None
+
+    def current_guidance(self) -> StrategyGuidance | None:
+        return self._guidance
+
+    def current_meta(self) -> MetaControl | None:
+        return self._meta
+
+    def set_guidance(
+        self, guidance: StrategyGuidance, meta: MetaControl | None = None
+    ) -> dict:
+        """Adopt externally supplied (already clamped/sanitized) guidance and record
+        the audit entry. Returns the entry so the API can echo what was applied."""
+        self._guidance = guidance
+        self._meta = meta
+        self.ok_count += 1
+        self.last_ok_ts = datetime.now(UTC)
+        meta_dict = None if meta is None else {k: float(v) for k, v in asdict(meta).items()}
+        entry = {
+            "ts": self.last_ok_ts,
+            "ok": True,
+            "preferred_modes": [m.value for m in guidance.preferred_modes],
+            "avoid_modes": [m.value for m in guidance.avoid_modes],
+            "risk_budget": guidance.risk_budget,
+            "soc_target": guidance.soc_target,
+            "execution_style": guidance.execution_style,
+            # Same fallback as LLMStrategist._entry so older UI copy degrades gracefully;
+            # tagged so readers can tell external steering from platform reflections.
+            "rationale": (guidance.execution_style or guidance.lesson or "external guidance"),
+            "lesson": guidance.lesson,
+            "meta_control": meta_dict,
+            "error": None,
+        }
+        self.reflection_log.append(entry)
+        return entry
 
 
 @dataclass

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -138,6 +139,11 @@ class Simulator:
         # Latest processed tick number — surfaced as the Agent Protocol tick_id so external
         # agents can detect stale context / order responses against the current market tick.
         self._last_tick_no = 0
+        # Durable results: this boot's market_sessions row id (None = durability off, e.g.
+        # tests/backtests or DB trouble at startup) + the wall-gated snapshot writer state.
+        self.session_id: int | None = None
+        self._stats_task: asyncio.Task | None = None
+        self._last_stats_wall: float = 0.0
         # "p2p" = peer-to-peer CDA (agents trade each other; CAISO is reference-only).
         # "realprice" = pure price-taking against the live CAISO price (orders settle
         # vs the grid, no peer matching). Selected per launch via EFLUX_MARKET_MODE.
@@ -732,6 +738,18 @@ class Simulator:
             self._ppo_renew_task.cancel()
             await asyncio.gather(self._ppo_renew_task, return_exceptions=True)
             self._ppo_renew_task = None
+        # Flush a final stat snapshot (after the tick loop is down, so the read is
+        # settled) so a restart doesn't lose the last cadence window. Best-effort.
+        if self._stats_task is not None:
+            await asyncio.gather(self._stats_task, return_exceptions=True)
+            self._stats_task = None
+        if self.session_id is not None and get_settings().stats_enabled:
+            try:
+                rows = self._collect_stat_rows(self._last_tick_no, self.clock.now_sim())
+                if rows:
+                    await self._persist_stat_rows(rows)
+            except Exception:
+                log.exception("Final stat snapshot failed")
         await self._shutdown_reflections()
 
     async def _run_external_market_poll(self) -> None:
@@ -952,6 +970,90 @@ class Simulator:
                     )
                 )
             self._maybe_chat(tick_no)
+            self._maybe_snapshot_stats(tick_no, sim_ts)
+
+    def _maybe_snapshot_stats(self, tick_no: int, sim_ts: datetime) -> None:
+        """On the wall-clock cadence, persist a per-agent stat snapshot off the tick path.
+
+        Collection is synchronous (no awaits) so the rows are tick-coherent without
+        holding self._lock; the DB write runs in a spawned task. At most one write is
+        in flight — if the previous one hasn't finished, this sample is dropped, never
+        queued (drop-don't-block, same shape as _maybe_chat)."""
+        if self.session_id is None:
+            return
+        settings = get_settings()
+        if not settings.stats_enabled:
+            return
+        now = time.monotonic()
+        if self._last_stats_wall and now - self._last_stats_wall < settings.stats_snapshot_sec:
+            return
+        if self._stats_task is not None and not self._stats_task.done():
+            return
+        self._last_stats_wall = now
+        rows = self._collect_stat_rows(tick_no, sim_ts)
+        if not rows:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._stats_task = loop.create_task(self._persist_stat_rows(rows))
+
+    def _collect_stat_rows(self, tick_no: int, sim_ts: datetime) -> list[dict]:
+        """One stat dict per live VPP — the durable leaderboard sample. Synchronous by
+        design: it runs between awaits on the event loop, so it reads a tick-coherent
+        view of every agent without taking self._lock."""
+        from eflux.market.units import internal_cash_to_usd
+        from eflux.stats.categories import agent_category
+
+        wall_ts = datetime.now(UTC)
+        rows: list[dict] = []
+        for vpp in self.vpps.values():
+            strategist = getattr(vpp.agent, "strategist", None)
+            client = getattr(strategist, "client", None) if strategist is not None else None
+            p = vpp.params
+            rows.append(
+                {
+                    "session_id": self.session_id,
+                    "vpp_id": vpp.vpp_id,
+                    "name": vpp.name,
+                    "managed_def_id": vpp.managed_def_id,
+                    "owner_id": vpp.owner_id,
+                    "strategy": vpp.strategy,
+                    "category": agent_category(vpp),
+                    "is_llm": vpp.is_my_vpp,
+                    "llm_model": getattr(client, "model", None),
+                    "tick_no": tick_no,
+                    "sim_ts": sim_ts,
+                    "wall_ts": wall_ts,
+                    "pnl_usd": internal_cash_to_usd(vpp.state.pnl),
+                    "soc_kwh": vpp.battery.soc_kwh,
+                    "soc_frac": vpp.battery.soc_frac,
+                    "energy_bought_kwh": vpp.state.cumulative_energy_bought_kwh,
+                    "energy_sold_kwh": vpp.state.cumulative_energy_sold_kwh,
+                    "trade_count": vpp.trade_count,
+                    "pv_kw_peak": p.pv_kw_peak,
+                    "wind_kw_rated": p.wind_kw_rated,
+                    "battery_kwh": p.battery_kwh,
+                    "battery_kw_max": p.battery_kw_max,
+                    "load_kw_base": p.load_kw_base,
+                    "gas_kw_max": p.gas_kw_max,
+                }
+            )
+        return rows
+
+    async def _persist_stat_rows(self, rows: list[dict]) -> None:
+        """Batched snapshot insert. Best-effort: DB trouble is logged and dropped —
+        durability is an optional feature and must never destabilize the market loop."""
+        from eflux.db.models import VppStatSnapshot
+        from eflux.db.session import get_sessionmaker
+
+        try:
+            async with get_sessionmaker()() as session:
+                session.add_all(VppStatSnapshot(**row) for row in rows)
+                await session.commit()
+        except Exception:
+            log.exception("Stat-snapshot persist failed (%d rows dropped)", len(rows))
 
     def _recent_market_trades(self, limit: int = 8) -> list[dict]:
         """Latest market-wide fills with party names — prompt context for

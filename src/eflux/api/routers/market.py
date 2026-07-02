@@ -13,27 +13,14 @@ from eflux.data.electricity_market import ExternalMarketQuote
 from eflux.db.models import VPP
 from eflux.market.events import ExternalTradeEvent, TradeEvent
 from eflux.market.units import internal_cash_to_usd
-from eflux.simulator.runner import SimulatorVPP
+
+# Canonical home is eflux.stats.categories (the stats snapshotter classifies agents
+# too); re-exported here so existing importers keep working.
+from eflux.stats.categories import agent_category
+
+__all__ = ["agent_category", "router"]
 
 router = APIRouter(prefix="/market", tags=["market"])
-
-
-def agent_category(vpp: SimulatorVPP) -> str:
-    """Coarse merit-order bucket for a built-in VPP, derived from its endowment.
-
-    Checked in merit-order priority: a dedicated gas peaker or wind farm is
-    classified by its generator even if it also carries a small battery.
-    """
-    if vpp.is_my_vpp:
-        return "llm"
-    p = vpp.params
-    if p.gas_kw_max > 0:
-        return "gas"
-    if p.wind_kw_rated > 0:
-        return "wind"
-    if p.pv_kw_peak >= 2.0:
-        return "solar"
-    return "battery_load"
 
 
 class ParticipantOut(BaseModel):
@@ -213,6 +200,7 @@ class AgentOut(BaseModel):
     is_llm: bool
     mirror_of: str | None = None
     llm_health_state: str | None  # only for LLM-managed agents
+    llm_model: str | None = None  # the strategist's model (LLM agents only) — arena display
     # Endowment (static)
     pv_kw_peak: float
     wind_kw_rated: float
@@ -249,6 +237,8 @@ async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
         health_state: str | None = None
         if vpp.is_my_vpp:
             health_state, _ = _llm_health(vpp)
+        strategist = getattr(vpp.agent, "strategist", None)
+        client = getattr(strategist, "client", None) if strategist is not None else None
         p = vpp.params
         out.append(
             AgentOut(
@@ -259,6 +249,7 @@ async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
                 is_llm=vpp.is_my_vpp,
                 mirror_of=vpp.mirror_of,
                 llm_health_state=health_state,
+                llm_model=getattr(client, "model", None),
                 pv_kw_peak=p.pv_kw_peak,
                 wind_kw_rated=p.wind_kw_rated,
                 battery_kwh=p.battery_kwh,
