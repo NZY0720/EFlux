@@ -62,16 +62,16 @@ export default function NavBar() {
     <nav className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-elevated)_86%,transparent)] px-4 py-2.5 backdrop-blur-md md:px-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-3">
-        <Link to="/" className="flex items-center gap-2 pr-1">
-          <BrandLogo size={30} />
-          <span className="eflux-wordmark text-lg font-bold">EFlux</span>
-        </Link>
-        <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${modeClass}`}>{modeLabel}</span>
-        <div className="flex items-center gap-1 overflow-x-auto">
-          {link("/", "Market", Activity)}
-          {link("/participants", "Participants", UsersRound)}
-          {link("/vpps", "My VPPs", Layers3)}
-        </div>
+          <Link to="/" className="flex items-center gap-2 pr-1">
+            <BrandLogo size={30} />
+            <span className="eflux-wordmark text-lg font-bold">EFlux</span>
+          </Link>
+          <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${modeClass}`}>{modeLabel}</span>
+          <div className="flex items-center gap-1 overflow-x-auto">
+            {link("/market", "Market", Activity)}
+            {link("/participants", "Participants", UsersRound)}
+            {link("/vpps", "My VPPs", Layers3)}
+          </div>
         </div>
         <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
           <span className="flex h-9 items-center gap-1.5 rounded-full border border-[var(--border)] bg-[var(--surface-muted)] px-2.5">

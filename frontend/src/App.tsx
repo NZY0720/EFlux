@@ -6,6 +6,7 @@ import Login from "./pages/Login";
 import MarketOverview from "./pages/MarketOverview";
 import MyVPPs from "./pages/MyVPPs";
 import Participants from "./pages/Participants";
+import WelcomePage from "./pages/WelcomePage";
 import { AuthProvider, useAuth } from "./state/auth";
 import { MarketModeProvider } from "./state/marketMode";
 import { MarketStreamProvider } from "./state/marketStream";
@@ -14,19 +15,23 @@ import { ThemeProvider } from "./state/theme";
 function RequireAuth({ children }: { children: React.ReactElement }) {
   const { token } = useAuth();
   const loc = useLocation();
-  if (!token) return <Navigate to="/login" state={{ from: loc.pathname }} replace />;
+  if (!token) return <Navigate to="/login" state={{ from: `${loc.pathname}${loc.search}` }} replace />;
   return children;
 }
 
 function Shell() {
+  const loc = useLocation();
+  const isWelcome = loc.pathname === "/";
+
   return (
     <div className="min-h-screen flex flex-col">
-      <NavBar />
-      <ConnectionBanner />
+      {!isWelcome && <NavBar />}
+      {!isWelcome && <ConnectionBanner />}
       <main className="flex-1">
         <Routes>
+          <Route path="/" element={<WelcomePage />} />
           <Route path="/login" element={<Login />} />
-          <Route path="/" element={<MarketOverview />} />
+          <Route path="/market" element={<MarketOverview />} />
           <Route path="/participants" element={<Participants />} />
           <Route
             path="/vpps"

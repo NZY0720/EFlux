@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { ArrowLeft, KeyRound, Mail, Send } from "lucide-react";
 
 import { consumeToken, requestMagicLink } from "../api/client";
@@ -11,6 +11,10 @@ type Step = "email" | "token";
 export default function Login() {
   const auth = useAuth();
   const nav = useNavigate();
+  const loc = useLocation();
+  const [searchParams] = useSearchParams();
+  const mode = searchParams.get("mode") === "register" ? "register" : "login";
+  const from = typeof loc.state === "object" && loc.state && "from" in loc.state ? String(loc.state.from) : "/market";
   const [step, setStep] = useState<Step>("email");
   const [email, setEmail] = useState("");
   const [token, setToken] = useState("");
@@ -43,7 +47,7 @@ export default function Login() {
     try {
       const session = await consumeToken(token.trim());
       auth.setSession(session);
-      nav("/");
+      nav(from);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -57,8 +61,12 @@ export default function Login() {
         <div className="mb-6 flex items-center gap-3">
           <BrandLogo size={34} />
           <div>
-            <h1 className="text-2xl font-semibold text-[var(--text)]">Sign in</h1>
-            <p className="text-sm text-[var(--text-muted)]">Passwordless magic link to your email.</p>
+            <h1 className="text-2xl font-semibold text-[var(--text)]">
+              {mode === "register" ? "Create account" : "Sign in"}
+            </h1>
+            <p className="text-sm text-[var(--text-muted)]">
+              Passwordless magic link. New emails are registered automatically.
+            </p>
           </div>
         </div>
 
@@ -85,7 +93,7 @@ export default function Login() {
               className="eflux-btn eflux-btn-primary h-10 w-full px-4 font-semibold disabled:opacity-50"
             >
               <Send size={16} />
-              {busy ? "Sending..." : "Send magic link"}
+              {busy ? "Sending..." : mode === "register" ? "Create account link" : "Send magic link"}
             </button>
           </form>
         )}
@@ -127,13 +135,24 @@ export default function Login() {
                 className="eflux-btn eflux-btn-primary h-10 flex-1 px-4 font-semibold disabled:opacity-50"
               >
                 <KeyRound size={16} />
-                {busy ? "Signing in..." : "Sign in"}
+                {busy ? "Signing in..." : mode === "register" ? "Create account" : "Sign in"}
               </button>
             </div>
           </form>
         )}
 
         {error && <p className="mt-4 text-sm text-[var(--danger)]">{error}</p>}
+        <div className="mt-5 flex items-center justify-between gap-3 border-t border-[var(--border)] pt-4 text-sm text-[var(--text-muted)]">
+          <Link to="/" className="hover:text-[var(--text)]">
+            Back to EFlux
+          </Link>
+          <Link
+            to={mode === "register" ? "/login" : "/login?mode=register"}
+            className="font-medium text-[var(--accent)] hover:underline"
+          >
+            {mode === "register" ? "Already have access?" : "Need an account?"}
+          </Link>
+        </div>
       </div>
     </div>
   );
