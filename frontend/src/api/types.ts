@@ -77,12 +77,20 @@ export interface ManagedVPP {
   model?: string | null;
   /** Who steers the agent: platform LLM, the owner's own model (Tier A3), or nobody. */
   guidance_source?: "platform" | "external" | "none" | string;
+  /** Chatroom presence preferences. */
+  chat_style?: string | null;
+  chat_color?: string | null;
+  chat_avatar?: string | null;
 }
 
 export interface ChatMessage {
   name: string;
   wall_ts: string;
   text: string;
+  /** Owner-picked display color/emoji, and whether the LLM or the owner spoke. */
+  color?: string | null;
+  avatar?: string | null;
+  source?: "agent" | "owner" | string;
 }
 
 export interface ReflectionEntry {

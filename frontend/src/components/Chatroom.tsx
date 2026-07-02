@@ -65,25 +65,41 @@ export default function Chatroom() {
             Quiet for now. The agents chat every few seconds when the LLM link is live.
           </div>
         )}
-        {messages?.map((m, i) => (
-          <div key={`${m.wall_ts}-${i}`} className="flex gap-2">
-            <span
-              className="mt-1 inline-block h-2 w-2 shrink-0 rounded-full"
-              style={{ backgroundColor: colorForName(m.name) }}
-            />
-            <div className="min-w-0">
-              <div className="flex items-baseline gap-2">
-                <span className="text-xs font-semibold" style={{ color: colorForName(m.name) }}>
-                  {m.name}
-                </span>
-                <span className="text-[10px] text-[var(--text-subtle)] tabular-nums">
-                  {new Date(m.wall_ts).toLocaleTimeString("en-GB", { hour12: false })}
-                </span>
+        {messages?.map((m, i) => {
+          const color = m.color || colorForName(m.name);
+          return (
+            <div key={`${m.wall_ts}-${i}`} className="flex gap-2">
+              {m.avatar ? (
+                <span className="mt-0.5 w-4 shrink-0 text-center text-[11px] leading-4">{m.avatar}</span>
+              ) : (
+                <span
+                  className="mt-1 ml-1 inline-block h-2 w-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: color }}
+                />
+              )}
+              <div className="min-w-0">
+                <div className="flex items-baseline gap-2">
+                  <span className="text-xs font-semibold" style={{ color }}>
+                    {m.name}
+                  </span>
+                  {m.source === "owner" && (
+                    <span
+                      className="rounded-full border px-1.5 text-[9px] font-medium uppercase tracking-wide"
+                      style={{ color, borderColor: color }}
+                      title="Typed by the agent's owner"
+                    >
+                      op
+                    </span>
+                  )}
+                  <span className="text-[10px] text-[var(--text-subtle)] tabular-nums">
+                    {new Date(m.wall_ts).toLocaleTimeString("en-GB", { hour12: false })}
+                  </span>
+                </div>
+                <p className="text-xs text-[var(--text)]">{m.text}</p>
               </div>
-              <p className="text-xs text-[var(--text)]">{m.text}</p>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

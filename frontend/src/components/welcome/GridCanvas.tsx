@@ -12,8 +12,10 @@ import { CATEGORY_META } from "../../lib/categories";
  * The welcome page's living grid: a stylized transmission network rendered on
  * canvas. Nodes are market participants (colored by the app's real category
  * palette, labeled with real roster names when provided); energy pulses travel
- * the lines. Ambient pulses keep the scene breathing; `pulse()` fires bright
- * ones for real trades, so the hero literally moves with the market.
+ * sagging power lines with additive glow. Ambient pulses keep the scene
+ * breathing; `pulse()` fires bright ones for real trades, each landing with an
+ * impact ring. The cursor carries a soft electric field that lights up nearby
+ * lines, and clicking discharges into the grid.
  *
  * Fully imperative (refs + one rAF loop, zero React state per frame). Pauses
  * when off-screen or the tab is hidden; renders a single static frame under
@@ -23,6 +25,10 @@ import { CATEGORY_META } from "../../lib/categories";
 export interface GridCanvasHandle {
   /** Fire n bright pulses (one per real trade). */
   pulse: (n: number) => void;
+  /** Show a brief speech bubble on the named agent's node; false if the name has no node. */
+  speak: (name: string, text: string) => boolean;
+  /** Drive solar nodes with the simulation's actual sun (hour 0-24, null = unknown). */
+  setSimHour: (hour: number | null) => void;
 }
 
 interface Props {
@@ -45,13 +51,16 @@ interface Node {
 interface Edge {
   a: number;
   b: number;
+  sag: number; // catenary-ish droop, px at reference width
+  long: boolean;
 }
 
 interface Pulse {
-  edge: number;
+  a: number;
+  b: number;
+  sag: number;
   t: number;
   speed: number;
-  dir: 1 | -1;
   bright: boolean;
   color: string;
 }
@@ -60,6 +69,14 @@ interface Ripple {
   x: number;
   y: number;
   t: number;
+  color: string;
+  max: number;
+}
+
+interface Bubble {
+  node: number;
+  text: string;
+  until: number; // performance.now() deadline
 }
 
 // Deterministic RNG so the constellation is identical every visit (a place, not noise).
@@ -119,14 +136,16 @@ function buildScene(rng: () => number) {
     [nodes[i], nodes[j]] = [nodes[j], nodes[i]];
   }
 
-  // Edges: each node to its 2 nearest neighbours + a few long transmission lines.
+  // Edges: each node to its 2 nearest neighbours + a few long transmission arcs.
   const edges: Edge[] = [];
   const seen = new Set<string>();
-  const addEdge = (a: number, b: number) => {
+  const addEdge = (a: number, b: number, long = false) => {
     const key = a < b ? `${a}-${b}` : `${b}-${a}`;
     if (a !== b && !seen.has(key)) {
       seen.add(key);
-      edges.push({ a, b });
+      const d = Math.hypot(nodes[a].x - nodes[b].x, nodes[a].y - nodes[b].y);
+      // Longer spans droop more, like real conductors.
+      edges.push({ a, b, sag: (6 + d * 60) * (0.7 + rng() * 0.6), long });
     }
   };
   nodes.forEach((n, i) => {
@@ -137,8 +156,8 @@ function buildScene(rng: () => number) {
     addEdge(i, ranked[0].j);
     addEdge(i, ranked[1].j);
   });
-  for (let k = 0; k < 6; k++) {
-    addEdge(Math.floor(rng() * total), Math.floor(rng() * total));
+  for (let k = 0; k < 7; k++) {
+    addEdge(Math.floor(rng() * total), Math.floor(rng() * total), true);
   }
   return { nodes, edges };
 }
@@ -151,6 +170,24 @@ function hexToRgba(hex: string, alpha: number): string {
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
+/** Point on the sagging line (quadratic Bezier with a dropped control point). */
+function curvePoint(
+  ax: number,
+  ay: number,
+  bx: number,
+  by: number,
+  sag: number,
+  t: number,
+): [number, number] {
+  const cx = (ax + bx) / 2;
+  const cy = (ay + by) / 2 + sag;
+  const u = 1 - t;
+  return [
+    u * u * ax + 2 * u * t * cx + t * t * bx,
+    u * u * ay + 2 * u * t * cy + t * t * by,
+  ];
+}
+
 const GridCanvas = forwardRef<GridCanvasHandle, Props>(function GridCanvas(
   { roster, className },
   ref,
@@ -160,27 +197,74 @@ const GridCanvas = forwardRef<GridCanvasHandle, Props>(function GridCanvas(
   const sceneRef = useRef(buildScene(mulberry32(20260702)));
   const pulsesRef = useRef<Pulse[]>([]);
   const ripplesRef = useRef<Ripple[]>([]);
+  const bubblesRef = useRef<Bubble[]>([]);
+  const simHourRef = useRef<number | null>(null);
   const pointerRef = useRef({ x: -1, y: -1, inside: false });
   const parallaxRef = useRef({ x: 0, y: 0 });
   const pendingPulsesRef = useRef(0);
   const runningRef = useRef(false);
 
-  // Project the real roster onto nodes of the matching category.
+  // Project the real roster onto nodes of the matching category (idempotent across
+  // re-runs: named nodes keep their names, pools skip already-taken ones).
   useEffect(() => {
     if (!roster?.length) return;
+    const { nodes, edges } = sceneRef.current;
     const byCat = new Map<string, string[]>();
     for (const p of roster) {
       byCat.set(p.category, [...(byCat.get(p.category) ?? []), p.name]);
     }
-    for (const node of sceneRef.current.nodes) {
+    const taken = new Set(nodes.map((n) => n.name).filter(Boolean));
+    for (const node of nodes) {
       const pool = byCat.get(node.cat);
-      if (pool?.length) node.name = pool.shift() ?? node.name;
+      while (pool?.length && taken.has(pool[0])) pool.shift();
+      if (!node.name && pool?.length) {
+        node.name = pool.shift() as string;
+        taken.add(node.name);
+      }
+    }
+    // LLM agents that didn't fit a pre-built slot get their OWN node — user-created
+    // managed agents land here, and they belong on the grid more than anyone.
+    // Position is deterministic per name, wired to its two nearest neighbours.
+    const leftover = (byCat.get("llm") ?? []).filter((n) => n && !taken.has(n)).slice(0, 6);
+    for (const name of leftover) {
+      let hash = 0;
+      for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+      const rng = mulberry32(hash || 1);
+      let x = 0.5;
+      let y = 0.5;
+      for (let attempt = 0; attempt < 40; attempt++) {
+        x = 0.06 + rng() * 0.88;
+        y = 0.08 + rng() * 0.84;
+        if (nodes.every((n) => Math.hypot(n.x - x, n.y - y) > 0.07)) break;
+      }
+      const idx = nodes.length;
+      nodes.push({ x, y, r: 3.6, cat: "llm", name, phase: rng() * Math.PI * 2 });
+      taken.add(name);
+      const ranked = nodes
+        .slice(0, idx)
+        .map((m, j) => ({ j, d: Math.hypot(m.x - x, m.y - y) }))
+        .sort((p, q) => p.d - q.d);
+      for (const nb of ranked.slice(0, 2)) {
+        edges.push({ a: idx, b: nb.j, sag: 6 + nb.d * 60, long: false });
+      }
     }
   }, [roster]);
 
   useImperativeHandle(ref, () => ({
     pulse: (n: number) => {
       pendingPulsesRef.current = Math.min(12, pendingPulsesRef.current + n);
+    },
+    speak: (name: string, text: string) => {
+      const idx = sceneRef.current.nodes.findIndex((n) => n.name === name);
+      if (idx === -1 || !text) return false;
+      const line = text.length > 44 ? `${text.slice(0, 43)}…` : text;
+      // One bubble per node; at most 3 on screen so the grid stays a grid.
+      bubblesRef.current = bubblesRef.current.filter((b) => b.node !== idx).slice(-2);
+      bubblesRef.current.push({ node: idx, text: line, until: performance.now() + 5200 });
+      return true;
+    },
+    setSimHour: (hour: number | null) => {
+      simHourRef.current = hour;
     },
   }));
 
@@ -215,17 +299,18 @@ const GridCanvas = forwardRef<GridCanvasHandle, Props>(function GridCanvas(
     ];
 
     const spawnPulse = (bright: boolean) => {
-      const edge = Math.floor(rng() * edges.length);
-      const color = catColor(nodes[edges[edge].a].cat);
+      const e = edges[Math.floor(rng() * edges.length)];
+      const flip = rng() > 0.5;
       pulsesRef.current.push({
-        edge,
+        a: flip ? e.b : e.a,
+        b: flip ? e.a : e.b,
+        sag: e.sag,
         t: 0,
-        speed: bright ? 0.9 + rng() * 0.5 : 0.35 + rng() * 0.3,
-        dir: rng() > 0.5 ? 1 : -1,
+        speed: bright ? 0.85 + rng() * 0.5 : 0.32 + rng() * 0.28,
         bright,
-        color,
+        color: catColor(nodes[flip ? e.b : e.a].cat),
       });
-      if (pulsesRef.current.length > 46) pulsesRef.current.shift();
+      if (pulsesRef.current.length > 48) pulsesRef.current.shift();
     };
 
     const draw = (now: number) => {
@@ -238,81 +323,159 @@ const GridCanvas = forwardRef<GridCanvasHandle, Props>(function GridCanvas(
       parallaxRef.current.x += (targetX - parallaxRef.current.x) * 0.04;
       parallaxRef.current.y += (targetY - parallaxRef.current.y) * 0.04;
 
-      // Transmission lines.
-      ctx.lineWidth = 1;
+      // Power lines: sagging curves; those near the cursor pick up charge.
+      const FIELD_R = 170;
       for (const e of edges) {
         const [ax, ay] = nodeXY(nodes[e.a]);
         const [bx, by] = nodeXY(nodes[e.b]);
-        ctx.strokeStyle = "rgba(148, 163, 184, 0.10)";
+        const [mx, my] = curvePoint(ax, ay, bx, by, e.sag, 0.5);
+        let alpha = e.long ? 0.08 : 0.15;
+        let color = `rgba(148, 163, 184, ${alpha})`;
+        if (p.inside) {
+          const d = Math.hypot(p.x - mx, p.y - my);
+          if (d < FIELD_R) {
+            const boost = 1 - d / FIELD_R;
+            alpha = alpha + boost * 0.32;
+            color = `rgba(93, 205, 240, ${alpha})`;
+          }
+        }
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(ax, ay);
-        ctx.lineTo(bx, by);
+        ctx.quadraticCurveTo((ax + bx) / 2, (ay + by) / 2 + e.sag, bx, by);
         ctx.stroke();
       }
 
-      // Energy pulses (a comet head + fading tail along its line).
-      pulsesRef.current = pulsesRef.current.filter((pu) => pu.t <= 1);
+      // Energy pulses: additive glow, comet head + fading tail along the curve.
+      ctx.globalCompositeOperation = "lighter";
+      const finished: Pulse[] = [];
+      pulsesRef.current = pulsesRef.current.filter((pu) => {
+        if (pu.t > 1) {
+          finished.push(pu);
+          return false;
+        }
+        return true;
+      });
+      for (const pu of finished) {
+        if (!pu.bright) continue;
+        // A real trade lands: impact ring at the destination node.
+        const [x, y] = nodeXY(nodes[pu.b]);
+        ripplesRef.current.push({ x, y, t: 0, color: pu.color, max: 34 });
+      }
       for (const pu of pulsesRef.current) {
         pu.t += pu.speed / 100;
-        const e = edges[pu.edge];
-        const from = pu.dir === 1 ? nodes[e.a] : nodes[e.b];
-        const to = pu.dir === 1 ? nodes[e.b] : nodes[e.a];
-        const [fx, fy] = nodeXY(from);
-        const [tx, ty] = nodeXY(to);
-        const hx = fx + (tx - fx) * pu.t;
-        const hy = fy + (ty - fy) * pu.t;
-        const tailT = Math.max(0, pu.t - (pu.bright ? 0.16 : 0.1));
-        const tlx = fx + (tx - fx) * tailT;
-        const tly = fy + (ty - fy) * tailT;
-        const grad = ctx.createLinearGradient(tlx, tly, hx, hy);
-        grad.addColorStop(0, hexToRgba(pu.color, 0));
-        grad.addColorStop(1, hexToRgba(pu.color, pu.bright ? 0.9 : 0.45));
-        ctx.strokeStyle = grad;
-        ctx.lineWidth = pu.bright ? 2 : 1.2;
+        const [ax, ay] = nodeXY(nodes[pu.a]);
+        const [bx, by] = nodeXY(nodes[pu.b]);
+        const t = Math.min(1, pu.t);
+        const [hx, hy] = curvePoint(ax, ay, bx, by, pu.sag, t);
+        const steps = 5;
+        const tail = pu.bright ? 0.17 : 0.11;
+        for (let s = 0; s < steps; s++) {
+          const t0 = Math.max(0, t - tail * ((s + 1) / steps));
+          const t1 = Math.max(0, t - tail * (s / steps));
+          const [x0, y0] = curvePoint(ax, ay, bx, by, pu.sag, t0);
+          const [x1, y1] = curvePoint(ax, ay, bx, by, pu.sag, t1);
+          const a = (pu.bright ? 0.75 : 0.4) * (1 - s / steps);
+          ctx.strokeStyle = hexToRgba(pu.color, a);
+          ctx.lineWidth = pu.bright ? 2.1 : 1.3;
+          ctx.beginPath();
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x1, y1);
+          ctx.stroke();
+        }
+        // Head: hot core + soft halo.
+        ctx.fillStyle = hexToRgba(pu.color, pu.bright ? 0.5 : 0.25);
         ctx.beginPath();
-        ctx.moveTo(tlx, tly);
-        ctx.lineTo(hx, hy);
-        ctx.stroke();
-        ctx.fillStyle = hexToRgba(pu.color, pu.bright ? 1 : 0.6);
+        ctx.arc(hx, hy, pu.bright ? 5 : 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
         ctx.beginPath();
-        ctx.arc(hx, hy, pu.bright ? 2.4 : 1.6, 0, Math.PI * 2);
+        ctx.arc(hx, hy, pu.bright ? 1.7 : 1.1, 0, Math.PI * 2);
         ctx.fill();
       }
 
-      // Nodes: soft aura + core; LLM agents slowly breathe.
+      // Nodes: twinkle + soft aura; LLM agents breathe inside a slow orbit ring
+      // (the minds, marked apart from the machines); solar follows the sim's sun.
+      const hour = simHourRef.current;
+      const daylight =
+        hour === null ? 1 : Math.max(0, Math.sin(((hour - 6) / 12) * Math.PI));
       let hovered: { n: Node; x: number; y: number } | null = null;
       for (const n of nodes) {
         const [x, y] = nodeXY(n);
         const breathe =
           n.cat === "llm" ? 1 + 0.16 * Math.sin(now / 900 + n.phase) : 1;
+        const twinkle = 0.82 + 0.18 * Math.sin(now / 1400 + n.phase * 2.3);
+        // Solar plants sleep at night, exactly when the simulation says so.
+        const sun = n.cat === "solar" ? 0.25 + 0.75 * daylight : 1;
         const r = n.r * breathe;
         const color = catColor(n.cat);
-        ctx.fillStyle = hexToRgba(color, 0.14);
+        let auraBoost = 0;
+        if (p.inside) {
+          const d = Math.hypot(p.x - x, p.y - y);
+          if (d < FIELD_R) auraBoost = (1 - d / FIELD_R) * 0.2;
+          if (!hovered && d < Math.max(26, r * 6)) hovered = { n, x, y };
+        }
+        ctx.fillStyle = hexToRgba(color, (0.1 + auraBoost) * sun);
         ctx.beginPath();
-        ctx.arc(x, y, r * 3.1, 0, Math.PI * 2);
+        ctx.arc(x, y, r * 3.2, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = hexToRgba(color, 0.92);
+        ctx.fillStyle = hexToRgba(color, 0.9 * twinkle * sun);
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.fill();
-        if (
-          p.inside &&
-          !hovered &&
-          Math.hypot(p.x - x, p.y - y) < Math.max(26, r * 6)
-        ) {
-          hovered = { n, x, y };
+        if (n.cat === "llm") {
+          ctx.strokeStyle = hexToRgba(color, 0.28);
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 6]);
+          ctx.lineDashOffset = -(now / 40 + n.phase * 12);
+          ctx.beginPath();
+          ctx.arc(x, y, r * 4.4, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
         }
       }
 
-      // Click ripples.
+      // Impact + click ripples.
       ripplesRef.current = ripplesRef.current.filter((rp) => rp.t <= 1);
       for (const rp of ripplesRef.current) {
-        rp.t += 0.02;
-        ctx.strokeStyle = `rgba(34, 183, 232, ${0.5 * (1 - rp.t)})`;
+        rp.t += rp.max > 40 ? 0.02 : 0.035;
+        ctx.strokeStyle = hexToRgba(rp.color, 0.55 * (1 - rp.t));
         ctx.lineWidth = 1.4;
         ctx.beginPath();
-        ctx.arc(rp.x, rp.y, 8 + rp.t * 90, 0, Math.PI * 2);
+        ctx.arc(rp.x, rp.y, 4 + rp.t * rp.max, 0, Math.PI * 2);
         ctx.stroke();
+      }
+      ctx.globalCompositeOperation = "source-over";
+
+      // Chatroom speech: when an agent posts, its node says the line on the grid.
+      bubblesRef.current = bubblesRef.current.filter((b) => b.until > now);
+      for (const b of bubblesRef.current) {
+        const n = nodes[b.node];
+        const [x, y] = nodeXY(n);
+        const fade = Math.min(1, (b.until - now) / 500); // ease out at the end
+        ctx.font = "500 11px Inter, system-ui, sans-serif";
+        const w = ctx.measureText(b.text).width + 20;
+        const bx = Math.min(Math.max(8, x - w / 2), width - w - 8);
+        const by = Math.max(8, y - n.r * 4.4 - 34);
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = "rgba(10, 18, 32, 0.88)";
+        ctx.strokeStyle = hexToRgba(catColor(n.cat), 0.55);
+        ctx.beginPath();
+        ctx.roundRect(bx, by, w, 24, 12);
+        ctx.fill();
+        ctx.stroke();
+        // Pointer toward the speaking node.
+        ctx.fillStyle = "rgba(10, 18, 32, 0.88)";
+        ctx.beginPath();
+        ctx.moveTo(x - 4, by + 24);
+        ctx.lineTo(x + 4, by + 24);
+        ctx.lineTo(x, by + 30);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = "#dbe7f7";
+        ctx.fillText(b.text, bx + 10, by + 16);
+        ctx.globalAlpha = 1;
       }
 
       // Hover: halo ring + a small glass label with the real participant name.
@@ -346,9 +509,9 @@ const GridCanvas = forwardRef<GridCanvasHandle, Props>(function GridCanvas(
 
     const frame = (now: number) => {
       if (!runningRef.current) return;
-      if (now - lastAmbient > 750) {
+      if (now - lastAmbient > 700) {
         lastAmbient = now;
-        if (rng() > 0.35) spawnPulse(false);
+        if (rng() > 0.32) spawnPulse(false);
       }
       while (pendingPulsesRef.current > 0) {
         pendingPulsesRef.current -= 1;
@@ -418,6 +581,8 @@ const GridCanvas = forwardRef<GridCanvasHandle, Props>(function GridCanvas(
         x: ev.clientX - rect.left,
         y: ev.clientY - rect.top,
         t: 0,
+        color: "#22b7e8",
+        max: 90,
       });
       pendingPulsesRef.current = Math.min(12, pendingPulsesRef.current + 3);
     };

@@ -122,6 +122,13 @@ export default function WelcomePage() {
       .catch(() => {});
   }, []);
 
+  // Dev-only hook so the canvas can be driven from the console (demos, debugging).
+  useEffect(() => {
+    if (import.meta.env.DEV) {
+      (window as unknown as { __grid?: GridCanvasHandle | null }).__grid = canvasRef.current;
+    }
+  }, []);
+
   // Real trades drive the hero: diff the newest-first event buffer, fire pulses.
   const trades = recent.filter(isTrade);
   useEffect(() => {
@@ -134,6 +141,30 @@ export default function WelcomePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recent]);
 
+  // The canvas follows the simulation's sun: solar nodes sleep when the sim says night.
+  // Read the site-local hour straight from the sim_ts string (Date would re-zone it).
+  useEffect(() => {
+    const m = snapshot?.sim_ts?.match(/T(\d{2}):(\d{2})/);
+    canvasRef.current?.setSimHour(m ? Number(m[1]) + Number(m[2]) / 60 : null);
+  }, [snapshot?.sim_ts]);
+
+  // Fresh chatroom lines surface as speech bubbles on the speaker's node.
+  // Recency-gated (20s) so page-load history doesn't replay as a bubble burst.
+  const seenChatRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    for (const m of chatter) {
+      const key = `${m.name}|${m.wall_ts}`;
+      if (seenChatRef.current.has(key)) continue;
+      seenChatRef.current.add(key);
+      if (Date.now() - Date.parse(m.wall_ts) < 20_000) {
+        canvasRef.current?.speak(m.name, m.text);
+      }
+    }
+    if (seenChatRef.current.size > 200) {
+      seenChatRef.current = new Set([...seenChatRef.current].slice(-100));
+    }
+  }, [chatter]);
+
   const lastPrice = snapshot?.last_price ? Number(snapshot.last_price) : null;
   const live = wsState === "open" && snapshot !== null;
   const modeLabel = mode === "realprice" ? "Real-time price" : "Peer-to-peer";
@@ -143,6 +174,16 @@ export default function WelcomePage() {
     <div className="wl-cinema min-h-screen">
       {/* ------------------------------ HERO ------------------------------ */}
       <section className="relative flex min-h-[100dvh] flex-col overflow-hidden">
+        {/* Engineering-paper dot lattice, fading toward the copy side. */}
+        <div
+          className="pointer-events-none absolute inset-0 opacity-70"
+          style={{
+            backgroundImage: "radial-gradient(rgba(148,163,184,0.07) 1px, transparent 1.4px)",
+            backgroundSize: "26px 26px",
+            maskImage: "radial-gradient(120% 90% at 70% 40%, black 30%, transparent 78%)",
+            WebkitMaskImage: "radial-gradient(120% 90% at 70% 40%, black 30%, transparent 78%)",
+          }}
+        />
         <GridCanvas ref={canvasRef} roster={roster} className="absolute inset-0" />
         {/* Legibility scrim behind the copy, transparent toward the living grid. */}
         <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(100deg,rgba(5,9,16,0.86)_0%,rgba(5,9,16,0.55)_38%,transparent_66%)]" />

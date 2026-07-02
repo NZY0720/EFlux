@@ -35,7 +35,10 @@
   --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 18px 42px -30px rgba(0, 0, 0, 0.9);
   --shadow-card-hover: 0 1px 0 rgba(255, 255, 255, 0.08) inset, 0 22px 48px -28px rgba(14, 165, 233, 0.44);
   --ring: rgba(34, 183, 232, 0.42);
+  --lattice-dot: rgba(148, 163, 184, 0.055);
   --page-gradient:
+    radial-gradient(1000px 640px at 84% -8%, rgba(34, 183, 232, 0.1), transparent 60%),
+    radial-gradient(860px 640px at -4% 44%, rgba(18, 201, 155, 0.06), transparent 55%),
     linear-gradient(180deg, rgba(14, 24, 41, 0.94) 0%, rgba(8, 13, 24, 1) 42%, rgba(7, 12, 20, 1) 100%),
     linear-gradient(115deg, rgba(34, 183, 232, 0.10) 0%, transparent 34%, rgba(18, 201, 155, 0.08) 72%, transparent 100%);
 }
@@ -74,7 +77,10 @@
   --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.9) inset, 0 18px 42px -32px rgba(15, 23, 42, 0.4);
   --shadow-card-hover: 0 1px 0 rgba(255, 255, 255, 0.95) inset, 0 22px 48px -32px rgba(2, 132, 199, 0.38);
   --ring: rgba(3, 105, 161, 0.28);
+  --lattice-dot: rgba(51, 65, 85, 0.06);
   --page-gradient:
+    radial-gradient(1000px 640px at 84% -8%, rgba(2, 132, 199, 0.07), transparent 60%),
+    radial-gradient(860px 640px at -4% 44%, rgba(5, 150, 105, 0.05), transparent 55%),
     linear-gradient(180deg, rgba(248, 250, 252, 1) 0%, rgba(238, 243, 248, 1) 48%, rgba(228, 236, 244, 1) 100%),
     linear-gradient(115deg, rgba(2, 132, 199, 0.08) 0%, transparent 38%, rgba(5, 150, 105, 0.07) 76%, transparent 100%);
 }
@@ -94,6 +100,18 @@ body {
   background-color: var(--bg);
   background-image: var(--page-gradient);
   background-attachment: fixed;
+}
+
+/* Themed ambience on every app page: a faint engineering-paper dot lattice,
+   fixed behind content (welcome supplies its own inside the cinema). */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background-image: radial-gradient(var(--lattice-dot) 1px, transparent 1.4px);
+  background-size: 26px 26px;
 }
 
 button,

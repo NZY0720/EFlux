@@ -20,6 +20,7 @@ from eflux.db.base import Base
 from eflux.db.session import get_engine
 from eflux.simulator.runner import Simulator
 from eflux.simulator.scenarios import (
+    apply_chat_prefs,
     apply_external_guidance,
     load_default_scenario,
     provision_managed_vpp,
@@ -86,6 +87,7 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                     guidance = cfg.get("external_guidance")
                     if cfg.get("guidance_mode") == "external" and isinstance(guidance, dict):
                         apply_external_guidance(vpp, guidance, market_mode=sim.market_mode)
+                    apply_chat_prefs(vpp, cfg.get("chat"))
                     count += 1
                 except Exception:
                     log.exception(

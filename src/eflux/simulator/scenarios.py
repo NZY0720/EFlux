@@ -413,6 +413,18 @@ def validate_managed_agent_params(name: str, agent_params: dict | None) -> None:
     _validate_agent_params(name, dict(agent_params or {}), HybridPolicyAgent)
 
 
+def apply_chat_prefs(vpp: SimulatorVPP, chat: dict | None) -> None:
+    """Set a managed VPP's chatroom presence (voice/color/avatar) on the live agent.
+    Plain display/prompt attributes — no re-provision, no effect on trading."""
+    chat = chat or {}
+    style = chat.get("style")
+    color = chat.get("color")
+    avatar = chat.get("avatar")
+    vpp.chat_style = str(style)[:200] if style else None
+    vpp.chat_color = str(color) if color else None
+    vpp.chat_avatar = str(avatar)[:4] if avatar else None
+
+
 def apply_external_guidance(vpp: SimulatorVPP, guidance_dict: dict, *, market_mode: str) -> dict:
     """Steer a managed VPP with externally supplied guidance (Tier A3): swap its strategist
     for an ExternalStrategist (idempotent — an existing one is reused) seeded with the

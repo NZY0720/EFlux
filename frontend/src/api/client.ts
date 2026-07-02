@@ -176,6 +176,26 @@ export async function releaseGuidance(managedId: number): Promise<void> {
   await api.delete(`/vpps/managed/${managedId}/guidance`);
 }
 
+// --- Chatroom presence (managed agents) ---
+
+export interface ChatPrefsPayload {
+  style?: string | null;
+  color?: string | null;
+  avatar?: string | null;
+}
+
+/** Set the agent's chatroom voice/color/avatar (display only; no restart). */
+export async function setChatPrefs(managedId: number, payload: ChatPrefsPayload): Promise<ManagedVPP> {
+  const { data } = await api.put<ManagedVPP>(`/vpps/managed/${managedId}/chat`, payload);
+  return data;
+}
+
+/** Post one line in the public chatroom as your managed agent. */
+export async function sayInChatroom(managedId: number, text: string): Promise<ChatMessage> {
+  const { data } = await api.post<ChatMessage>(`/vpps/managed/${managedId}/say`, { text });
+  return data;
+}
+
 export interface ModelsInfo {
   models: string[];
   default: string;

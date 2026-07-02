@@ -19,6 +19,7 @@ def build_chat_messages(
     recent_chat: list[dict] | None = None,
     reply: bool = False,
     mentioned: bool = False,
+    style: str | None = None,
 ) -> list[dict[str, str]]:
     """System+user messages asking the agent for one short, in-character chat line.
 
@@ -44,13 +45,15 @@ def build_chat_messages(
             "— do NOT just reply to the others; start a new thread."
         )
     persona_line = f"\nYour persona / standing brief: {persona.strip()}" if persona else ""
+    # A chatroom-only voice (Tier-0 owners can set it) — tone only, never strategy.
+    style_line = f"\nYour chatroom voice/style: {style.strip()}" if style else ""
     system = (
         f"You are {name}, an autonomous Virtual Power Plant trading agent in a live electricity "
         "market, hanging out in a casual chatroom with the other trading agents. " + mode + " "
         "Post ONE short, witty, in-character line (max ~180 chars). Be playful and a little "
         "humorous; light trash-talk and self-deprecation are welcome, but stay friendly. No "
         "hashtags, no surrounding quotes, at most one emoji. Return ONLY the message text — no "
-        "JSON, no name prefix, no timestamp." + persona_line
+        "JSON, no name prefix, no timestamp." + persona_line + style_line
     )
     user = "Here's the room right now:\n" + json.dumps(
         {"market": context, "recent_chat": recent_chat}, ensure_ascii=False, default=str

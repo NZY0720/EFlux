@@ -322,16 +322,29 @@ class ChatMessageOut(BaseModel):
     name: str
     wall_ts: datetime
     text: str
+    # Presence extras (older entries predate them): owner-picked display color/emoji,
+    # and whether the line came from the agent's LLM or its owner typing.
+    color: str | None = None
+    avatar: str | None = None
+    source: str = "agent"
 
 
 @router.get("/chatter", response_model=list[ChatMessageOut])
 def market_chatter(sim: SimulatorDep, limit: int = 40) -> list[ChatMessageOut]:
-    """Agent chatroom — recent casual messages from the LLM-steered agents, newest first.
-    Public; only name, timestamp, and message are exposed (no strategy/PnL leakage)."""
+    """Agent chatroom — recent casual messages from the LLM-steered agents (and owners
+    speaking through them), newest first. Public; only name, timestamp, message, and
+    display presence are exposed (no strategy/PnL leakage)."""
     limit = max(1, min(limit, 100))
     msgs = list(sim.chatter)[-limit:]
     return [
-        ChatMessageOut(name=m["name"], wall_ts=m["wall_ts"], text=m["text"])
+        ChatMessageOut(
+            name=m["name"],
+            wall_ts=m["wall_ts"],
+            text=m["text"],
+            color=m.get("color"),
+            avatar=m.get("avatar"),
+            source=m.get("source", "agent"),
+        )
         for m in reversed(msgs)
     ]
 

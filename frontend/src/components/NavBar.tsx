@@ -62,7 +62,7 @@ export default function NavBar() {
   const ThemeIcon = themeMode === "dark" ? Sun : Moon;
 
   return (
-    <nav className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-elevated)_86%,transparent)] px-4 py-2.5 backdrop-blur-md md:px-6">
+    <nav className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-elevated)_72%,transparent)] px-4 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-2xl backdrop-saturate-150 md:px-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex min-w-0 flex-wrap items-center gap-3">
           <Link to="/" className="flex items-center gap-2 pr-1">

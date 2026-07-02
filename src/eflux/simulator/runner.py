@@ -106,6 +106,11 @@ class SimulatorVPP:
     # Stable DB id (vpps.id) of the managed-agent definition this VPP was provisioned from, so
     # the API can address it across restarts (the negative vpp_id is reassigned on each boot).
     managed_def_id: int | None = None
+    # Chatroom presence (Tier-0 owner preferences): a chat-only voice hint for the LLM,
+    # and a display color/emoji surfaced with the agent's messages.
+    chat_style: str | None = None
+    chat_color: str | None = None
+    chat_avatar: str | None = None
     rng: random.Random = field(default_factory=random.Random)
     open_order_ids: list[int] = field(default_factory=list)
     recent_trades: list[dict] = field(default_factory=list)
@@ -337,6 +342,7 @@ class Simulator:
                 recent_chat=recent,
                 reply=reply,
                 mentioned=mentioned,
+                style=vpp.chat_style,
             )
             async with self.shared_llm.gate:
                 content = await asyncio.wait_for(
@@ -345,12 +351,24 @@ class Simulator:
                 )
             text = clean_chat_line(str(content))
             if text:
-                self.chatter.append(
-                    {"name": vpp.name, "wall_ts": datetime.now(UTC), "text": text}
-                )
+                self.post_chat(vpp, text, source="agent")
                 self._chat_reply_streak = self._chat_reply_streak + 1 if reply else 0
         except Exception:
             log.warning("chat generation failed for %s", vpp.name)
+
+    def post_chat(self, vpp: SimulatorVPP, text: str, *, source: str = "agent") -> dict:
+        """Append one chatroom line for a VPP (its LLM, or its owner speaking through it).
+        Owner posts land in the same room the LLM agents read, so they can react."""
+        entry = {
+            "name": vpp.name,
+            "wall_ts": datetime.now(UTC),
+            "text": text,
+            "color": vpp.chat_color,
+            "avatar": vpp.chat_avatar,
+            "source": source,
+        }
+        self.chatter.append(entry)
+        return entry
 
     def _chat_context(self, vpp: SimulatorVPP) -> dict:
         """Compact social snapshot for chat: recent fills, a small PnL leaderboard, the

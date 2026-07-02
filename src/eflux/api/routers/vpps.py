@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import select
 
+from eflux.agents.reflective.chat import clean_chat_line
 from eflux.agents.reflective.pool import CURATED_MODELS
 from eflux.agents.reflective.strategist import ExternalStrategist
 from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
@@ -17,6 +18,7 @@ from eflux.db.models import VPP
 from eflux.market.units import internal_cash_to_usd
 from eflux.simulator.agent_spec import validate_vpp_params
 from eflux.simulator.scenarios import (
+    apply_chat_prefs,
     apply_external_guidance,
     provision_managed_vpp,
     validate_managed_agent_params,
@@ -27,6 +29,8 @@ router = APIRouter(prefix="/vpps", tags=["vpps"])
 # Tier A3 guidance ingestion: ~2/min sustained per account (comparable to the platform
 # strategist's own 60-tick refresh cadence), small burst for catch-up after reconnect.
 _guidance_limiter = RateLimiter(capacity=10, refill_per_sec=1 / 30)
+# Owner chatroom posts: human cadence (burst of 5, then one line every ~8s).
+_say_limiter = RateLimiter(capacity=5, refill_per_sec=1 / 8)
 
 VPPParamValue = float | int | str | None
 VPPParamsPayload = dict[str, VPPParamValue]
@@ -64,6 +68,10 @@ class ManagedVPPOut(BaseModel):
     # Who steers the agent: "platform" (our LLM strategist), "external" (the owner's
     # own model via PUT /vpps/managed/{id}/guidance — Tier A3), or "none".
     guidance_source: str = "none"
+    # Chatroom presence preferences (PUT /vpps/managed/{id}/chat).
+    chat_style: str | None = None
+    chat_color: str | None = None
+    chat_avatar: str | None = None
 
 
 class ManagedTradeOut(BaseModel):
@@ -202,6 +210,9 @@ def _managed_vpp_out(vpp) -> ManagedVPPOut:
         persona=getattr(vpp.agent, "persona_prompt", None),
         model=getattr(client, "model", None),
         guidance_source=_guidance_source(vpp),
+        chat_style=vpp.chat_style,
+        chat_color=vpp.chat_color,
+        chat_avatar=vpp.chat_avatar,
     )
 
 
@@ -445,8 +456,11 @@ async def update_managed_vpp(
         ) from e
 
     # Update the stored definition (re-assign so SQLAlchemy tracks the JSON change).
+    # MERGE into the existing config: it also carries guidance_mode/external_guidance
+    # (Tier A3) and chat prefs, which a wholesale rewrite would silently drop.
     row.params = parsed
     row.managed_config = {
+        **cfg,
         "persona": new_persona,
         "agent_params": new_agent_params,
         "seed": new_seed,
@@ -487,7 +501,86 @@ async def update_managed_vpp(
                 vpp.trade_count,
                 vpp.recent_trades,
             ) = carry
+        # The fresh agent instance must inherit the owner's standing state: external
+        # steering (Tier A3) and chatroom presence both survive a preferences patch.
+        guidance = cfg.get("external_guidance")
+        if cfg.get("guidance_mode") == "external" and isinstance(guidance, dict):
+            apply_external_guidance(vpp, guidance, market_mode=sim.market_mode)
+        apply_chat_prefs(vpp, cfg.get("chat"))
     return _managed_vpp_out(vpp)
+
+
+class ChatPrefsIn(BaseModel):
+    """Chatroom presence for a managed agent. All optional; null clears a field."""
+
+    style: str | None = Field(default=None, max_length=200)  # chat-only voice hint
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+    avatar: str | None = Field(default=None, max_length=4)  # one emoji / short glyph
+
+
+class SayIn(BaseModel):
+    text: str = Field(min_length=1, max_length=200)
+
+
+class ChatPostOut(BaseModel):
+    name: str
+    wall_ts: datetime
+    text: str
+    color: str | None
+    avatar: str | None
+    source: str
+
+
+def _live_managed_vpp(sim, user_id: int, managed_id: int):
+    vpp = next((v for v in sim.my_managed_vpps(user_id) if v.managed_def_id == managed_id), None)
+    if vpp is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "managed VPP not found")
+    return vpp
+
+
+@router.put("/managed/{managed_id}/chat", response_model=ManagedVPPOut)
+async def set_chat_prefs(
+    managed_id: int,
+    payload: ChatPrefsIn,
+    session: DbSession,
+    user: CurrentUser,
+    sim: SimulatorDep,
+) -> ManagedVPPOut:
+    """Set your agent's chatroom presence: a chat-only voice for its LLM banter, and a
+    display color / emoji avatar. Display-and-prompt only; trading is untouched, and no
+    agent restart happens."""
+    vpp = _live_managed_vpp(sim, user.id, managed_id)
+    row = await _owned_managed_row(session, user.id, managed_id)
+    chat = {"style": payload.style, "color": payload.color, "avatar": payload.avatar}
+    row.managed_config = {**dict(row.managed_config or {}), "chat": chat}
+    apply_chat_prefs(vpp, chat)
+    return _managed_vpp_out(vpp)
+
+
+@router.post("/managed/{managed_id}/say", response_model=ChatPostOut)
+async def say_in_chatroom(
+    managed_id: int,
+    payload: SayIn,
+    session: DbSession,
+    user: CurrentUser,
+    sim: SimulatorDep,
+) -> ChatPostOut:
+    """Speak in the public agent chatroom as your managed agent. The line is posted under
+    the agent's name (tagged as owner-written) into the same room the LLM agents read,
+    so they can react to you. Rate limited to a human cadence."""
+    allowed, remaining = _say_limiter.check(user.id, 1)
+    if not allowed:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"chat rate limit exceeded — {remaining} messages left, refills at ~1 per 8s",
+        )
+    vpp = _live_managed_vpp(sim, user.id, managed_id)
+    await _owned_managed_row(session, user.id, managed_id)  # ownership re-check vs DB
+    text = clean_chat_line(payload.text)
+    if not text:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "message is empty after cleanup")
+    entry = sim.post_chat(vpp, text, source="owner")
+    return ChatPostOut(**entry)
 
 
 class GuidanceIn(BaseModel):

@@ -10,6 +10,7 @@ import {
   Layers3,
   ListChecks,
   MapPinned,
+  MessagesSquare,
   PlusCircle,
   Save,
   Settings2,
@@ -27,9 +28,14 @@ import {
   listModels,
   listVPPs,
   releaseGuidance,
+  sayInChatroom,
+  setChatPrefs,
   submitOrder,
   updateManagedVPP,
 } from "../api/client";
+
+// Chatroom name colors an owner can pick (mirrors the room's auto-badge palette).
+const CHAT_COLORS = ["#059669", "#0284c7", "#7c3aed", "#d97706", "#e11d48", "#0d9488", "#9333ea", "#0891b2"];
 
 const LOAD_PROFILES = ["residential", "industrial", "commercial", "flat"];
 import type { ManagedVPP, ManagedVPPPerformance, ReflectionEntry, VPP } from "../api/types";
@@ -474,6 +480,13 @@ function ManagedControls({
   const [betaDirty, setBetaDirty] = useState(false);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  // Chatroom presence: speak as the agent + voice/color/avatar prefs.
+  const [chatOpen, setChatOpen] = useState(false);
+  const [sayText, setSayText] = useState("");
+  const [said, setSaid] = useState<string | null>(null);
+  const [chatStyle, setChatStyle] = useState(vpp.chat_style ?? "");
+  const [chatColor, setChatColor] = useState(vpp.chat_color ?? "");
+  const [chatAvatar, setChatAvatar] = useState(vpp.chat_avatar ?? "");
 
   const onSave = async () => {
     setBusy(true);
@@ -508,6 +521,39 @@ function ManagedControls({
     }
   };
 
+  const onSay = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!sayText.trim()) return;
+    setBusy(true);
+    onError(null);
+    try {
+      await sayInChatroom(vpp.id, sayText.trim());
+      setSaid(sayText.trim());
+      setSayText("");
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onSaveChatPrefs = async () => {
+    setBusy(true);
+    onError(null);
+    try {
+      await setChatPrefs(vpp.id, {
+        style: chatStyle.trim() || null,
+        color: chatColor || null,
+        avatar: chatAvatar.trim() || null,
+      });
+      await onSaved();
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)] px-3 py-2">
       <button type="button" onClick={() => setOpen((o) => !o)} className="eflux-btn h-8 px-3 text-xs">
@@ -526,10 +572,91 @@ function ManagedControls({
           Return to platform LLM
         </button>
       )}
+      <button type="button" onClick={() => setChatOpen((o) => !o)} className="eflux-btn h-8 px-3 text-xs">
+        <MessagesSquare size={14} />
+        {chatOpen ? "Close chatroom" : "Chatroom"}
+      </button>
       <button type="button" onClick={onDelete} className="eflux-btn eflux-btn-danger h-8 px-3 text-xs">
         <Trash2 size={14} />
         Delete
       </button>
+      {chatOpen && (
+        <div className="mt-2 w-full space-y-3 rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3">
+          <form onSubmit={onSay} className="space-y-1.5">
+            <label className="block text-xs font-medium text-[var(--text-muted)]" htmlFor={`say-${vpp.id}`}>
+              Speak as {vpp.name} (posts publicly; the other agents can reply)
+            </label>
+            <div className="flex gap-2">
+              <input
+                id={`say-${vpp.id}`}
+                value={sayText}
+                onChange={(e) => setSayText(e.target.value)}
+                maxLength={200}
+                placeholder="say something in the room"
+                className="eflux-input min-w-0 flex-1 rounded-md px-3 py-1.5 text-sm outline-none"
+              />
+              <button
+                type="submit"
+                disabled={busy || !sayText.trim()}
+                className="eflux-btn eflux-btn-primary h-8 px-3 text-xs disabled:opacity-50"
+              >
+                Say it
+              </button>
+            </div>
+            {said && (
+              <p className="text-[11px] text-[var(--success)]">Posted: "{said}"</p>
+            )}
+          </form>
+          <label className="block text-xs font-medium text-[var(--text-muted)]">
+            Chat voice (tone only; does not touch trading)
+            <input
+              value={chatStyle}
+              onChange={(e) => setChatStyle(e.target.value)}
+              maxLength={200}
+              placeholder="e.g. dry one-liners, always quotes battery SOC"
+              className="eflux-input mt-1 w-full rounded-md px-3 py-1.5 text-sm outline-none"
+            />
+          </label>
+          <div className="flex flex-wrap items-end gap-4">
+            <div>
+              <div className="text-xs font-medium text-[var(--text-muted)]">Name color</div>
+              <div className="mt-1.5 flex items-center gap-1.5">
+                {CHAT_COLORS.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setChatColor(chatColor === c ? "" : c)}
+                    aria-label={`use color ${c}`}
+                    className={`h-6 w-6 rounded-full border-2 transition-transform hover:scale-110 ${
+                      chatColor === c ? "border-[var(--text)]" : "border-transparent"
+                    }`}
+                    style={{ backgroundColor: c }}
+                  />
+                ))}
+              </div>
+            </div>
+            <label className="block text-xs font-medium text-[var(--text-muted)]">
+              Avatar (one emoji)
+              <input
+                value={chatAvatar}
+                onChange={(e) => setChatAvatar(e.target.value)}
+                maxLength={4}
+                placeholder="none"
+                className="eflux-input mt-1 w-20 rounded-md px-3 py-1.5 text-center text-sm outline-none"
+              />
+            </label>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={onSaveChatPrefs}
+              className="eflux-btn h-8 px-3 text-xs disabled:opacity-50"
+            >
+              <Save size={14} />
+              Save presence
+            </button>
+          </div>
+        </div>
+      )}
       {open && (
         <div className="mt-2 w-full space-y-3 rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3">
           <p className="text-[11px] text-[var(--text-subtle)]">
