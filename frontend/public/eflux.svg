@@ -4,15 +4,20 @@
       <stop offset="0" stop-color="#0b1020"/>
       <stop offset="1" stop-color="#0f2540"/>
     </linearGradient>
-    <linearGradient id="bolt" x1="14" y1="8" x2="34" y2="40" gradientUnits="userSpaceOnUse">
+    <linearGradient id="up" x1="15" y1="8" x2="27" y2="26" gradientUnits="userSpaceOnUse">
       <stop offset="0" stop-color="#7dd3fc"/>
-      <stop offset="0.5" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+    <linearGradient id="down" x1="31" y1="21" x2="22" y2="40" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2dd4bf"/>
       <stop offset="1" stop-color="#34d399"/>
     </linearGradient>
   </defs>
   <rect x="1" y="1" width="46" height="46" rx="11" fill="url(#bg)" stroke="#1e3a5f" stroke-width="1.5"/>
-  <circle cx="24" cy="24" r="17" fill="none" stroke="#1e293b" stroke-width="2.4"/>
+  <circle cx="24" cy="24" r="17" fill="none" stroke="#2c3e57" stroke-width="2.4" stroke-linecap="round"
+          pathLength="100" stroke-dasharray="75 25" transform="rotate(180 24 24)"/>
   <circle cx="24" cy="24" r="17" fill="none" stroke="#38bdf8" stroke-width="2.4" stroke-linecap="round"
-          pathLength="100" stroke-dasharray="18 82" stroke-dashoffset="-8"/>
-  <path d="M27 9 L16 26 L23 26 L21 39 L33 21 L26 21 L29 9 Z" fill="url(#bolt)"/>
+          pathLength="100" stroke-dasharray="18 82" stroke-dashoffset="-30" transform="rotate(180 24 24)"/>
+  <path d="M26.3 7.3 L14.4 25.6 L22 25.6 L25.2 20.2 L28.5 7.3 Z" fill="url(#up)"/>
+  <path d="M23.8 26.7 L21.7 40.8 L34.7 21.3 L27.1 21.3 Z" fill="url(#down)"/>
 </svg>

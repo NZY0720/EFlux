@@ -1,8 +1,11 @@
 /**
- * Animated EFlux brand mark — a lightning bolt inside a ring with a live
- * electric "current" sweeping around it and a soft glow that pulses in time.
- * Pure self-contained SVG (SMIL + gradients), so it animates anywhere an
- * <img>/inline-SVG renders, no extra deps and crisp at any size.
+ * Animated EFlux brand mark — the "flux bolt": a lightning bolt split into two
+ * counterposed flow strokes (energy flowing out ↗ / flowing in ↙) separated by
+ * a narrow flux channel, set inside an open orbit whose gap lets the strike
+ * escape. A live current sweeps the orbit and the two strokes breathe in
+ * alternating phase — the exchange rhythm of a P2P market. Pure self-contained
+ * SVG (SMIL + gradients), so it animates anywhere inline SVG renders, no extra
+ * deps and crisp at any size.
  */
 interface Props {
   size?: number;
@@ -11,7 +14,10 @@ interface Props {
   still?: boolean;
 }
 
-const BOLT = "M27 9 L16 26 L23 26 L21 39 L33 21 L26 21 L29 9 Z";
+/** Upper flow stroke — sky, selling side of the strike. */
+const BOLT_UP = "M26.3 7.3 L14.4 25.6 L22 25.6 L25.2 20.2 L28.5 7.3 Z";
+/** Lower flow stroke — emerald, buying side of the strike. */
+const BOLT_DOWN = "M23.8 26.7 L21.7 40.8 L34.7 21.3 L27.1 21.3 Z";
 
 export default function BrandLogo({ size = 30, className, still = false }: Props) {
   return (
@@ -25,9 +31,12 @@ export default function BrandLogo({ size = 30, className, still = false }: Props
       aria-label="EFlux"
     >
       <defs>
-        <linearGradient id="eflux-bolt" x1="14" y1="8" x2="34" y2="40" gradientUnits="userSpaceOnUse">
+        <linearGradient id="eflux-up" x1="15" y1="8" x2="27" y2="26" gradientUnits="userSpaceOnUse">
           <stop offset="0" stopColor="#7dd3fc" />
-          <stop offset="0.5" stopColor="#38bdf8" />
+          <stop offset="1" stopColor="#38bdf8" />
+        </linearGradient>
+        <linearGradient id="eflux-down" x1="31" y1="21" x2="22" y2="40" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#2dd4bf" />
           <stop offset="1" stopColor="#34d399" />
         </linearGradient>
         <radialGradient id="eflux-core" cx="0.5" cy="0.42" r="0.62">
@@ -42,10 +51,20 @@ export default function BrandLogo({ size = 30, className, still = false }: Props
       {/* soft inner halo */}
       <circle cx="24" cy="24" r="19" fill="url(#eflux-core)" />
 
-      {/* base ring */}
-      <circle cx="24" cy="24" r="20" stroke="#1e293b" strokeWidth="2.5" />
+      {/* open orbit — the gap sits lower-left, where the strike exits */}
+      <circle
+        cx="24"
+        cy="24"
+        r="20"
+        pathLength={100}
+        stroke="#1e293b"
+        strokeWidth="2.5"
+        strokeLinecap="round"
+        strokeDasharray="75 25"
+        transform="rotate(180 24 24)"
+      />
 
-      {/* travelling current — a short bright arc chasing around the ring */}
+      {/* travelling current — a short bright arc chasing around the orbit */}
       <circle
         cx="24"
         cy="24"
@@ -55,6 +74,7 @@ export default function BrandLogo({ size = 30, className, still = false }: Props
         strokeWidth="2.5"
         strokeLinecap="round"
         strokeDasharray="16 84"
+        transform="rotate(180 24 24)"
       >
         {!still && (
           <animate
@@ -67,8 +87,8 @@ export default function BrandLogo({ size = 30, className, still = false }: Props
         )}
       </circle>
 
-      {/* glow copy of the bolt, breathing behind the sharp one */}
-      <path d={BOLT} fill="url(#eflux-bolt)" filter="url(#eflux-glow)" opacity="0.85">
+      {/* glow copies of both strokes, breathing in alternating phase */}
+      <path d={BOLT_UP} fill="url(#eflux-up)" filter="url(#eflux-glow)" opacity="0.85">
         {!still && (
           <animate
             attributeName="opacity"
@@ -78,9 +98,20 @@ export default function BrandLogo({ size = 30, className, still = false }: Props
           />
         )}
       </path>
+      <path d={BOLT_DOWN} fill="url(#eflux-down)" filter="url(#eflux-glow)" opacity="0.85">
+        {!still && (
+          <animate
+            attributeName="opacity"
+            values="0.95;0.35;0.95"
+            dur="2.6s"
+            repeatCount="indefinite"
+          />
+        )}
+      </path>
 
-      {/* crisp bolt */}
-      <path d={BOLT} fill="url(#eflux-bolt)" />
+      {/* crisp strokes */}
+      <path d={BOLT_UP} fill="url(#eflux-up)" />
+      <path d={BOLT_DOWN} fill="url(#eflux-down)" />
     </svg>
   );
 }

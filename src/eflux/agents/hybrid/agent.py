@@ -57,11 +57,12 @@ class HybridPolicyAgent(BaseAgent):
     """The full layered agent (design note §5, §8): a slow LLM strategist coaches a fast
     tactical executor over the structured action space; the Truthful oracle values the
     energy, the compiler lowers the chosen action, and the runner's RiskGate has final
-    say (with a Truthful fallback when the executor's batch is fully vetoed).
+    say (with a configurable fallback policy when the executor's batch is fully vetoed).
 
-    LLM guidance enters only as soft priors (apply_guidance) and audit metadata — never
-    as a hard order (principles #2, #4, #9). Swap the executor (scripted / PPO / BC) and
-    strategist without touching the oracle, compiler, or gate."""
+    LLM guidance enters through apply_guidance and audit metadata: mode_pin is a binding
+    primitive override for its short window, while the other fields remain soft priors.
+    Swap the executor (scripted / PPO / BC) and strategist without touching the oracle,
+    compiler, or gate."""
 
     price_ref: Decimal = Decimal("50.0")
     min_qty: Decimal = Decimal("0.01")
@@ -70,22 +71,35 @@ class HybridPolicyAgent(BaseAgent):
     executor: StrategyPolicy | None = None  # PPO / BC / scripted (default)
     strategist: Strategist | None = None  # slow LLM guidance (off the tick path)
     fallback: BaseAgent | None = None  # safe action when the executor is fully vetoed
+    fallback_policy: str = "hold"  # "truthful" restores the legacy gate fallback hook
     refresh_every_n_ticks: int = 60  # strategist re-query cadence
     refresh_offset_ticks: int = 0  # stagger LLM calls across a managed fleet
     persona_prompt: str | None = None  # audit metadata copied from AgentSpec.persona
 
     def __post_init__(self) -> None:
+        allowed_fallback_policies = {"truthful", "hold", "noop"}
+        if self.fallback_policy not in allowed_fallback_policies:
+            allowed = ", ".join(sorted(allowed_fallback_policies))
+            raise ValueError(f"fallback_policy must be one of: {allowed}")
         self._oracle = TruthfulValuationOracle(
             price_ref=self.price_ref, demand_beta=self.demand_beta, price_cap_mult=self.price_cap_mult
         )
         self._executor: StrategyPolicy = self.executor or ScriptedStrategyPolicy(min_qty=float(self.min_qty))
         self._compiler = OrderProgramCompiler(min_qty=self.min_qty)
         # The runner's gate-fallback hook (M2) reads .risk_fallback.
-        self.risk_fallback: BaseAgent = self.fallback or TruthfulAgent(
-            price_ref=self.price_ref, demand_beta=self.demand_beta, price_cap_mult=self.price_cap_mult
-        )
+        self.risk_fallback: BaseAgent | None = self.fallback
+        if self.risk_fallback is None and self.fallback_policy == "truthful":
+            self.risk_fallback = TruthfulAgent(
+                price_ref=self.price_ref, demand_beta=self.demand_beta, price_cap_mult=self.price_cap_mult
+            )
         self._last_guidance: StrategyGuidance | None = None
         self._ticks = 0
+        self._guided_ticks = 0
+        self._guidance_changed = 0
+        self._mode_overrides = 0
+        self._price_dev_sum_bps = 0.0
+        self._price_dev_n = 0
+        self._last_fair: tuple[float, float] | None = None
         # Named so the runner's existing _shutdown_reflections cancels it on stop.
         self._reflection_task: asyncio.Task | None = None
         # Off-tick PPO update future (online executor + async mode only).
@@ -97,11 +111,33 @@ class HybridPolicyAgent(BaseAgent):
         self._last_guidance = guidance
         self._push_meta_and_modes(guidance)
         valuation = self._oracle.estimate(ctx)
+        self._last_fair = (valuation.fair_buy_price, valuation.fair_sell_price)
         action = self._executor.select_action(ctx, valuation, guidance)
+        pre = action
         action = apply_guidance(action, guidance)
+        if guidance is not None:
+            self._guided_ticks += 1
+            if action != pre:
+                self._guidance_changed += 1
+            if action.mode != pre.mode:
+                self._mode_overrides += 1
         compiled = self._compiler.compile(ctx, action, valuation)
         self._maybe_online_update(ctx)
         return compiled.order_intents
+
+    def record_trade(self, record: dict) -> None:
+        if self._last_fair is None:
+            return
+        fair_buy, fair_sell = self._last_fair
+        ref = fair_buy if record.get("side") == "buy" else fair_sell
+        if ref <= 0:
+            return
+        try:
+            dev_bps = (float(record["price"]) - ref) / ref * 1e4
+        except (KeyError, TypeError, ValueError):
+            return
+        self._price_dev_sum_bps += dev_bps
+        self._price_dev_n += 1
 
     def _push_meta_and_modes(self, guidance: StrategyGuidance | None) -> None:
         """Steer an online PPO executor with the strategist's cached, clamped MetaControl
@@ -184,11 +220,24 @@ class HybridPolicyAgent(BaseAgent):
             else {
                 "preferred_modes": [m.value for m in g.preferred_modes],
                 "avoid_modes": [m.value for m in g.avoid_modes],
+                "mode_pin": None if g.mode_pin is None else g.mode_pin.value,
                 "risk_budget": g.risk_budget,
+                "price_bias_bps": g.price_bias_bps,
                 "soc_target": g.soc_target,
                 "execution_style": g.execution_style,
                 "lesson": g.lesson,
             },
+        }
+
+    @property
+    def influence_stats(self) -> dict:
+        guided = self._guided_ticks
+        price_n = self._price_dev_n
+        return {
+            "guided_ticks": guided,
+            "guidance_change_rate": None if guided == 0 else self._guidance_changed / guided,
+            "mode_override_rate": None if guided == 0 else self._mode_overrides / guided,
+            "avg_price_dev_bps": None if price_n == 0 else self._price_dev_sum_bps / price_n,
         }
 
     @property

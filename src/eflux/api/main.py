@@ -67,6 +67,9 @@ def _validated_external_guidance(cfg: dict, *, market_mode: str) -> tuple[dict |
         scrubbed.pop("external_guidance", None)
         return None, scrubbed, True
     try:
+        for key in ("risk_budget", "price_bias_bps", "soc_target"):
+            if key in guidance:
+                float(guidance[key])
         external_guidance_from_dict(guidance, market_mode=market_mode)
     except Exception:
         log.exception("Persisted external guidance is invalid; scrubbing it from managed_config")
@@ -101,9 +104,14 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
             scrubbed_any = False
             for row in rows:
                 cfg = dict(row.managed_config or {})
-                guidance, cfg, scrubbed = _validated_external_guidance(
-                    cfg, market_mode=sim.market_mode
-                )
+                algorithm = cfg.get("algorithm") or "hybrid"
+                online_learning = cfg.get("online_learning", True)
+                if algorithm == "hybrid":
+                    guidance, cfg, scrubbed = _validated_external_guidance(
+                        cfg, market_mode=sim.market_mode
+                    )
+                else:
+                    guidance, scrubbed = None, False
                 if scrubbed:
                     row.managed_config = cfg
                     scrubbed_any = True
@@ -118,10 +126,12 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                         seed=cfg.get("seed"),
                         model=_rehydrate_model(cfg.get("model")),
                         managed_def_id=row.id,
+                        algorithm=algorithm,
+                        online_learning=online_learning,
                     )
                     # Restore external steering (Tier A3) so a restart neither burns
                     # platform LLM calls nor forgets the owner's last guidance.
-                    if guidance is not None:
+                    if algorithm == "hybrid" and guidance is not None:
                         apply_external_guidance(vpp, guidance, market_mode=sim.market_mode)
                     apply_chat_prefs(vpp, cfg.get("chat"))
                     count += 1

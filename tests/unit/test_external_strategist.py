@@ -19,7 +19,9 @@ ENTRY_KEYS = {
     "ok",
     "preferred_modes",
     "avoid_modes",
+    "mode_pin",
     "risk_budget",
+    "price_bias_bps",
     "soc_target",
     "execution_style",
     "rationale",
@@ -38,22 +40,40 @@ def test_external_guidance_from_dict_clamps_and_sanitizes():
     g, meta = external_guidance_from_dict(
         {
             "preferred_modes": ["liquidate_surplus"],
+            "mode_pin": "battery_arbitrage",
             "risk_budget": 99.0,
+            "price_bias_bps": -999.0,
             "soc_target": -3.0,
             "execution_style": "x" * 500,
             "meta_control": {"lr": 100.0, "unknown_key": 1.0},
         }
     )
-    assert g.risk_budget == 1.0
+    assert g.mode_pin is StrategyMode.BATTERY_ARBITRAGE
+    assert g.risk_budget == 1.5
+    assert g.price_bias_bps == -200.0
     assert g.soc_target == 0.0
     assert len(g.execution_style) <= 200
     assert meta is not None
     assert meta.lr <= 1e-3  # hard-clamped to the MetaControl range
     # realprice sanitization drops disallowed preferred modes but never errors.
     g_rp, _ = external_guidance_from_dict(
-        {"preferred_modes": ["liquidate_surplus"]}, market_mode="realprice"
+        {"preferred_modes": ["liquidate_surplus"], "mode_pin": "passive_market_make"},
+        market_mode="realprice",
     )
     assert isinstance(g_rp, StrategyGuidance)
+    assert g_rp.mode_pin is None
+
+
+def test_external_guidance_round_trips_v2_fields():
+    g, _ = external_guidance_from_dict(
+        {"mode_pin": "cover_deficit", "price_bias_bps": 42.0, "risk_budget": 1.2}
+    )
+    ext = ExternalStrategist()
+    entry = ext.set_guidance(g)
+    assert g.mode_pin is StrategyMode.COVER_DEFICIT
+    assert g.price_bias_bps == 42.0
+    assert entry["mode_pin"] == "cover_deficit"
+    assert entry["price_bias_bps"] == 42.0
 
 
 def test_entry_shape_matches_llm_strategist():

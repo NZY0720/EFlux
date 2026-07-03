@@ -14,6 +14,7 @@ from decimal import Decimal
 
 from eflux.agents.base import AgentContext, MarketSnapshot, OpenOrderView
 from eflux.agents.strategy import OrderProgramCompiler, StrategyAction, StrategyMode
+from eflux.agents.strategy.schema import PRICE_MULT_MAX, PRICE_MULT_MIN
 from eflux.agents.truthful import TruthfulAgent
 from eflux.agents.valuation import TruthfulValuationOracle
 from eflux.vpp.base import VPPParams, VPPState
@@ -94,6 +95,79 @@ def test_qty_fraction_scales_quantity():
     assert compiled.order_intents[0].qty == Decimal("2.0000")  # half of 4.0
 
 
+def test_imbalance_modes_do_not_oversell_or_overbuy_above_one_qty_fraction():
+    surplus = _make_ctx(pv_kw=5.0, load_kw=1.0, markup_floor=0.1)
+    liquidate = _compile(
+        surplus, StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS, qty_fraction=1.5)
+    ).order_intents[0]
+    taker_sell = _compile(
+        surplus, StrategyAction(mode=StrategyMode.AGGRESSIVE_TAKER, qty_fraction=1.5)
+    ).order_intents[0]
+
+    deficit = _make_ctx(pv_kw=0.5, load_kw=3.0)
+    cover = _compile(
+        deficit, StrategyAction(mode=StrategyMode.COVER_DEFICIT, qty_fraction=1.5)
+    ).order_intents[0]
+    taker_buy = _compile(
+        deficit, StrategyAction(mode=StrategyMode.AGGRESSIVE_TAKER, qty_fraction=1.5)
+    ).order_intents[0]
+
+    assert liquidate.qty == Decimal("4.0000")
+    assert taker_sell.qty == Decimal("4.0000")
+    assert cover.qty == Decimal("2.5000")
+    assert taker_buy.qty == Decimal("2.5000")
+
+
+def test_battery_qty_fraction_above_one_is_not_imbalance_capped():
+    ctx = _make_ctx(pv_kw=2.0, load_kw=2.0, soc_kwh=5.0)
+    compiled = _compile(
+        ctx,
+        StrategyAction(
+            mode=StrategyMode.BATTERY_ARBITRAGE,
+            qty_fraction=1.5,
+            soc_target=0.4,
+        ),
+    )
+    assert compiled.order_intents[0].qty == Decimal("1.5000")
+
+
+def test_price_target_mult_scales_surplus_sell_anchor():
+    ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, markup_floor=1.0)  # fair sell = 50
+    compiled = _compile(
+        ctx, StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS, price_target_mult=1.5)
+    )
+    assert compiled.order_intents[0].price == Decimal("75.0000")
+
+
+def test_price_target_mult_scales_deficit_buy_anchor():
+    ctx = _make_ctx(pv_kw=0.5, load_kw=3.0)  # fair buy = 50
+    compiled = _compile(
+        ctx, StrategyAction(mode=StrategyMode.COVER_DEFICIT, price_target_mult=0.8)
+    )
+    assert compiled.order_intents[0].price == Decimal("40.0000")
+
+
+def test_price_target_mult_is_clamped_to_policy_bounds():
+    ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, markup_floor=1.0)  # fair sell = 50
+    low = _compile(
+        ctx, StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS, price_target_mult=0.01)
+    ).order_intents[0]
+    high = _compile(
+        ctx, StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS, price_target_mult=10.0)
+    ).order_intents[0]
+    assert low.price == Decimal("50.0000") * Decimal(str(PRICE_MULT_MIN))
+    assert high.price == Decimal("50.0000") * Decimal(str(PRICE_MULT_MAX))
+
+
+def test_price_target_mult_none_keeps_legacy_price():
+    ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, markup_floor=1.0)
+    legacy = _compile(ctx, StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS)).order_intents[0]
+    explicit_none = _compile(
+        ctx, StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS, price_target_mult=None)
+    ).order_intents[0]
+    assert explicit_none.price == legacy.price
+
+
 def test_aggressiveness_crosses_toward_best_bid():
     ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, markup_floor=2.0)  # fair sell = 100, above best_bid 48
     passive = _compile(ctx, StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS)).order_intents[0]
@@ -102,6 +176,24 @@ def test_aggressiveness_crosses_toward_best_bid():
     ).order_intents[0]
     assert passive.price == Decimal("100.0000")
     assert aggressive.price == Decimal("48.0000")  # crossed fully to best_bid
+
+
+def test_aggressive_taker_price_target_mult_limits_sell_cross():
+    ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, markup_floor=1.0)  # fair sell = 50
+    compiled = _compile(
+        ctx, StrategyAction(mode=StrategyMode.AGGRESSIVE_TAKER, price_target_mult=1.1)
+    )
+    assert compiled.order_intents[0].side == "sell"
+    assert compiled.order_intents[0].price == Decimal("55.0000")
+
+
+def test_aggressive_taker_price_target_mult_limits_buy_cross():
+    ctx = _make_ctx(pv_kw=0.5, load_kw=3.0)  # fair buy = 50, best ask = 52
+    compiled = _compile(
+        ctx, StrategyAction(mode=StrategyMode.AGGRESSIVE_TAKER, price_target_mult=0.9)
+    )
+    assert compiled.order_intents[0].side == "buy"
+    assert compiled.order_intents[0].price == Decimal("45.0000")
 
 
 def test_battery_arbitrage_sells_above_target_dispatched():

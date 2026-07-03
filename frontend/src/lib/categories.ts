@@ -23,6 +23,21 @@ export function categoryMeta(category: string): CategoryMeta {
 
 /** Friendly name for the backend's agent strategy strings. */
 export function strategyLabel(strategy: string): string {
+  const rosterLabels: Record<string, string> = {
+    hybrid: "LLM Hybrid Strategist",
+    ppo: "PPO (structured policy)",
+    truthful: "Truthful (cost-based)",
+    zi: "Zero-Intelligence (random)",
+    zip: "ZIP (Cliff)",
+    gd: "GD (Gjerstad-Dickhaut)",
+    aa: "AA (Vytelingum)",
+  };
+  const rosterLabel = rosterLabels[strategy.toLowerCase()];
+  if (rosterLabel) return rosterLabel;
+  if (strategy.startsWith("StrategyAgent (PPO")) return "PPO (structured policy)";
+  if (strategy.startsWith("ZIPAgent")) return "ZIP (Cliff)";
+  if (strategy.startsWith("GDAgent")) return "GD (Gjerstad-Dickhaut)";
+  if (strategy.startsWith("AAAgent")) return "AA (Vytelingum)";
   if (strategy.startsWith("ZIAgent")) return "Zero-Intelligence (random)";
   if (strategy.startsWith("TruthfulAgent")) return "Truthful (cost-based)";
   if (strategy.startsWith("GasGeneratorAgent")) return "Gas (marginal cost)";

@@ -24,6 +24,7 @@ import {
   createVPP,
   deleteManagedVPP,
   fetchManagedVPPPerformance,
+  listAlgorithms,
   listManagedVPPs,
   listModels,
   listVPPs,
@@ -38,9 +39,12 @@ import {
 const CHAT_COLORS = ["#059669", "#0284c7", "#7c3aed", "#d97706", "#e11d48", "#0d9488", "#9333ea", "#0891b2"];
 
 const LOAD_PROFILES = ["residential", "industrial", "commercial", "flat"];
-import type { ManagedVPP, ManagedVPPPerformance, ReflectionEntry, VPP } from "../api/types";
+import type { AlgorithmInfo, AlgorithmParam, ManagedVPP, ManagedVPPPerformance, ReflectionEntry, VPP } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
+import { strategyLabel } from "../lib/categories";
 import { useMarket } from "../state/marketStream";
+
+type AlgorithmParamValue = number | string | boolean;
 
 export default function MyVPPs() {
   const [vpps, setVpps] = useState<VPP[]>([]);
@@ -69,7 +73,12 @@ export default function MyVPPs() {
   const [mgModel, setMgModel] = useState("");
   const [mgWind, setMgWind] = useState(0);
   const [mgLoadProfile, setMgLoadProfile] = useState("residential");
+  const [mgAlgorithm, setMgAlgorithm] = useState("hybrid");
+  const [mgOnlineLearning, setMgOnlineLearning] = useState(true);
+  const [mgAdvancedOpen, setMgAdvancedOpen] = useState(false);
+  const [mgAdvancedParams, setMgAdvancedParams] = useState<Record<string, AlgorithmParamValue>>({});
   const [models, setModels] = useState<string[]>([]);
+  const [algorithms, setAlgorithms] = useState<AlgorithmInfo[]>([]);
   const [mgBusy, setMgBusy] = useState(false);
 
   const [orderVpp, setOrderVpp] = useState<number | null>(null);
@@ -97,8 +106,33 @@ export default function MyVPPs() {
         setMgModel((cur) => cur || m.default);
       })
       .catch(() => {});
+    listAlgorithms()
+      .then((roster) => {
+        setAlgorithms(roster);
+        setMgAlgorithm((cur) => (roster.some((a) => a.id === cur) ? cur : (roster[0]?.id ?? "hybrid")));
+      })
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const selectedAlgorithm =
+    algorithms.find((a) => a.id === mgAlgorithm) ??
+    ({
+      id: "hybrid",
+      label: "Hybrid",
+      description: "LLM strategist + policy executor + risk gate.",
+      uses_llm: true,
+      supports_online_learning: false,
+      params: [{ name: "demand_beta", type: "float", default: 0.5, min: 0, max: 1, help: "Demand response sensitivity." }],
+    } satisfies AlgorithmInfo);
+  const supportsDemandBeta = selectedAlgorithm.params.some((p) => p.name === "demand_beta");
+  const isPpoAlgorithm = selectedAlgorithm.id === "ppo";
+  const advancedParams = selectedAlgorithm.params.filter((p) => p.name !== "demand_beta");
+  const setAlgorithm = (id: string) => {
+    setMgAlgorithm(id);
+    setMgAdvancedParams({});
+    setMgAdvancedOpen(false);
+  };
 
   const loadPerformance = async (vppId: number) => {
     const data = await fetchManagedVPPPerformance(vppId);
@@ -160,12 +194,22 @@ export default function MyVPPs() {
         load_profile: mgLoadProfile,
       };
       if (mgWind > 0) params.wind_kw_rated = mgWind;
+      const agentParams: Record<string, AlgorithmParamValue> = {
+        ...mgAdvancedParams,
+        ...(supportsDemandBeta ? { demand_beta: mgDemandBeta } : {}),
+      };
       const created = await createManagedVPP({
         name: mgName.trim(),
         params,
-        persona: mgPersona.trim() || null,
-        agent_params: { demand_beta: mgDemandBeta },
-        model: mgModel || null,
+        algorithm: selectedAlgorithm.id,
+        ...(isPpoAlgorithm ? { online_learning: mgOnlineLearning } : {}),
+        ...(Object.keys(agentParams).length > 0 ? { agent_params: agentParams } : {}),
+        ...(selectedAlgorithm.uses_llm
+          ? {
+              persona: mgPersona.trim() || null,
+              model: mgModel || null,
+            }
+          : {}),
       });
       setMgName("");
       setMgPersona("");
@@ -224,7 +268,16 @@ export default function MyVPPs() {
               onChange={(e) => setMgName(e.target.value)}
               className="eflux-input w-full rounded-md px-3 py-2 text-sm outline-none"
             />
-            <SelectField label="LLM model" value={mgModel} options={models} onChange={setMgModel} />
+            <SelectField
+              label="Algorithm"
+              value={mgAlgorithm}
+              options={algorithms.map((a) => ({ value: a.id, label: a.label }))}
+              onChange={setAlgorithm}
+            />
+            <p className="text-xs text-[var(--text-muted)]">{selectedAlgorithm.description}</p>
+            {selectedAlgorithm.uses_llm && (
+              <SelectField label="LLM model" value={mgModel} options={models} onChange={setMgModel} />
+            )}
             <div className="grid grid-cols-2 gap-2">
               <NumberField label="PV peak (kW)" value={mgPv} step="0.5" onChange={setMgPv} />
               <NumberField label="Battery (kWh)" value={mgBatt} step="1" onChange={setMgBatt} />
@@ -237,30 +290,74 @@ export default function MyVPPs() {
               options={LOAD_PROFILES}
               onChange={setMgLoadProfile}
             />
-            <SliderField
-              label={`Demand response (demand_beta ${mgDemandBeta.toFixed(2)})`}
-              value={mgDemandBeta}
-              min={0}
-              max={1}
-              step={0.05}
-              onChange={setMgDemandBeta}
-            />
+            {isPpoAlgorithm && (
+              <label className="flex items-center gap-2 text-xs font-medium text-[var(--text-muted)]">
+                <input
+                  type="checkbox"
+                  checked={mgOnlineLearning}
+                  onChange={(e) => setMgOnlineLearning(e.target.checked)}
+                  className="h-4 w-4 accent-[var(--accent)]"
+                />
+                Online learning
+              </label>
+            )}
+            {supportsDemandBeta && (
+              <SliderField
+                label={`Demand response (demand_beta ${mgDemandBeta.toFixed(2)})`}
+                value={mgDemandBeta}
+                min={0}
+                max={1}
+                step={0.05}
+                onChange={setMgDemandBeta}
+              />
+            )}
+            {!selectedAlgorithm.uses_llm && !isPpoAlgorithm && advancedParams.length > 0 && (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setMgAdvancedOpen((open) => !open)}
+                  className="eflux-btn h-8 px-3 text-xs"
+                >
+                  <Settings2 size={14} />
+                  {mgAdvancedOpen ? "Hide algorithm parameters" : "Algorithm parameters (advanced)"}
+                </button>
+                {mgAdvancedOpen && (
+                  <div className="eflux-inset grid grid-cols-1 gap-2 rounded-lg p-3 sm:grid-cols-2">
+                    {advancedParams.map((param) => (
+                      <AlgorithmParamField
+                        key={param.name}
+                        param={param}
+                        value={mgAdvancedParams[param.name]}
+                        onChange={(value) =>
+                          setMgAdvancedParams((prev) => ({
+                            ...prev,
+                            [param.name]: value,
+                          }))
+                        }
+                      />
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </div>
           <div className="flex flex-col">
-            <label className="flex flex-1 flex-col text-xs font-medium text-[var(--text-muted)]">
-              Strategy brief (persona) — optional
-              <textarea
-                value={mgPersona}
-                onChange={(e) => setMgPersona(e.target.value)}
-                rows={4}
-                maxLength={600}
-                placeholder="e.g. Prefer maker orders and capture spreads; avoid crossing unless imbalance is urgent. Hold SOC near 55%."
-                className="eflux-input mt-1 min-h-[96px] flex-1 resize-none rounded-md px-3 py-2 text-sm outline-none"
-              />
-            </label>
+            {selectedAlgorithm.uses_llm && (
+              <label className="flex flex-1 flex-col text-xs font-medium text-[var(--text-muted)]">
+                Strategy brief (persona) — optional
+                <textarea
+                  value={mgPersona}
+                  onChange={(e) => setMgPersona(e.target.value)}
+                  rows={4}
+                  maxLength={600}
+                  placeholder="e.g. Prefer maker orders and capture spreads; avoid crossing unless imbalance is urgent. Hold SOC near 55%."
+                  className="eflux-input mt-1 min-h-[96px] flex-1 resize-none rounded-md px-3 py-2 text-sm outline-none"
+                />
+              </label>
+            )}
             <button
               disabled={mgBusy}
-              className="eflux-btn eflux-btn-primary mt-3 h-9 px-4 text-sm font-semibold disabled:opacity-50"
+              className="eflux-btn eflux-btn-primary mt-3 h-9 px-4 text-sm font-semibold disabled:opacity-50 md:mt-auto"
             >
               <Bot size={15} />
               {mgBusy ? "Deploying..." : "Deploy agent"}
@@ -291,18 +388,21 @@ export default function MyVPPs() {
                         <ChevronRight size={15} className="text-[var(--text-subtle)]" />
                       )}
                       <span className="font-medium text-[var(--text)]">{v.name}</span>
-                      <StatusPill tone="accent" className="py-0 text-[10px]">{v.model ?? "managed"}</StatusPill>
-                      {v.guidance_source === "external" && (
+                      <StatusPill tone="accent" className="py-0 text-[10px]">{algorithmChipLabel(v)}</StatusPill>
+                      {isHybridManaged(v) && v.model && (
+                        <StatusPill tone="muted" className="py-0 text-[10px]">{v.model}</StatusPill>
+                      )}
+                      {isHybridManaged(v) && v.guidance_source === "external" && (
                         <StatusPill tone="violet" className="py-0 text-[10px]">externally steered</StatusPill>
                       )}
                     </div>
                     <div className="mt-1 text-xs text-[var(--text-muted)]">
                       PV {v.params.pv_kw_peak}kW / Batt {v.params.battery_kwh}kWh / Load {v.params.load_kw_base}kW
                     </div>
-                    <div className="mt-1 text-xs text-[var(--accent)]">{v.strategy}</div>
-                    <div className="mt-1 text-xs text-[var(--text-subtle)]">{v.llm_status}</div>
+                    <div className="mt-1 text-xs text-[var(--accent)]">{strategyLabel(v.strategy)}</div>
+                    {isHybridManaged(v) && <div className="mt-1 text-xs text-[var(--text-subtle)]">{v.llm_status}</div>}
                   </div>
-                  <LLMBadge state={v.llm_health_state} />
+                  {isHybridManaged(v) && <LLMBadge state={v.llm_health_state} />}
                 </button>
                 {selectedManaged === v.id && (
                   <>
@@ -474,6 +574,7 @@ function ManagedControls({
   onDelete: () => void;
   onError: (msg: string | null) => void;
 }) {
+  const hybrid = isHybridManaged(vpp);
   const [persona, setPersona] = useState(vpp.persona ?? "");
   const [model, setModel] = useState(vpp.model ?? "");
   const [demandBeta, setDemandBeta] = useState(0.5);
@@ -556,11 +657,13 @@ function ManagedControls({
 
   return (
     <div className="flex flex-wrap items-center gap-2 border-t border-[var(--border)] px-3 py-2">
-      <button type="button" onClick={() => setOpen((o) => !o)} className="eflux-btn h-8 px-3 text-xs">
-        <Settings2 size={14} />
-        {open ? "Close" : "Tune preferences"}
-      </button>
-      {vpp.guidance_source === "external" && (
+      {hybrid && (
+        <button type="button" onClick={() => setOpen((o) => !o)} className="eflux-btn h-8 px-3 text-xs">
+          <Settings2 size={14} />
+          {open ? "Close" : "Tune preferences"}
+        </button>
+      )}
+      {hybrid && vpp.guidance_source === "external" && (
         <button
           type="button"
           onClick={onReleaseGuidance}
@@ -657,7 +760,7 @@ function ManagedControls({
           </div>
         </div>
       )}
-      {open && (
+      {hybrid && open && (
         <div className="mt-2 w-full space-y-3 rounded-lg border border-[var(--border)] bg-[var(--surface-muted)] p-3">
           <p className="text-[11px] text-[var(--text-subtle)]">
             Applying changes restarts the agent&apos;s trading session (open orders reset; PnL is kept).
@@ -699,6 +802,23 @@ function ManagedControls({
   );
 }
 
+function isHybridManaged(vpp: ManagedVPP): boolean {
+  return vpp.algorithm === "hybrid" || (!vpp.algorithm && vpp.strategy.startsWith("HybridPolicyAgent"));
+}
+
+function algorithmChipLabel(vpp: ManagedVPP): string {
+  const labels: Record<string, string> = {
+    hybrid: "Hybrid",
+    ppo: "PPO",
+    truthful: "Truthful",
+    zi: "ZI",
+    zip: "ZIP",
+    gd: "GD",
+    aa: "AA",
+  };
+  return labels[vpp.algorithm] ?? vpp.algorithm ?? "managed";
+}
+
 function SelectField({
   label,
   value,
@@ -707,7 +827,7 @@ function SelectField({
 }: {
   label: string;
   value: string;
-  options: string[];
+  options: Array<string | { value: string; label: string }>;
   onChange: (value: string) => void;
 }) {
   return (
@@ -719,13 +839,65 @@ function SelectField({
         className="eflux-select mt-1 w-full rounded-md px-3 py-2 text-sm outline-none"
       >
         {options.map((o) => (
-          <option key={o} value={o}>
-            {o}
+          <option key={typeof o === "string" ? o : o.value} value={typeof o === "string" ? o : o.value}>
+            {typeof o === "string" ? o : o.label}
           </option>
         ))}
       </select>
     </label>
   );
+}
+
+function AlgorithmParamField({
+  param,
+  value,
+  onChange,
+}: {
+  param: AlgorithmParam;
+  value: AlgorithmParamValue | undefined;
+  onChange: (value: AlgorithmParamValue) => void;
+}) {
+  const inputValue = value ?? param.default ?? (isNumericParam(param) ? 0 : "");
+  if (isNumericParam(param)) {
+    const numericValue = typeof inputValue === "number" ? inputValue : Number(inputValue);
+    return (
+      <NumberField
+        label={param.help ? `${param.name} - ${param.help}` : param.name}
+        value={Number.isFinite(numericValue) ? numericValue : 0}
+        step={param.type === "int" || param.type === "integer" ? "1" : "0.01"}
+        min={param.min ?? undefined}
+        max={param.max ?? undefined}
+        onChange={onChange}
+      />
+    );
+  }
+  if (param.type === "bool" || param.type === "boolean") {
+    return (
+      <label className="flex items-center gap-2 text-xs font-medium text-[var(--text-muted)]">
+        <input
+          type="checkbox"
+          checked={Boolean(inputValue)}
+          onChange={(e) => onChange(e.target.checked)}
+          className="h-4 w-4 accent-[var(--accent)]"
+        />
+        {param.help ? `${param.name} - ${param.help}` : param.name}
+      </label>
+    );
+  }
+  return (
+    <label className="block text-xs font-medium text-[var(--text-muted)]">
+      {param.help ? `${param.name} - ${param.help}` : param.name}
+      <input
+        value={String(inputValue)}
+        onChange={(e) => onChange(e.target.value)}
+        className="eflux-input mt-1 w-full rounded-md px-3 py-2 text-sm outline-none"
+      />
+    </label>
+  );
+}
+
+function isNumericParam(param: AlgorithmParam): boolean {
+  return ["float", "number", "int", "integer"].includes(param.type);
 }
 
 function SliderField({
@@ -763,11 +935,15 @@ function NumberField({
   label,
   value,
   step,
+  min,
+  max,
   onChange,
 }: {
   label: string;
   value: number;
   step: string;
+  min?: number;
+  max?: number;
   onChange: (value: number) => void;
 }) {
   return (
@@ -776,6 +952,8 @@ function NumberField({
       <input
         type="number"
         step={step}
+        min={min}
+        max={max}
         value={value}
         onChange={(e) => onChange(Number(e.target.value))}
         className="eflux-input mt-1 w-full rounded-md px-3 py-2 text-sm outline-none"

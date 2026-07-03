@@ -12,6 +12,8 @@ from __future__ import annotations
 from eflux.agents.strategy.compiler import OrderProgramCompiler
 from eflux.agents.strategy.policy import ScriptedStrategyPolicy, StrategyPolicy
 from eflux.agents.strategy.schema import (
+    PRICE_MULT_MAX,
+    PRICE_MULT_MIN,
     CancelPolicy,
     CompiledProgram,
     OrderProgram,
@@ -21,6 +23,8 @@ from eflux.agents.strategy.schema import (
 )
 
 __all__ = [
+    "PRICE_MULT_MAX",
+    "PRICE_MULT_MIN",
     "CancelPolicy",
     "CompiledProgram",
     "OrderProgram",

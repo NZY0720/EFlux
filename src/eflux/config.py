@@ -118,6 +118,12 @@ class Settings(BaseSettings):
     # If set, live-updated online policy weights are saved here (one file per VPP) on
     # shutdown, so a session resumes from where learning left off. Empty disables it.
     online_learning_save_dir: str = ""
+    # PPO structured-action encoding for fresh online policies. Checkpoints still infer
+    # their own encoding from weight shapes so legacy V1 files load unchanged.
+    ppo_encoding_version: int = 2
+    # Warm-start checkpoint used for API-provisioned managed hybrid/PPO agents. Missing
+    # files already fall back to a fresh online policy with a warning in the executor builder.
+    managed_ppo_checkpoint: str = "checkpoints/bc_primitive_p2p.pt"
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

@@ -31,6 +31,9 @@ from eflux.agents.ppo.online_ppo import (
 )
 from eflux.agents.ppo.primitive_encoding import (
     ACTION_DIM,
+    ACTION_DIM_V2,
+    ENCODING_V1,
+    ENCODING_V2,
     N_MODES,
     OBS_DIM,
     PRICE_REF,
@@ -87,6 +90,32 @@ def test_load_warm_start_autodetects_bc_and_resumed(tmp_path):
     resumed = load_warm_start(ac_path)
     for k, v in net.state_dict().items():
         assert torch.allclose(resumed.state_dict()[k], v)
+
+
+def test_v1_warm_started_policy_never_sets_price_target_mult(tmp_path):
+    bc_path = tmp_path / "bc_v1.pt"
+    torch.save(BCNet(encoding_version=ENCODING_V1).state_dict(), bc_path)
+    policy = build_online_policy(str(bc_path), learning=False)
+    env = VPPPrimitiveEnv({"seed": 8})
+    env.reset(seed=8)
+    action = policy.select_action(*_ctx_val(env))
+    assert policy.encoding_version == ENCODING_V1
+    assert action.price_target_mult is None
+
+
+def test_reload_weights_skips_version_mismatch(tmp_path, caplog):
+    live = build_online_policy(learning=False, encoding_version=ENCODING_V1)
+    before = {k: v.clone() for k, v in live.state_dict().items()}
+    ckpt = tmp_path / "bc_v2.pt"
+    torch.save(BCNet(encoding_version=ENCODING_V2).state_dict(), ckpt)
+
+    with caplog.at_level("WARNING"):
+        live.reload_weights(str(ckpt))
+
+    assert "hot-reload skipped" in caplog.text
+    assert live.learner.net.actor_mean.out_features != ACTION_DIM_V2
+    for k, v in live.state_dict().items():
+        assert torch.allclose(v, before[k])
 
 
 # -- M2: buffer + GAE --------------------------------------------------------------------

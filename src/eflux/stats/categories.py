@@ -12,13 +12,17 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from eflux.simulator.runner import SimulatorVPP
 
 
+def is_llm_vpp(vpp: SimulatorVPP) -> bool:
+    return vpp.is_my_vpp and (getattr(vpp, "algorithm", None) or "hybrid") == "hybrid"
+
+
 def agent_category(vpp: SimulatorVPP) -> str:
     """Coarse merit-order bucket for a built-in VPP, derived from its endowment.
 
     Checked in merit-order priority: a dedicated gas peaker or wind farm is
     classified by its generator even if it also carries a small battery.
     """
-    if vpp.is_my_vpp:
+    if is_llm_vpp(vpp):
         return "llm"
     p = vpp.params
     if p.gas_kw_max > 0:

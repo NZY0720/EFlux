@@ -37,6 +37,7 @@ def run_training(
     market_mode: str = "p2p",
     start_date: date | None = None,
     end_date: date | None = None,
+    encoding_version: int = 1,
 ) -> dict:
     """Train a BC warm-start checkpoint and save it to `out_path`. Returns a metrics dict.
     Importable so the renew endpoint can run it in a background thread.
@@ -59,7 +60,7 @@ def run_training(
     from eflux.agents.ppo.primitive_encoding import price_ref_scale, set_price_ref_scale
     from eflux.agents.strategy.policy import ScriptedStrategyPolicy
 
-    env_config: dict = {"market_mode": market_mode}
+    env_config: dict = {"market_mode": market_mode, "encoding_version": encoding_version}
     data_window = None
     if real_data:
         from eflux.agents.ppo.training_data import load_real_market_data
@@ -84,23 +85,36 @@ def run_training(
 
     log.info("Collecting demonstrations (%d episodes, seed=%d, real_data=%s)…", episodes, seed, real_data)
     obs, acts = collect_demonstrations(
-        ScriptedStrategyPolicy(), n_episodes=episodes, seed=seed, env_config=env_config
+        ScriptedStrategyPolicy(),
+        n_episodes=episodes,
+        seed=seed,
+        env_config=env_config,
+        encoding_version=encoding_version,
     )
 
     log.info("Behavior-cloning for %d epochs on %d samples…", epochs, len(obs))
-    net = train_bc(obs, acts, epochs=epochs, seed=seed)
+    net = train_bc(obs, acts, epochs=epochs, seed=seed, encoding_version=encoding_version)
 
     metrics = {
         "samples": len(obs),
         "mode_accuracy": round(mode_accuracy(net, obs, acts), 4),
         "trade_mode_accuracy": round(trade_mode_accuracy(net, obs, acts), 4),
-        "cloned_reward": round(mean_episode_reward(BCPolicy(net), seed=seed, env_config=env_config), 3),
-        "random_reward": round(mean_random_reward(seed=seed, env_config=env_config), 3),
+        "cloned_reward": round(
+            mean_episode_reward(
+                BCPolicy(net, encoding_version=encoding_version),
+                seed=seed,
+                env_config=env_config,
+                encoding_version=encoding_version,
+            ),
+            3,
+        ),
+        "random_reward": round(mean_random_reward(seed=seed, env_config=env_config, encoding_version=encoding_version), 3),
         "real_data": real_data,
         "days": days if real_data else None,
         "data_window": data_window,
         "market_mode": market_mode,
         "price_ref_scale": round(price_ref_scale(), 4),
+        "encoding_version": encoding_version,
         "out": out_path,
     }
     log.info("BC mode accuracy: %.3f (trade-only %.3f)", metrics["mode_accuracy"], metrics["trade_mode_accuracy"])
@@ -108,7 +122,7 @@ def run_training(
 
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    save_bc(net, str(out), market_mode=market_mode)
+    save_bc(net, str(out), market_mode=market_mode, encoding_version=encoding_version)
     log.info("Saved checkpoint to %s", out)
     return metrics
 
@@ -120,6 +134,7 @@ def main() -> int:
     p.add_argument("--episodes", type=int, default=40, help="demonstration episodes")
     p.add_argument("--epochs", type=int, default=300, help="behavior-cloning epochs")
     p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--encoding-version", type=int, choices=(1, 2), default=1)
     p.add_argument(
         "--market-mode",
         choices=("p2p", "realprice"),
@@ -141,6 +156,7 @@ def main() -> int:
             epochs=args.epochs,
             seed=args.seed,
             market_mode=args.market_mode,
+            encoding_version=args.encoding_version,
         )
     except ImportError as e:
         print(f"PPO training requires the 'ai' (+ 'data' for --real-data) extras: {e}", file=sys.stderr)

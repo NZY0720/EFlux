@@ -10,9 +10,11 @@ from __future__ import annotations
 import pytest
 from sqlalchemy import select
 
+from eflux.agents.hybrid import HybridPolicyAgent
+from eflux.agents.reflective.pool import SharedLLM
+from eflux.agents.zip_agent import ZIPAgent
 from eflux.api.main import _rehydrate_managed_vpps
 from eflux.api.routers import vpps as vpps_router
-from eflux.agents.reflective.pool import SharedLLM
 from eflux.bridge import InMemoryBus
 from eflux.db.models import VPP
 from eflux.simulator.runner import Simulator
@@ -84,6 +86,63 @@ async def test_managed_agent_persists_across_restart_and_deletes(client):
     fresh2 = Simulator(bus=InMemoryBus())
     await _rehydrate_managed_vpps(fresh2)
     assert fresh2.my_managed_vpps(user_id) == []
+
+
+@pytest.mark.asyncio
+async def test_zip_managed_agent_persists_algorithm_across_restart(client):
+    sess, user_id = await _login(client)
+    auth = {"Authorization": f"Bearer {sess}"}
+
+    r = await client.post(
+        "/vpps/managed",
+        headers=auth,
+        json={
+            "name": "persistent-zip",
+            "algorithm": "zip",
+            "params": {"pv_kw_peak": 3.0, "battery_kwh": 8.0},
+            "agent_params": {"beta": 0.25},
+        },
+    )
+    assert r.status_code == 201, r.text
+    managed_id = r.json()["id"]
+
+    fresh = Simulator(bus=InMemoryBus())
+    await _rehydrate_managed_vpps(fresh)
+    mine = fresh.my_managed_vpps(user_id)
+    assert [v.name for v in mine] == ["persistent-zip"]
+    assert mine[0].managed_def_id == managed_id
+    assert mine[0].algorithm == "zip"
+    assert isinstance(mine[0].agent, ZIPAgent)
+
+
+@pytest.mark.asyncio
+async def test_legacy_managed_config_without_algorithm_rehydrates_as_hybrid(client, db_session):
+    sess, user_id = await _login(client)
+    auth = {"Authorization": f"Bearer {sess}"}
+    await client.get("/vpps/managed", headers=auth)
+
+    row = VPP(
+        owner_id=user_id,
+        name="legacy-hybrid",
+        params={"pv_kw_peak": 2.0, "battery_kwh": 5.0},
+        is_external=True,
+        is_managed=True,
+        managed_config={
+            "persona": None,
+            "agent_params": {"demand_beta": 0.2},
+            "seed": 12,
+            "model": None,
+        },
+    )
+    db_session.add(row)
+    await db_session.commit()
+
+    fresh = Simulator(bus=InMemoryBus())
+    await _rehydrate_managed_vpps(fresh)
+    mine = fresh.my_managed_vpps(user_id)
+    assert [v.name for v in mine] == ["legacy-hybrid"]
+    assert mine[0].algorithm == "hybrid"
+    assert isinstance(mine[0].agent, HybridPolicyAgent)
 
 
 @pytest.mark.asyncio

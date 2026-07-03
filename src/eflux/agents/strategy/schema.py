@@ -19,6 +19,9 @@ from enum import StrEnum
 
 from eflux.agents.base import CancelIntent, OrderIntent, ReplaceIntent
 
+PRICE_MULT_MIN = 0.25
+PRICE_MULT_MAX = 4.0
+
 
 class StrategyMode(StrEnum):
     """The initial structured action library (design note §4). A str-Enum so it
@@ -51,6 +54,8 @@ class StrategyAction:
     # Extra price nudge in basis points of the order's base price (sells lower,
     # buys higher → improves fill odds). Applied after aggressiveness.
     price_offset_bps: float = 0.0
+    # Multiplies this action's valuation anchor. None preserves legacy fair-price anchoring.
+    price_target_mult: float | None = None
     # Ladder primitives: per-level price step as a fraction of the base price.
     ladder_slope: float = 0.0
     ladder_levels: int = 1

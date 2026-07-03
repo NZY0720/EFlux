@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, status
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import select
 
 from eflux.agents.reflective.chat import clean_chat_line
@@ -18,6 +19,8 @@ from eflux.db.models import VPP
 from eflux.market.units import internal_cash_to_usd
 from eflux.simulator.agent_spec import validate_vpp_params
 from eflux.simulator.scenarios import (
+    MANAGED_ALGORITHMS,
+    MANAGED_BASELINE_FACTORIES,
     apply_chat_prefs,
     apply_external_guidance,
     provision_managed_vpp,
@@ -56,6 +59,7 @@ class ManagedVPPOut(BaseModel):
     params: VPPParamsPayload
     is_active: bool
     is_external: bool
+    algorithm: str = "hybrid"
     agent_kind: str
     strategy: str
     llm_live: bool
@@ -99,7 +103,9 @@ class ReflectionEntryOut(BaseModel):
     # HybridPolicyAgent + LLMStrategist guidance fields.
     preferred_modes: list[str] | None = None
     avoid_modes: list[str] | None = None
+    mode_pin: str | None = None
     risk_budget: float | None = None
+    price_bias_bps: float | None = None
     soc_target: float | None = None
     execution_style: str | None = None
     rationale: str = ""
@@ -202,6 +208,7 @@ def _managed_vpp_out(vpp) -> ManagedVPPOut:
         params=vpp.params.to_dict(),
         is_active=True,
         is_external=False,
+        algorithm=getattr(vpp, "algorithm", None) or "hybrid",
         agent_kind=vpp.agent.__class__.__name__,
         strategy=vpp.strategy,
         llm_live=vpp.llm_live,
@@ -286,18 +293,191 @@ def _validate_model(model: str | None) -> None:
         )
 
 
+class AlgorithmParamOut(BaseModel):
+    name: str
+    type: str
+    default: object = None
+    min: float | None = None
+    max: float | None = None
+    help: str
+
+
+class AlgorithmOut(BaseModel):
+    id: str
+    label: str
+    description: str
+    uses_llm: bool
+    supports_online_learning: bool
+    params: list[AlgorithmParamOut]
+
+
+class AlgorithmsOut(BaseModel):
+    algorithms: list[AlgorithmOut]
+    default: str
+
+
+_ALGORITHM_ROSTER = {
+    "hybrid": {
+        "label": "Hybrid LLM + PPO",
+        "description": "LLM strategist with an online PPO tactical executor.",
+        "uses_llm": True,
+        "supports_online_learning": True,
+        "factory": None,
+        "params": {
+            "demand_beta": ("float", 0.0, 0.0, 5.0, "Scarcity sensitivity for buy bids."),
+            "price_cap_mult": ("float", 1.5, 1.0, 10.0, "Maximum scarcity bid multiple."),
+            "fallback_policy": (
+                "enum",
+                "hold",
+                None,
+                None,
+                "Fallback after risk veto: hold, noop, or truthful.",
+            ),
+        },
+    },
+    "ppo": {
+        "label": "PPO",
+        "description": "Structured-policy StrategyAgent with no LLM strategist.",
+        "uses_llm": False,
+        "supports_online_learning": True,
+        "factory": None,
+        "params": {
+            "demand_beta": ("float", 0.0, 0.0, 5.0, "Scarcity sensitivity for buy bids."),
+            "price_cap_mult": ("float", 1.5, 1.0, 10.0, "Maximum scarcity bid multiple."),
+        },
+    },
+    "truthful": {
+        "label": "Truthful",
+        "description": "Cost/value baseline that quotes its valuation directly.",
+        "uses_llm": False,
+        "supports_online_learning": False,
+        "factory": MANAGED_BASELINE_FACTORIES["truthful"],
+        "params": {
+            "demand_beta": ("float", 0.0, 0.0, 5.0, "Scarcity sensitivity for buy bids."),
+            "soc_high": ("float", 0.45, 0.0, 1.0, "Battery SOC threshold for sell quotes."),
+            "soc_low": ("float", 0.25, 0.0, 1.0, "Battery SOC threshold for buy quotes."),
+            "price_cap_mult": ("float", 1.5, 1.0, 10.0, "Maximum scarcity bid multiple."),
+        },
+    },
+    "zi": {
+        "label": "Zero Intelligence",
+        "description": "Random rational quotes around the valuation reference.",
+        "uses_llm": False,
+        "supports_online_learning": False,
+        "factory": MANAGED_BASELINE_FACTORIES["zi"],
+        "params": {
+            "spread_frac": ("float", 0.5, 0.0, 2.0, "Half-width of the random price band."),
+        },
+    },
+    "zip": {
+        "label": "ZIP",
+        "description": "Zero-Intelligence Plus adaptive-margin baseline.",
+        "uses_llm": False,
+        "supports_online_learning": False,
+        "factory": MANAGED_BASELINE_FACTORIES["zip"],
+        "params": {
+            "beta": ("float", 0.3, 0.0, 1.0, "Margin learning rate."),
+            "momentum": ("float", 0.05, 0.0, 1.0, "Margin update momentum."),
+            "rel_perturb": ("float", 0.05, 0.0, 1.0, "Relative target perturbation."),
+            "abs_perturb": ("float", 0.5, 0.0, None, "Absolute target perturbation."),
+            "init_margin": ("float", 0.05, 0.0, 1.0, "Initial profit margin."),
+            "max_margin": ("float", 0.5, 0.0, 5.0, "Maximum profit margin."),
+        },
+    },
+    "gd": {
+        "label": "GD",
+        "description": "Gjerstad-Dickhaut belief-based baseline.",
+        "uses_llm": False,
+        "supports_online_learning": False,
+        "factory": MANAGED_BASELINE_FACTORIES["gd"],
+        "params": {},
+    },
+    "aa": {
+        "label": "AA",
+        "description": "Adaptive Aggressiveness baseline.",
+        "uses_llm": False,
+        "supports_online_learning": False,
+        "factory": MANAGED_BASELINE_FACTORIES["aa"],
+        "params": {
+            "pstar_alpha": ("float", 0.2, 0.0, 1.0, "EWMA weight for equilibrium price."),
+            "learn_rate": ("float", 0.1, 0.0, 1.0, "Aggressiveness learning rate."),
+            "passive_spread": ("float", 0.1, 0.0, 1.0, "Passive offset around p-star."),
+        },
+    },
+}
+
+
+def _algorithm_factory_fields(algorithm: str) -> set[str]:
+    if algorithm == "hybrid":
+        from eflux.agents.hybrid import HybridPolicyAgent
+
+        factory = HybridPolicyAgent
+    elif algorithm == "ppo":
+        from eflux.agents.hybrid import StrategyAgent
+
+        factory = StrategyAgent
+    else:
+        factory = MANAGED_BASELINE_FACTORIES[algorithm]
+    return {f for f in factory.__dataclass_fields__ if not f.startswith("_")}
+
+
+def _algorithm_out(algorithm: str) -> AlgorithmOut:
+    entry = _ALGORITHM_ROSTER[algorithm]
+    fields = _algorithm_factory_fields(algorithm)
+    params: list[AlgorithmParamOut] = []
+    for name, (typ, default, min_v, max_v, help_text) in entry["params"].items():
+        if name not in fields:
+            raise RuntimeError(f"{algorithm}: algorithm param {name!r} is not a dataclass field")
+        params.append(
+            AlgorithmParamOut(
+                name=name,
+                type=typ,
+                default=default,
+                min=min_v,
+                max=max_v,
+                help=help_text,
+            )
+        )
+    return AlgorithmOut(
+        id=algorithm,
+        label=entry["label"],
+        description=entry["description"],
+        uses_llm=entry["uses_llm"],
+        supports_online_learning=entry["supports_online_learning"],
+        params=params,
+    )
+
+
+@router.get("/algorithms", response_model=AlgorithmsOut)
+async def list_algorithms(user: CurrentUser) -> AlgorithmsOut:
+    """Managed-agent algorithms available at creation time."""
+
+    return AlgorithmsOut(
+        algorithms=[_algorithm_out(algorithm) for algorithm in MANAGED_ALGORITHMS],
+        default="hybrid",
+    )
+
+
 MAX_MANAGED_VPPS_PER_USER = 5
 
 
 class ManagedVPPCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     params: dict[str, object] = Field(default_factory=dict)
+    algorithm: Literal["hybrid", "ppo", "truthful", "zi", "zip", "gd", "aa"] = "hybrid"
+    online_learning: bool = True
     # Optional LLM strategy brief (the Tier-0 persona) and tactical agent_params
     # (e.g. demand_beta, price_cap_mult) — validated against the HybridPolicyAgent.
     persona: str | None = Field(default=None, max_length=600)
     agent_params: dict[str, object] = Field(default_factory=dict)
     seed: int | None = None
     model: str | None = None
+
+    @model_validator(mode="after")
+    def _check_hybrid_only_fields(self) -> ManagedVPPCreate:
+        if self.algorithm != "hybrid" and (self.persona is not None or self.model is not None):
+            raise ValueError("persona and model are only supported for algorithm='hybrid'")
+        return self
 
 
 class ManagedVPPUpdate(BaseModel):
@@ -349,7 +529,16 @@ async def create_managed_vpp(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             [{"loc": ["body", "params"], "msg": str(e), "type": "value_error"}],
         ) from e
-    _validate_model(payload.model)
+    if payload.algorithm == "hybrid":
+        _validate_model(payload.model)
+    try:
+        validate_managed_agent_params(payload.name, payload.agent_params, payload.algorithm)
+    except (ValueError, ValidationError) as e:
+        msg = e.errors()[0]["msg"] if isinstance(e, ValidationError) else str(e)
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            [{"loc": ["body", "agent_params"], "msg": msg, "type": "value_error"}],
+        ) from e
     # Drop any orphaned definition with this name (its agent isn't live — e.g. it failed to
     # rehydrate) so the unique (owner, name) row is free to recreate.
     orphan = (
@@ -374,6 +563,8 @@ async def create_managed_vpp(
             "agent_params": dict(payload.agent_params),
             "seed": payload.seed,
             "model": payload.model,
+            "algorithm": payload.algorithm,
+            "online_learning": payload.online_learning,
         },
     )
     session.add(row)
@@ -395,6 +586,8 @@ async def create_managed_vpp(
                 seed=payload.seed,
                 model=payload.model,
                 managed_def_id=row.id,
+                algorithm=payload.algorithm,
+                online_learning=payload.online_learning,
             )
     except (ValueError, ValidationError) as e:
         msg = e.errors()[0]["msg"] if isinstance(e, ValidationError) else str(e)
@@ -428,6 +621,25 @@ async def update_managed_vpp(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "managed agent not found")
 
     cfg = dict(row.managed_config or {})
+    algorithm = cfg.get("algorithm") or "hybrid"
+    if algorithm not in MANAGED_ALGORITHMS:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            [{"loc": ["body"], "msg": f"unknown stored algorithm {algorithm!r}", "type": "value_error"}],
+        )
+    persona_change = "persona" in payload.model_fields_set and payload.persona is not None
+    model_change = "model" in payload.model_fields_set and payload.model is not None
+    if algorithm != "hybrid" and (persona_change or model_change):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            [
+                {
+                    "loc": ["body"],
+                    "msg": "persona and model changes are only supported for algorithm='hybrid'",
+                    "type": "value_error",
+                }
+            ],
+        )
     new_params = {**row.params, **payload.params} if payload.params else dict(row.params)
     new_persona = cfg.get("persona") if payload.persona is None else (payload.persona or None)
     new_agent_params = (
@@ -437,12 +649,13 @@ async def update_managed_vpp(
     )
     new_seed = cfg.get("seed")
     new_model = cfg.get("model") if payload.model is None else payload.model
-    _validate_model(new_model)
+    if algorithm == "hybrid":
+        _validate_model(new_model)
 
     # Validate everything BEFORE touching the live agent, so a bad patch can't strand it.
     try:
         parsed = validate_vpp_params(new_params)
-        validate_managed_agent_params(row.name, new_agent_params)
+        validate_managed_agent_params(row.name, new_agent_params, algorithm)
     except ValidationError as e:
         detail = [
             {"loc": ["body", *err["loc"]], "msg": err["msg"], "type": err["type"]}
@@ -465,6 +678,8 @@ async def update_managed_vpp(
         "agent_params": new_agent_params,
         "seed": new_seed,
         "model": new_model,
+        "algorithm": algorithm,
+        "online_learning": cfg.get("online_learning", True),
     }
 
     # Re-provision the live agent, carrying over the PnL scoreboard.
@@ -492,6 +707,8 @@ async def update_managed_vpp(
             seed=new_seed,
             model=new_model,
             managed_def_id=managed_id,
+            algorithm=algorithm,
+            online_learning=cfg.get("online_learning", True),
         )
         if carry is not None:
             (
@@ -504,7 +721,7 @@ async def update_managed_vpp(
         # The fresh agent instance must inherit the owner's standing state: external
         # steering (Tier A3) and chatroom presence both survive a preferences patch.
         guidance = cfg.get("external_guidance")
-        if cfg.get("guidance_mode") == "external" and isinstance(guidance, dict):
+        if algorithm == "hybrid" and cfg.get("guidance_mode") == "external" and isinstance(guidance, dict):
             apply_external_guidance(vpp, guidance, market_mode=sim.market_mode)
         apply_chat_prefs(vpp, cfg.get("chat"))
     return _managed_vpp_out(vpp)
@@ -590,7 +807,9 @@ class GuidanceIn(BaseModel):
 
     preferred_modes: list[str] = Field(default_factory=list, max_length=8)
     avoid_modes: list[str] = Field(default_factory=list, max_length=8)
+    mode_pin: str | None = None
     risk_budget: float = 1.0
+    price_bias_bps: float = 0.0
     soc_target: float = 0.5
     execution_style: str = Field(default="", max_length=200)
     lesson: str = Field(default="", max_length=200)
@@ -645,6 +864,11 @@ async def put_guidance(
     vpp = next((v for v in sim.my_managed_vpps(user.id) if v.managed_def_id == managed_id), None)
     if vpp is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "managed VPP not found")
+    if (getattr(vpp, "algorithm", None) or "hybrid") != "hybrid":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "external guidance is only supported for managed hybrid agents",
+        )
     row = await _owned_managed_row(session, user.id, managed_id)
 
     async with sim._lock:
@@ -675,6 +899,11 @@ async def release_guidance(
     vpp = next((v for v in sim.my_managed_vpps(user.id) if v.managed_def_id == managed_id), None)
     if vpp is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "managed VPP not found")
+    if (getattr(vpp, "algorithm", None) or "hybrid") != "hybrid":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "external guidance is only supported for managed hybrid agents",
+        )
     row = await _owned_managed_row(session, user.id, managed_id)
 
     async with sim._lock:

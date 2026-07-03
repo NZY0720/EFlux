@@ -111,6 +111,7 @@ class SimulatorVPP:
     chat_style: str | None = None
     chat_color: str | None = None
     chat_avatar: str | None = None
+    algorithm: str | None = None
     rng: random.Random = field(default_factory=random.Random)
     open_order_ids: list[int] = field(default_factory=list)
     recent_trades: list[dict] = field(default_factory=list)
@@ -168,6 +169,9 @@ class Simulator:
         # benchmark's invalid-action metric must be attributable to one candidate).
         self.risk_rejections = 0
         self.risk_rejections_by_vpp: dict[int, int] = {}
+        self.fallback_invocations_by_vpp: dict[int, int] = {}
+        self.veto_holds_by_vpp: dict[int, int] = {}
+        self.decide_ticks_by_vpp: dict[int, int] = {}
         # tick_h of the tick currently being processed. Trade settlement reads this
         # so battery charge/discharge use the actual tick duration, not a global
         # default — they diverge whenever the loop is stepped at a non-default
@@ -228,6 +232,7 @@ class Simulator:
         mirror_of: str | None = None,
         llm_live: bool = False,
         llm_status: str = "",
+        algorithm: str | None = None,
     ) -> SimulatorVPP:
         vpp_id = self._next_vpp_id
         self._next_vpp_id -= 1
@@ -251,6 +256,7 @@ class Simulator:
             mirror_of=mirror_of,
             llm_live=llm_live,
             llm_status=llm_status,
+            algorithm=algorithm,
             state=VPPState(sim_ts=self.clock.now_sim(), soc_kwh=params.battery_kwh * 0.5),
             pv=PV(
                 kw_peak=params.pv_kw_peak,
@@ -1022,7 +1028,7 @@ class Simulator:
         design: it runs between awaits on the event loop, so it reads a tick-coherent
         view of every agent without taking self._lock."""
         from eflux.market.units import internal_cash_to_usd
-        from eflux.stats.categories import agent_category
+        from eflux.stats.categories import agent_category, is_llm_vpp
 
         wall_ts = datetime.now(UTC)
         rows: list[dict] = []
@@ -1039,7 +1045,7 @@ class Simulator:
                     "owner_id": vpp.owner_id,
                     "strategy": vpp.strategy,
                     "category": agent_category(vpp),
-                    "is_llm": vpp.is_my_vpp,
+                    "is_llm": is_llm_vpp(vpp),
                     "llm_model": getattr(client, "model", None),
                     "tick_no": tick_no,
                     "sim_ts": sim_ts,
@@ -1208,6 +1214,7 @@ class Simulator:
             open_orders_net_kwh=open_orders_net_kwh,
             risk_rejections_total=float(self.risk_rejections_by_vpp.get(vpp.vpp_id, 0)),
         )
+        self.decide_ticks_by_vpp[vpp.vpp_id] = self.decide_ticks_by_vpp.get(vpp.vpp_id, 0) + 1
         intents = vpp.agent.decide(ctx)
         self._gate_and_submit(vpp, ctx, intents, sim_ts, open_order_count)
 
@@ -1221,8 +1228,8 @@ class Simulator:
     ) -> None:
         """Run the VPP's order batch through the RiskGate, then submit what survives.
         If every order is vetoed and the agent exposes a `risk_fallback` policy, the
-        fallback's (re-gated) action is submitted instead — the safe-action path for
-        a learned policy that produced an out-of-envelope batch."""
+        fallback's (re-gated) action is submitted instead; otherwise the agent stands
+        down for the tick and the hold is counted."""
         decision = self.risk_gate.validate(
             intents,
             vpp_id=vpp.vpp_id,
@@ -1235,6 +1242,9 @@ class Simulator:
         if decision.requires_fallback:
             fallback = getattr(vpp.agent, "risk_fallback", None)
             if fallback is not None:
+                self.fallback_invocations_by_vpp[vpp.vpp_id] = (
+                    self.fallback_invocations_by_vpp.get(vpp.vpp_id, 0) + 1
+                )
                 decision = self.risk_gate.validate(
                     fallback.decide(ctx),
                     vpp_id=vpp.vpp_id,
@@ -1244,6 +1254,8 @@ class Simulator:
                     open_order_count=open_order_count,
                 )
                 self._record_rejections(vpp.vpp_id, len(decision.rejected))
+            else:
+                self.veto_holds_by_vpp[vpp.vpp_id] = self.veto_holds_by_vpp.get(vpp.vpp_id, 0) + 1
         for intent in decision.accepted:
             self._submit_intent(vpp, intent, sim_ts)
 

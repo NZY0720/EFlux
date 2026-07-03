@@ -19,7 +19,15 @@ import numpy as np
 import torch
 from torch import nn
 
-from eflux.agents.ppo.primitive_encoding import ACTION_DIM, OBS_DIM
+from eflux.agents.ppo.primitive_encoding import (
+    ACTION_DIM,
+    OBS_DIM,
+    encoding_version_for_action_dim,
+    infer_encoding_version,
+)
+from eflux.agents.ppo.primitive_encoding import (
+    action_dim as encoding_action_dim,
+)
 
 # Initial diagonal log-std (std ≈ 0.61). Modest exploration around a warm-started mean so
 # live learning departs from the baseline gradually rather than thrashing the book.
@@ -34,6 +42,8 @@ class ActorCriticNet(nn.Module):
 
     def __init__(self, obs_dim: int = OBS_DIM, action_dim: int = ACTION_DIM, hidden: int = 64) -> None:
         super().__init__()
+        self.action_dim = int(action_dim)
+        self.encoding_version = encoding_version_for_action_dim(self.action_dim)
         # Indices 0 and 2 line up with BCNet.net.0 / net.2 for a clean warm-start remap.
         self.trunk = nn.Sequential(
             nn.Linear(obs_dim, hidden),
@@ -41,9 +51,9 @@ class ActorCriticNet(nn.Module):
             nn.Linear(hidden, hidden),
             nn.Tanh(),
         )
-        self.actor_mean = nn.Linear(hidden, action_dim)  # warm-starts from BCNet.net.4
+        self.actor_mean = nn.Linear(hidden, self.action_dim)  # warm-starts from BCNet.net.4
         self.value = nn.Linear(hidden, 1)  # critic head — no BC counterpart, random init
-        self.log_std = nn.Parameter(torch.full((action_dim,), float(LOG_STD_INIT)))
+        self.log_std = nn.Parameter(torch.full((self.action_dim,), float(LOG_STD_INIT)))
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         h = self.trunk(x)
@@ -127,10 +137,13 @@ def load_warm_start(
     # checkpoints are a bare state-dict. Either way we only need the weights here — the scale
     # is restored by the entry points (training / scenario-load / eval), not the loader.
     state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
-    net = ActorCriticNet(obs_dim=obs_dim, action_dim=action_dim, hidden=hidden)
+    version = infer_encoding_version(state)
+    net = ActorCriticNet(obs_dim=obs_dim, action_dim=encoding_action_dim(version), hidden=hidden)
     if _is_bcnet_state(state):
         warm_start_from_bcnet(net, state)
     else:
         net.load_state_dict(state)
+    net.encoding_version = version
+    net.action_dim = encoding_action_dim(version)
     net.eval()
     return net

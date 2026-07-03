@@ -14,6 +14,8 @@ pytest.importorskip("gymnasium")
 
 
 from eflux.agents.ppo.primitive_encoding import (
+    ACTION_DIM_V2,
+    ENCODING_V2,
     N_MODES,
     OBS_DIM,
     decode_action,
@@ -48,6 +50,20 @@ def test_collect_demonstrations_shapes():
     assert obs.shape[0] == acts.shape[0] > 0
     assert obs.shape[1] == OBS_DIM
     assert acts.shape[1] == N_MODES + 4
+
+
+def test_bc_version_plumbing_uses_v2_width():
+    from eflux.agents.ppo.bc import BCNet, BCPolicy, collect_demonstrations, train_bc
+    from eflux.agents.strategy.policy import ScriptedStrategyPolicy
+
+    obs, acts = collect_demonstrations(
+        ScriptedStrategyPolicy(), n_episodes=1, seed=0, encoding_version=ENCODING_V2
+    )
+    assert acts.shape[1] == ACTION_DIM_V2
+    net = train_bc(obs, acts, epochs=1, seed=0, encoding_version=ENCODING_V2)
+    assert isinstance(net, BCNet)
+    assert net.net[-1].out_features == ACTION_DIM_V2
+    assert BCPolicy(net).encoding_version == ENCODING_V2
 
 
 def test_bc_clones_expert_trade_decisions():

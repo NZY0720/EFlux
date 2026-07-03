@@ -12,6 +12,13 @@ interface Props {
 
 const fmtSigned = (n: number, digits = 2) => `${n >= 0 ? "+" : ""}${n.toFixed(digits)}`;
 const pct = (n: number | null | undefined) => (n === null || n === undefined ? "n/a" : `${(n * 100).toFixed(0)}%`);
+const pctDash = (n: number | null | undefined) => (n === null || n === undefined ? "—" : `${(n * 100).toFixed(0)}%`);
+const bps = (n: number | null | undefined) => (n === null || n === undefined ? "—" : `${n >= 0 ? "+" : ""}${n.toFixed(0)} bps`);
+
+function fallbackPct(agent: MarketAgent): number | null {
+  if (agent.fallback_count === undefined && agent.veto_hold_count === undefined && agent.decide_ticks === undefined) return null;
+  return ((agent.fallback_count ?? 0) + (agent.veto_hold_count ?? 0)) / Math.max(1, agent.decide_ticks ?? 0);
+}
 
 function metaChips(meta: PpoMetaControl | null | undefined): Array<[string, string]> {
   if (!meta) return [];
@@ -78,6 +85,7 @@ export default function LlmPpoInfluencePanel({ agents }: Props) {
         const pnlDelta = Number(llm.pnl) - Number(mirror.pnl);
         const socDelta = llm.soc_frac - mirror.soc_frac;
         const tradeDelta = llm.trade_count - mirror.trade_count;
+        const fallbackRate = fallbackPct(llm);
         const chips = metaChips(reflection?.meta_control);
         return (
           <div key={mirror.id} className="eflux-inset rounded-lg p-2">
@@ -97,7 +105,16 @@ export default function LlmPpoInfluencePanel({ agents }: Props) {
               <Metric label="Trade delta" value={formatCompactSigned(tradeDelta)} good={tradeDelta >= 0} />
             </div>
 
+            <div className="mt-1 grid grid-cols-3 gap-1 text-[11px]">
+              <Metric label="Fallback %" value={pctDash(fallbackRate)} good={fallbackRate === null || fallbackRate <= 0.05} />
+              <Metric label="Guidance Δ" value={pctDash(llm.guidance_change_rate)} good={(llm.guidance_change_rate ?? 0) <= 0.5} />
+              <Metric label="Price dev" value={bps(llm.avg_price_dev_bps)} good={Math.abs(llm.avg_price_dev_bps ?? 0) <= 100} />
+            </div>
+
             <div className="mt-2 flex flex-wrap gap-1 text-[11px]">
+              {reflection?.mode_pin && (
+                <StatusPill tone="accent" className="py-0 text-[11px]">pinned: {reflection.mode_pin}</StatusPill>
+              )}
               {reflection?.preferred_modes?.slice(0, 3).map((m) => (
                 <StatusPill key={`p-${m}`} tone="success" className="py-0 text-[11px]">prefer {m}</StatusPill>
               ))}

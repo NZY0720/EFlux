@@ -429,6 +429,11 @@ Its new responsibilities are:
 4. **Fallback policy**  
    Produce a safe action when PPO is unavailable, invalid, or outside its operating envelope.
 
+Hybrid agents expose this as `fallback_policy`: the default is `hold`, which stands down
+when RiskGate vetoes the whole batch; `truthful` is an explicit opt-in for the legacy
+Truthful re-quote. Veto-holds are counted by the runner rather than silently traded
+through Truthful.
+
 An example signal is:
 
 ```python

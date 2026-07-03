@@ -29,7 +29,7 @@ from eflux.agents.zi import ZIAgent
 from eflux.agents.zip_agent import ZIPAgent
 from eflux.config import PROJECT_ROOT, get_settings
 from eflux.data.caiso_reference import caiso_reference_price
-from eflux.simulator.agent_spec import AgentSpec, validate_vpp_params
+from eflux.simulator.agent_spec import AgentSpec, ExecutorSpec, validate_vpp_params
 from eflux.simulator.runner import Simulator, SimulatorVPP
 from eflux.vpp.base import VPPParams
 
@@ -43,6 +43,15 @@ AGENT_FACTORIES: dict[str, type[BaseAgent]] = {
     "hybrid": HybridPolicyAgent,
     # Classical quantitative baselines (continuous double auction). Each reuses the
     # truthful valuation oracle for its private value and adds an adaptive bidding rule.
+    "zip": ZIPAgent,
+    "gd": GDAgent,
+    "aa": AAAgent,
+}
+
+MANAGED_ALGORITHMS = ("hybrid", "ppo", "truthful", "zi", "zip", "gd", "aa")
+MANAGED_BASELINE_FACTORIES: dict[str, type[BaseAgent]] = {
+    "truthful": TruthfulAgent,
+    "zi": ZIAgent,
     "zip": ZIPAgent,
     "gd": GDAgent,
     "aa": AAAgent,
@@ -123,6 +132,37 @@ def _build_executor(name: str, executor, *, seed: int = 0, auto_update: bool = T
             return None
 
     return None
+
+
+def _managed_executor_spec(*, online_learning: bool) -> ExecutorSpec:
+    checkpoint = get_settings().managed_ppo_checkpoint or None
+    return ExecutorSpec(
+        kind="ppo_online",
+        checkpoint=checkpoint,
+        online_learning=online_learning,
+    )
+
+
+def _managed_factory(algorithm: str) -> type[BaseAgent]:
+    if algorithm == "hybrid":
+        return HybridPolicyAgent
+    if algorithm == "ppo":
+        return StrategyAgent
+    try:
+        return MANAGED_BASELINE_FACTORIES[algorithm]
+    except KeyError as e:
+        raise ValueError(
+            f"unknown managed algorithm {algorithm!r}; choose from {list(MANAGED_ALGORITHMS)}"
+        ) from e
+
+
+def _managed_agent_params(name: str, agent_params: dict | None, algorithm: str) -> dict:
+    factory = _managed_factory(algorithm)
+    params = dict(agent_params or {})
+    _validate_agent_params(name, params, factory)
+    if "price_ref" not in params and "price_ref" in factory.__dataclass_fields__:
+        params["price_ref"] = _ppo_price_ref()
+    return params
 
 
 def _real_pv_available() -> bool:
@@ -347,6 +387,7 @@ def _add_hybrid_vpp(
         owner_id=owner_id,
         llm_live=shared.live,
         llm_status=shared.status,
+        algorithm="hybrid",
     )
     log.info(
         "Hybrid LLM VPP %s loaded (interval=%d ticks, offset=%d, live_llm=%s)",
@@ -369,6 +410,8 @@ def provision_managed_vpp(
     seed: int | None = None,
     model: str | None = None,
     managed_def_id: int | None = None,
+    algorithm: str = "hybrid",
+    online_learning: bool = True,
 ) -> SimulatorVPP:
     """Provision a cloud-hosted managed (LLM-steered HybridPolicyAgent) VPP for an external
     user at runtime — the same construction and validation as the roster's hybrid entries,
@@ -378,39 +421,94 @@ def provision_managed_vpp(
     Raises ``ValueError`` / pydantic ``ValidationError`` on invalid params or agent_params
     (the API layer maps these to HTTP 422). Nothing is added to the simulator on failure.
     """
+    algorithm = algorithm or "hybrid"
+    if algorithm not in MANAGED_ALGORITHMS:
+        raise ValueError(
+            f"unknown managed algorithm {algorithm!r}; choose from {list(MANAGED_ALGORITHMS)}"
+        )
+    if algorithm != "hybrid" and (persona_prompt is not None or model is not None):
+        raise ValueError("persona/model are only supported for managed hybrid agents")
+
     if sim.shared_llm is None:
         # The scenario loader sets this at startup; build on demand as a defensive fallback.
         sim.shared_llm = SharedLLM.from_settings(get_settings())
+
+    if algorithm == "hybrid":
+        spec = AgentSpec(
+            name=name,
+            agent="hybrid",
+            seed=seed,
+            params=dict(params),
+            agent_params=dict(agent_params or {}),
+            persona={"name": name, "prompt": persona_prompt} if persona_prompt else None,
+            executor=_managed_executor_spec(online_learning=online_learning),
+        )
+        # Stagger this agent's strategist refresh against the managed agents already running so
+        # the single shared LLM endpoint is not hit concurrently (the gate also enforces this).
+        existing = len(sim.my_managed_vpps())
+        vpp = _add_hybrid_vpp(
+            sim,
+            spec,
+            shared=sim.shared_llm,
+            use_real_weather=_real_pv_available(),
+            default_seed=seed if seed is not None else 42,
+            offset_index=existing,
+            n_managed=existing + 1,
+            owner_id=owner_id,
+            model=model,
+        )
+        vpp.managed_def_id = managed_def_id
+        vpp.algorithm = "hybrid"
+        return vpp
+
     spec = AgentSpec(
         name=name,
-        agent="hybrid",
+        agent="strategy" if algorithm == "ppo" else algorithm,
         seed=seed,
         params=dict(params),
         agent_params=dict(agent_params or {}),
-        persona={"name": name, "prompt": persona_prompt} if persona_prompt else None,
+        executor=_managed_executor_spec(online_learning=online_learning)
+        if algorithm == "ppo"
+        else None,
     )
-    # Stagger this agent's strategist refresh against the managed agents already running so
-    # the single shared LLM endpoint is not hit concurrently (the gate also enforces this).
-    existing = len(sim.my_managed_vpps())
-    vpp = _add_hybrid_vpp(
-        sim,
-        spec,
-        shared=sim.shared_llm,
-        use_real_weather=_real_pv_available(),
-        default_seed=seed if seed is not None else 42,
-        offset_index=existing,
-        n_managed=existing + 1,
+    agent_seed = spec.seed if spec.seed is not None else 42
+    if algorithm == "ppo":
+        params_for_agent = _managed_agent_params(name, agent_params, "ppo")
+        params_for_agent["policy"] = _build_executor(
+            name, spec.executor, seed=agent_seed, auto_update=True
+        )
+        agent = StrategyAgent(**params_for_agent)
+        strategy = "StrategyAgent (PPO managed)"
+        llm_status = "PPO executor (no LLM)"
+    else:
+        factory = MANAGED_BASELINE_FACTORIES[algorithm]
+        params_for_agent = _managed_agent_params(name, agent_params, algorithm)
+        agent = factory(**params_for_agent)
+        strategy = f"{factory.__name__} (managed)"
+        llm_status = "Baseline agent (no LLM)"
+
+    vpp = sim.add_builtin_vpp(
+        name=spec.name,
+        params=_build_params(spec, _real_pv_available()),
+        agent=agent,
+        seed=agent_seed,
+        strategy=strategy,
+        is_my_vpp=True,
         owner_id=owner_id,
-        model=model,
+        llm_live=False,
+        llm_status=llm_status,
+        algorithm=algorithm,
     )
     vpp.managed_def_id = managed_def_id
     return vpp
 
 
-def validate_managed_agent_params(name: str, agent_params: dict | None) -> None:
-    """Raise ValueError if agent_params aren't accepted by HybridPolicyAgent — the same check
+def validate_managed_agent_params(
+    name: str, agent_params: dict | None, algorithm: str = "hybrid"
+) -> None:
+    """Raise ValueError if agent_params aren't accepted by the managed algorithm — the same check
     provisioning runs, exposed so callers can pre-validate before mutating a live agent."""
-    _validate_agent_params(name, dict(agent_params or {}), HybridPolicyAgent)
+    _managed_agent_params(name, agent_params, algorithm or "hybrid")
 
 
 def apply_chat_prefs(vpp: SimulatorVPP, chat: dict | None) -> None:

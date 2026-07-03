@@ -44,7 +44,9 @@ async def test_put_guidance_clamps_flips_source_and_feeds_reflections(client):
         headers=auth,
         json={
             "preferred_modes": ["ladder_sell", "not-a-mode"],
-            "risk_budget": 5.0,  # server clamps to 1.0
+            "mode_pin": "cover_deficit",
+            "risk_budget": 5.0,  # server clamps to 1.5
+            "price_bias_bps": 500.0,
             "soc_target": 0.3,
             "execution_style": "sell the rich tape",
         },
@@ -53,7 +55,9 @@ async def test_put_guidance_clamps_flips_source_and_feeds_reflections(client):
     body = r.json()
     assert body["guidance_source"] == "external"
     applied = body["applied"]
-    assert applied["risk_budget"] == 1.0  # clamped echo, not the raw 5.0
+    assert applied["risk_budget"] == 1.5  # clamped echo, not the raw 5.0
+    assert applied["mode_pin"] == "cover_deficit"
+    assert applied["price_bias_bps"] == 200.0
     assert applied["preferred_modes"] == ["ladder_sell"]  # unknown mode dropped
     assert applied["ok"] is True
 

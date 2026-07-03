@@ -25,11 +25,15 @@ from gymnasium import spaces
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.hybrid import RiskGate
 from eflux.agents.ppo.primitive_encoding import (
-    ACTION_DIM,
+    ENCODING_V1,
     OBS_DIM,
     decode_action,
     encode_obs,
+    encoding_version_for_action_dim,
     price_ref_scale,
+)
+from eflux.agents.ppo.primitive_encoding import (
+    action_dim as encoding_action_dim,
 )
 from eflux.agents.strategy import OrderProgramCompiler
 from eflux.agents.valuation import TruthfulValuationOracle
@@ -63,12 +67,24 @@ class VPPPrimitiveEnv(gym.Env):
 
     metadata: ClassVar[dict] = {"render_modes": []}
 
-    def __init__(self, config: dict | None = None) -> None:
+    def __init__(
+        self,
+        config: dict | None = None,
+        *,
+        encoding_version: int = ENCODING_V1,
+        action_dim: int | None = None,
+    ) -> None:
         super().__init__()
+        cfg = config or {}
+        if "encoding_version" in cfg:
+            encoding_version = int(cfg["encoding_version"])
+        if "action_dim" in cfg:
+            action_dim = int(cfg["action_dim"])
+        self.action_dim = int(action_dim) if action_dim is not None else encoding_action_dim(encoding_version)
+        self.encoding_version = encoding_version_for_action_dim(self.action_dim)
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32)
         # Loosely-bounded continuous action; decode_action() squashes/argmaxes it.
-        self.action_space = spaces.Box(low=-5.0, high=5.0, shape=(ACTION_DIM,), dtype=np.float32)
-        cfg = config or {}
+        self.action_space = spaces.Box(low=-5.0, high=5.0, shape=(self.action_dim,), dtype=np.float32)
         self._episode_ticks = int(cfg.get("episode_ticks", EPISODE_TICKS))
         self._seed = cfg.get("seed")
         self._params_pool: list[VPPParams] = cfg.get("params_pool") or [
@@ -138,7 +154,7 @@ class VPPPrimitiveEnv(gym.Env):
 
         ctx = self._make_ctx()
         valuation = self._oracle.estimate(ctx)
-        strategy_action = decode_action(action)
+        strategy_action = decode_action(action, version=self.encoding_version)
         compiled = self._compiler.compile(ctx, strategy_action, valuation)
         decision = self._risk_gate.validate(
             compiled.order_intents,

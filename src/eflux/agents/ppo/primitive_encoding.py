@@ -10,6 +10,7 @@ valuation signals, and acts in the structured primitive space).
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 
 import numpy as np
 
@@ -50,8 +51,41 @@ PRIMITIVE_MODES: list[StrategyMode] = [
 ]
 N_MODES = len(PRIMITIVE_MODES)
 N_PARAMS = 4  # aggressiveness, qty_fraction, price_offset_bps, soc_target
-ACTION_DIM = N_MODES + N_PARAMS
+ENCODING_V1 = 1
+ENCODING_V2 = 2
+ACTION_DIM_V1 = N_MODES + N_PARAMS
+ACTION_DIM = ACTION_DIM_V1
+ACTION_DIM_V2 = ACTION_DIM_V1 + 1
+LOG_MULT_MAX = math.log(2.5)
 OBS_DIM = 18
+
+
+def action_dim(version: int) -> int:
+    if version == ENCODING_V1:
+        return ACTION_DIM_V1
+    if version == ENCODING_V2:
+        return ACTION_DIM_V2
+    raise ValueError(f"unsupported PPO encoding version: {version}")
+
+
+def encoding_version_for_action_dim(dim: int) -> int:
+    if dim == ACTION_DIM_V1:
+        return ENCODING_V1
+    if dim == ACTION_DIM_V2:
+        return ENCODING_V2
+    raise ValueError(f"unsupported PPO action dimension: {dim}")
+
+
+def infer_encoding_version(state_dict: Mapping[str, object]) -> int:
+    """Infer V1/V2 from the actor output-layer weight rows in a checkpoint state_dict."""
+    if "state_dict" in state_dict and isinstance(state_dict["state_dict"], Mapping):
+        return infer_encoding_version(state_dict["state_dict"])  # type: ignore[arg-type]
+    for key in ("actor_mean.weight", "net.4.weight"):
+        tensor = state_dict.get(key)
+        if tensor is not None:
+            rows = int(tensor.shape[0])  # torch.Tensor and np.ndarray both expose shape.
+            return encoding_version_for_action_dim(rows)
+    raise ValueError("cannot infer PPO encoding version: missing actor output weight")
 
 
 def _sigmoid(x: float) -> float:
@@ -101,11 +135,16 @@ def _logit(p: float) -> float:
     return max(-5.0, min(5.0, math.log(p / (1.0 - p))))
 
 
-def encode_action(action: StrategyAction) -> np.ndarray:
+def _atanh_clamped(x: float) -> float:
+    x = max(-1.0 + 1e-3, min(1.0 - 1e-3, x))
+    return max(-5.0, min(5.0, math.atanh(x)))
+
+
+def encode_action(action: StrategyAction, *, version: int = ENCODING_V1) -> np.ndarray:
     """StrategyAction → a raw policy vector that decode_action maps back to it — the
     supervised target for behavior cloning. Inverse of decode_action up to the squash
     clamps; modes outside the PPO set clone to NOOP."""
-    vec = np.full(ACTION_DIM, -1.0, dtype=np.float32)
+    vec = np.full(action_dim(version), -1.0, dtype=np.float32)
     try:
         idx = PRIMITIVE_MODES.index(action.mode)
     except ValueError:
@@ -117,14 +156,21 @@ def encode_action(action: StrategyAction) -> np.ndarray:
     bps = max(-1.0 + 1e-3, min(1.0 - 1e-3, action.price_offset_bps / 50.0))
     p[2] = max(-5.0, min(5.0, math.atanh(bps)))
     p[3] = _logit(action.soc_target)
+    if version == ENCODING_V2:
+        ratio = 1.0 if action.price_target_mult is None else float(action.price_target_mult)
+        ratio = max(math.exp(-LOG_MULT_MAX), min(math.exp(LOG_MULT_MAX), ratio))
+        p[4] = _atanh_clamped(math.log(ratio) / LOG_MULT_MAX)
     return vec
 
 
-def decode_action(vec: np.ndarray) -> StrategyAction:
+def decode_action(vec: np.ndarray, *, version: int = ENCODING_V1) -> StrategyAction:
     """Raw policy vector (ACTION_DIM) → a bounded StrategyAction. The first N_MODES
     components are mode logits (argmax picks the primitive); the rest are squashed
     into their parameter ranges."""
     vec = np.asarray(vec, dtype=np.float32).flatten()
+    expected = action_dim(version)
+    if vec.shape[0] != expected:
+        raise ValueError(f"expected PPO action width {expected} for encoding V{version}, got {vec.shape[0]}")
     mode = PRIMITIVE_MODES[int(np.argmax(vec[:N_MODES]))]
     p = vec[N_MODES:]
     return StrategyAction(
@@ -133,4 +179,7 @@ def decode_action(vec: np.ndarray) -> StrategyAction:
         qty_fraction=_sigmoid(float(p[1])),
         price_offset_bps=math.tanh(float(p[2])) * 50.0,
         soc_target=_sigmoid(float(p[3])),
+        price_target_mult=math.exp(math.tanh(float(p[4])) * LOG_MULT_MAX)
+        if version == ENCODING_V2
+        else None,
     )

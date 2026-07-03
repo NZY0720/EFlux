@@ -62,12 +62,31 @@ export interface VPP {
   created_at: string;
 }
 
+export interface AlgorithmParam {
+  name: string;
+  type: string;
+  default: number | string | boolean | null;
+  min?: number | null;
+  max?: number | null;
+  help: string;
+}
+
+export interface AlgorithmInfo {
+  id: string;
+  label: string;
+  description: string;
+  uses_llm: boolean;
+  supports_online_learning: boolean;
+  params: AlgorithmParam[];
+}
+
 export interface ManagedVPP {
   id: number;
   name: string;
   params: Record<string, number>;
   is_active: boolean;
   is_external: boolean;
+  algorithm: string;
   agent_kind: string;
   strategy: string;
   llm_live: boolean;
@@ -100,7 +119,9 @@ export interface ReflectionEntry {
   qty_scale?: number | null;
   preferred_modes?: string[] | null;
   avoid_modes?: string[] | null;
+  mode_pin?: string | null;
   risk_budget?: number | null;
+  price_bias_bps?: number | null;
   soc_target?: number | null;
   execution_style?: string | null;
   rationale: string;
@@ -195,6 +216,13 @@ export interface MarketAgent {
   energy_sold_kwh: number;
   trade_count: number;
   recent_trade_count: number;
+  fallback_count?: number;
+  veto_hold_count?: number;
+  risk_rejections?: number;
+  decide_ticks?: number;
+  guidance_change_rate?: number | null;
+  mode_override_rate?: number | null;
+  avg_price_dev_bps?: number | null;
 }
 
 export interface MarketReflection {
@@ -207,7 +235,9 @@ export interface MarketReflection {
   qty_scale?: number | null;
   preferred_modes?: string[] | null;
   avoid_modes?: string[] | null;
+  mode_pin?: string | null;
   risk_budget?: number | null;
+  price_bias_bps?: number | null;
   soc_target?: number | null;
   execution_style?: string | null;
   rationale: string;

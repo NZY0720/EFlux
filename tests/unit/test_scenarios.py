@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from eflux.agents.gas import GasGeneratorAgent
-from eflux.agents.hybrid import HybridPolicyAgent
+from eflux.agents.hybrid import HybridPolicyAgent, StrategyAgent
 from eflux.bridge.bus import InMemoryBus
 from eflux.config import get_settings
+from eflux.simulator import scenarios
 from eflux.simulator.runner import Simulator
-from eflux.simulator.scenarios import load_default_scenario
+from eflux.simulator.scenarios import load_default_scenario, provision_managed_vpp
 
 
 def _load(monkeypatch) -> Simulator:
@@ -209,3 +210,92 @@ def test_real_weather_coords_migrate_to_caiso_sp15(monkeypatch):
 
     assert (wind.params.pv_lat, wind.params.pv_lon) == (33.90, -116.60)
     assert (solar.params.pv_lat, solar.params.pv_lon) == (34.05, -118.25)
+
+
+def _no_ppo_executor(monkeypatch):
+    monkeypatch.setattr(scenarios, "_build_executor", lambda *args, **kwargs: None)
+
+
+def test_provision_managed_vpp_supports_all_algorithms(monkeypatch):
+    from eflux.agents.aa_agent import AAAgent
+    from eflux.agents.gd_agent import GDAgent
+    from eflux.agents.truthful import TruthfulAgent
+    from eflux.agents.zi import ZIAgent
+    from eflux.agents.zip_agent import ZIPAgent
+
+    _no_ppo_executor(monkeypatch)
+    expected = {
+        "hybrid": HybridPolicyAgent,
+        "ppo": StrategyAgent,
+        "truthful": TruthfulAgent,
+        "zi": ZIAgent,
+        "zip": ZIPAgent,
+        "gd": GDAgent,
+        "aa": AAAgent,
+    }
+    for algorithm, cls in expected.items():
+        sim = Simulator(bus=InMemoryBus())
+        vpp = provision_managed_vpp(
+            sim,
+            owner_id=1,
+            name=f"managed-{algorithm}",
+            params={"pv_kw_peak": 2.0, "battery_kwh": 5.0},
+            algorithm=algorithm,
+        )
+        assert isinstance(vpp.agent, cls)
+        assert vpp.algorithm == algorithm
+
+
+def test_managed_algorithm_categories_are_llm_only_for_hybrid(monkeypatch):
+    from eflux.stats.categories import agent_category, is_llm_vpp
+
+    _no_ppo_executor(monkeypatch)
+    sim = Simulator(bus=InMemoryBus())
+    hybrid = provision_managed_vpp(
+        sim,
+        owner_id=1,
+        name="managed-hybrid",
+        params={"pv_kw_peak": 2.0, "battery_kwh": 5.0},
+        algorithm="hybrid",
+    )
+    assert agent_category(hybrid) == "llm"
+    assert is_llm_vpp(hybrid) is True
+
+    for algorithm in ("ppo", "truthful", "zi", "zip", "gd", "aa"):
+        vpp = provision_managed_vpp(
+            sim,
+            owner_id=1,
+            name=f"managed-{algorithm}",
+            params={"pv_kw_peak": 2.0, "battery_kwh": 5.0},
+            algorithm=algorithm,
+        )
+        assert agent_category(vpp) == "solar"
+        assert is_llm_vpp(vpp) is False
+
+
+def test_managed_ppo_online_learning_toggle_reaches_executor(monkeypatch):
+    class FakePolicy:
+        def __init__(self, learning: bool) -> None:
+            self.learning = learning
+
+    captured = {}
+
+    def fake_build_executor(name, executor, *, seed=0, auto_update=True):
+        del name, seed, auto_update
+        captured["online_learning"] = executor.online_learning
+        return FakePolicy(learning=executor.online_learning)
+
+    monkeypatch.setattr(scenarios, "_build_executor", fake_build_executor)
+    sim = Simulator(bus=InMemoryBus())
+    vpp = provision_managed_vpp(
+        sim,
+        owner_id=1,
+        name="managed-ppo",
+        params={"pv_kw_peak": 2.0, "battery_kwh": 5.0},
+        algorithm="ppo",
+        online_learning=False,
+    )
+
+    assert isinstance(vpp.agent, StrategyAgent)
+    assert captured["online_learning"] is False
+    assert vpp.agent._policy.learning is False

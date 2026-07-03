@@ -1,6 +1,7 @@
 import axios from "axios";
 
 import type {
+  AlgorithmInfo,
   BenchmarkDetail,
   BenchmarkSummary,
   ChatMessage,
@@ -115,6 +116,11 @@ export async function fetchManagedVPPPerformance(vppId: number): Promise<Managed
   return data;
 }
 
+export async function listAlgorithms(): Promise<AlgorithmInfo[]> {
+  const { data } = await api.get<{ algorithms: AlgorithmInfo[] }>("/vpps/algorithms");
+  return data.algorithms;
+}
+
 export async function createVPP(name: string, params: Record<string, number>): Promise<VPP> {
   const { data } = await api.post<VPP>("/vpps", { name, params });
   return data;
@@ -125,8 +131,10 @@ export async function createVPP(name: string, params: Record<string, number>): P
 export interface ManagedVPPCreatePayload {
   name: string;
   params: Record<string, number | string>;
+  algorithm?: string;
+  online_learning?: boolean;
   persona?: string | null;
-  agent_params?: Record<string, number>;
+  agent_params?: Record<string, number | string | boolean>;
   seed?: number | null;
   model?: string | null;
 }

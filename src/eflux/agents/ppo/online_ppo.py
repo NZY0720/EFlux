@@ -28,7 +28,12 @@ from eflux.agents.ppo.primitive_encoding import (
     PRIMITIVE_MODES,
     decode_action,
     encode_obs,
+    encoding_version_for_action_dim,
+    infer_encoding_version,
     price_ref_scale,
+)
+from eflux.agents.ppo.primitive_encoding import (
+    action_dim as encoding_action_dim,
 )
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.agents.valuation import ValuationSignal
@@ -213,6 +218,8 @@ class OnlineLearner:
         obs, actions = data["obs"], data["actions"]
         old_logp, returns, adv = data["logprobs"], data["returns"], data["advantages"]
         n = obs.shape[0]
+        if actions.shape[1] != self.net.action_dim:
+            raise ValueError(f"PPO batch action width {actions.shape[1]} != net action_dim {self.net.action_dim}")
 
         work = copy.deepcopy(self.net)
         work.train()
@@ -278,6 +285,7 @@ class OnlinePPOPolicy:
     def __post_init__(self) -> None:
         self._prev: _Pending | None = None
         self._base_weights = self.weights
+        self.encoding_version = encoding_version_for_action_dim(self.learner.net.actor_mean.out_features)
 
     # -- meta-control push (off-tick, from the hybrid agent) -----------------------------
     def apply_meta(self, meta: object | None) -> None:
@@ -315,7 +323,7 @@ class OnlinePPOPolicy:
         obs = encode_obs(ctx, valuation)
 
         if not self.learning:
-            return decode_action(self.learner.net.act_mean(obs))
+            return decode_action(self.learner.net.act_mean(obs), version=self.encoding_version)
 
         # Finalize the previous step's reward now that we can see its outcome (one-tick
         # delay), then buffer that complete transition.
@@ -333,7 +341,7 @@ class OnlinePPOPolicy:
             # Bootstrap off the value of the just-observed (still-pending) state.
             self.learner.update(last_value=value)
 
-        return decode_action(action_vec)
+        return decode_action(action_vec, version=self.encoding_version)
 
     def take_update_batch(self) -> dict | None:
         """Tick-thread hook for an external (off-tick) scheduler: when a segment has filled,
@@ -343,7 +351,13 @@ class OnlinePPOPolicy:
         if not self.learning or len(self.learner.buffer) < self.learner.update_every:
             return None
         last_value = self._prev.value if self._prev is not None else 0.0
-        return self.learner.prepare_batch(last_value=last_value)
+        batch = self.learner.prepare_batch(last_value=last_value)
+        if batch is not None and batch["actions"].shape[1] != self.learner.net.action_dim:
+            raise ValueError(
+                f"PPO batch action width {batch['actions'].shape[1]} != net action_dim "
+                f"{self.learner.net.action_dim}"
+            )
+        return batch
 
     # -- persistence ---------------------------------------------------------------------
     def state_dict(self) -> dict:
@@ -359,6 +373,25 @@ class OnlinePPOPolicy:
         re-fits as online learning resumes)."""
         from eflux.agents.ppo.online_net import load_warm_start
 
+        try:
+            raw = torch.load(checkpoint_path, map_location="cpu")
+            state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
+            incoming_version = infer_encoding_version(state)
+            incoming_dim = encoding_action_dim(incoming_version)
+        except Exception:
+            log.warning("online PPO hot-reload skipped: cannot inspect %s", checkpoint_path, exc_info=True)
+            return
+        live_dim = self.learner.net.actor_mean.out_features
+        if incoming_version != self.encoding_version or incoming_dim != live_dim:
+            log.warning(
+                "online PPO hot-reload skipped: checkpoint encoding V%s/action_dim=%s "
+                "does not match live encoding V%s/action_dim=%s",
+                incoming_version,
+                incoming_dim,
+                self.encoding_version,
+                live_dim,
+            )
+            return
         net = load_warm_start(checkpoint_path)
         self.learner.net.load_state_dict(net.state_dict())
 
@@ -369,10 +402,12 @@ def build_online_policy(
     learning: bool = True,
     auto_update: bool = True,
     seed: int = 0,
+    encoding_version: int | None = None,
 ) -> OnlinePPOPolicy:
     """Construct an OnlinePPOPolicy, warm-starting the net from a BC or resumed checkpoint
     when given. A missing/unreadable checkpoint falls back to a fresh net (logged)."""
     from eflux.agents.ppo.online_net import ActorCriticNet, load_warm_start
+    from eflux.config import get_settings
 
     net: ActorCriticNet
     if checkpoint_path:
@@ -380,8 +415,10 @@ def build_online_policy(
             net = load_warm_start(checkpoint_path)
         except Exception:
             log.exception("online PPO warm-start failed for %s — fresh net", checkpoint_path)
-            net = ActorCriticNet()
+            version = encoding_version if encoding_version is not None else get_settings().ppo_encoding_version
+            net = ActorCriticNet(action_dim=encoding_action_dim(version))
     else:
-        net = ActorCriticNet()
+        version = encoding_version if encoding_version is not None else get_settings().ppo_encoding_version
+        net = ActorCriticNet(action_dim=encoding_action_dim(version))
     learner = OnlineLearner(net=net, seed=seed)
     return OnlinePPOPolicy(learner=learner, learning=learning, auto_update=auto_update)

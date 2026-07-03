@@ -12,6 +12,7 @@ def test_strategy_action_defaults_to_noop_passive():
     a = StrategyAction()
     assert a.mode is StrategyMode.NOOP
     assert a.aggressiveness == 0.0 and a.qty_fraction == 1.0 and a.price_offset_bps == 0.0
+    assert a.price_target_mult is None
 
 
 def test_strategy_mode_serializes_as_str():

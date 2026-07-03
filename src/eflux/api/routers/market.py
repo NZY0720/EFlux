@@ -13,7 +13,7 @@ from eflux.data.electricity_market import ExternalMarketQuote
 from eflux.db.models import VPP
 from eflux.market.events import ExternalTradeEvent, TradeEvent
 from eflux.market.units import internal_cash_to_usd
-from eflux.stats.categories import agent_category
+from eflux.stats.categories import agent_category, is_llm_vpp
 
 router = APIRouter(prefix="/market", tags=["market"])
 
@@ -216,6 +216,13 @@ class AgentOut(BaseModel):
     energy_sold_kwh: float
     trade_count: int
     recent_trade_count: int
+    fallback_count: int = 0
+    veto_hold_count: int = 0
+    risk_rejections: int = 0
+    decide_ticks: int = 0
+    guidance_change_rate: float | None = None
+    mode_override_rate: float | None = None
+    avg_price_dev_bps: float | None = None
 
 
 @router.get("/agents", response_model=list[AgentOut])
@@ -234,6 +241,9 @@ async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
             health_state, _ = _llm_health(vpp)
         strategist = getattr(vpp.agent, "strategist", None)
         client = getattr(strategist, "client", None) if strategist is not None else None
+        influence_stats = getattr(vpp.agent, "influence_stats", None)
+        if influence_stats is None:
+            influence_stats = {}
         p = vpp.params
         out.append(
             AgentOut(
@@ -241,7 +251,7 @@ async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
                 name=vpp.name,
                 strategy=vpp.strategy,
                 category=agent_category(vpp),
-                is_llm=vpp.is_my_vpp,
+                is_llm=is_llm_vpp(vpp),
                 mirror_of=vpp.mirror_of,
                 llm_health_state=health_state,
                 llm_model=getattr(client, "model", None),
@@ -263,6 +273,13 @@ async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
                 energy_sold_kwh=vpp.state.cumulative_energy_sold_kwh,
                 trade_count=vpp.trade_count,
                 recent_trade_count=len(vpp.recent_trades),
+                fallback_count=sim.fallback_invocations_by_vpp.get(vpp.vpp_id, 0),
+                veto_hold_count=sim.veto_holds_by_vpp.get(vpp.vpp_id, 0),
+                risk_rejections=sim.risk_rejections_by_vpp.get(vpp.vpp_id, 0),
+                decide_ticks=sim.decide_ticks_by_vpp.get(vpp.vpp_id, 0),
+                guidance_change_rate=influence_stats.get("guidance_change_rate"),
+                mode_override_rate=influence_stats.get("mode_override_rate"),
+                avg_price_dev_bps=influence_stats.get("avg_price_dev_bps"),
             )
         )
     return out
@@ -280,7 +297,9 @@ class MarketReflectionOut(BaseModel):
     # HybridPolicyAgent + LLMStrategist guidance fields.
     preferred_modes: list[str] | None = None
     avoid_modes: list[str] | None = None
+    mode_pin: str | None = None
     risk_budget: float | None = None
+    price_bias_bps: float | None = None
     soc_target: float | None = None
     execution_style: str | None = None
     rationale: str = ""

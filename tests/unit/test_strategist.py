@@ -22,19 +22,27 @@ def test_parse_guidance_extracts_and_clamps():
     raw = """Here is my advice:
     {"preferred_modes": ["ladder_sell", "passive_market_make"], "avoid_modes": ["aggressive_taker"],
      "risk_budget": 0.4, "soc_target": 0.55, "execution_style": "Prefer maker orders.",
+     "mode_pin": "cover_deficit", "price_bias_bps": -25.0,
      "lesson": "Crossed the spread too often last window."}
     """
     g = parse_guidance(raw)
     assert g.preferred_modes == (StrategyMode.LADDER_SELL, StrategyMode.PASSIVE_MARKET_MAKE)
     assert g.avoid_modes == (StrategyMode.AGGRESSIVE_TAKER,)
+    assert g.mode_pin is StrategyMode.COVER_DEFICIT
     assert g.risk_budget == 0.4 and g.soc_target == 0.55
+    assert g.price_bias_bps == -25.0
     assert "maker" in g.execution_style
 
 
 def test_parse_guidance_clamps_out_of_range_and_drops_unknown_modes():
-    g = parse_guidance('{"preferred_modes": ["bogus", "noop"], "risk_budget": 5.0, "soc_target": -1.0}')
+    g = parse_guidance(
+        '{"preferred_modes": ["bogus", "noop"], "mode_pin": "not-a-mode",'
+        ' "risk_budget": 5.0, "price_bias_bps": 500.0, "soc_target": -1.0}'
+    )
     assert g.preferred_modes == (StrategyMode.NOOP,)  # unknown silently dropped
-    assert g.risk_budget == 1.0 and g.soc_target == 0.0  # clamped to [0,1]
+    assert g.mode_pin is None
+    assert g.risk_budget == 1.5 and g.soc_target == 0.0
+    assert g.price_bias_bps == 200.0
 
 
 def test_parse_guidance_handles_code_fences():
@@ -94,9 +102,10 @@ def test_p2p_user_message_keeps_book_fields_without_grid_fields():
 
 def test_realprice_guidance_drops_book_specific_preferred_modes():
     raw = """{"preferred_modes": ["passive_market_make", "ladder_sell", "cancel_reprice",
-      "battery_arbitrage"], "avoid_modes": ["ladder_buy"]}"""
+      "battery_arbitrage"], "mode_pin": "passive_market_make", "avoid_modes": ["ladder_buy"]}"""
     g = parse_guidance(raw, market_mode="realprice")
     assert g.preferred_modes == (StrategyMode.BATTERY_ARBITRAGE,)
+    assert g.mode_pin is None
     # Avoid modes are still useful as soft "do not lean this way" explanations.
     assert g.avoid_modes == (StrategyMode.LADDER_BUY,)
 
@@ -112,6 +121,28 @@ def test_apply_guidance_scales_size_by_risk_budget():
     assert out.qty_fraction == 0.5 and out.aggressiveness == pytest.approx(0.4)
     assert out.soc_target == 0.6
     assert out.mode is StrategyMode.LIQUIDATE_SURPLUS  # primitive untouched
+
+
+def test_apply_guidance_mode_pin_is_binding_and_skips_avoid_shrink():
+    a = StrategyAction(
+        mode=StrategyMode.AGGRESSIVE_TAKER,
+        qty_fraction=1.0,
+        aggressiveness=0.8,
+        price_offset_bps=10.0,
+    )
+    out = apply_guidance(
+        a,
+        StrategyGuidance(
+            avoid_modes=(StrategyMode.AGGRESSIVE_TAKER,),
+            mode_pin=StrategyMode.BATTERY_ARBITRAGE,
+            risk_budget=1.5,
+            price_bias_bps=20.0,
+        ),
+    )
+    assert out.mode is StrategyMode.BATTERY_ARBITRAGE
+    assert out.qty_fraction == 1.5
+    assert out.aggressiveness == 1.0
+    assert out.price_offset_bps == 30.0
 
 
 def test_apply_guidance_discourages_avoided_mode_softly():

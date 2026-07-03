@@ -1,11 +1,11 @@
 """Structured LLM guidance — the slow strategist layer (design note §5.1).
 
 The LLM operates over a longer horizon than the tactical policy: it reads the regime,
-reviews the last window, and recommends/discourages strategy primitives, a soft risk
-budget, and an SOC target. Its output is `StrategyGuidance`, applied as SOFT priors
-(`apply_guidance`) — never a hard command (principles #2, #4), or the design would just
-swap the Truthful bottleneck for an LLM one. The guidance text is audit/UI metadata only
-(principle #9), never execution logic.
+reviews the last window, and recommends/discourages strategy primitives, a risk budget,
+an optional binding mode pin, and an SOC target. Its output is `StrategyGuidance`,
+applied as clamped execution guidance (`apply_guidance`): everything remains a soft prior
+except `mode_pin`, which is an explicit short-window primitive override. The guidance
+text is audit/UI metadata only (principle #9), never execution logic.
 
 The strategist runs off the critical tick path (principle #1): an async refresh updates a
 cached `StrategyGuidance` that `decide()` reads non-blocking — the same pattern as the
@@ -28,6 +28,8 @@ from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 log = logging.getLogger(__name__)
 
 GUIDANCE_LESSON_MAX = 200
+RISK_BUDGET_MAX = 1.5
+PRICE_BIAS_BPS_MAX = 200.0
 _VALID_MODES = {m.value for m in StrategyMode}
 
 
@@ -60,7 +62,9 @@ class StrategyGuidance:
 
     preferred_modes: tuple[StrategyMode, ...] = ()
     avoid_modes: tuple[StrategyMode, ...] = ()
-    risk_budget: float = 1.0  # [0,1] — scales order size / aggressiveness toward caution
+    mode_pin: StrategyMode | None = None  # binding primitive override for the next window
+    risk_budget: float = 1.0  # [0,1.5] — scales order size / aggressiveness
+    price_bias_bps: float = 0.0  # [-200,200] — shifts quotes off fair value
     soc_target: float = 0.5  # [0,1] — desired battery state of charge
     execution_style: str = ""  # free text, audit/UI only
     lesson: str = ""  # persisted takeaway, audit/UI only
@@ -68,7 +72,11 @@ class StrategyGuidance:
     def clamped(self) -> StrategyGuidance:
         return replace(
             self,
-            risk_budget=max(0.0, min(1.0, float(self.risk_budget))),
+            risk_budget=max(0.0, min(RISK_BUDGET_MAX, float(self.risk_budget))),
+            price_bias_bps=max(
+                -PRICE_BIAS_BPS_MAX,
+                min(PRICE_BIAS_BPS_MAX, float(self.price_bias_bps)),
+            ),
             soc_target=max(0.0, min(1.0, float(self.soc_target))),
             execution_style=str(self.execution_style)[:200],
             lesson=str(self.lesson)[:GUIDANCE_LESSON_MAX],
@@ -155,7 +163,9 @@ Return ONLY a JSON object (no markdown, no commentary):
   {
     "preferred_modes": [<primitive names to favour>],
     "avoid_modes":     [<primitive names to discourage>],
-    "risk_budget":     <float in [0,1]; 1 = full size, lower = more cautious>,
+    "mode_pin":        <primitive name or null; BINDING next-window override; use sparingly>,
+    "risk_budget":     <float in [0,1.5]; 1 = full size, >1 = press harder, <1 = cautious>,
+    "price_bias_bps":  <float in [-200,200]; shifts quotes off fair value; positive = quote higher>,
     "soc_target":      <float in [0,1]; desired battery state of charge>,
     "execution_style": "<short maker-vs-taker preference, <=120 chars>",
     "lesson":          "<one durable takeaway from the last window, <=200 chars>",
@@ -170,8 +180,8 @@ Return ONLY a JSON object (no markdown, no commentary):
     }
   }
 If the policy is learning well, omit "meta_control" or leave it at the defaults. Your
-advice and meta-control are SOFT, clamped priors — the tactical policy may override the
-advice, and out-of-range knobs are clipped. Stay within bounds."""
+advice and meta-control other than mode_pin are SOFT, clamped priors — the tactical
+policy may override that advice, and out-of-range knobs are clipped. Stay within bounds."""
 
 REALPRICE_STRATEGIST_SYSTEM_PROMPT = """\
 You are the slow strategist for a Virtual Power Plant trading in a real-time grid
@@ -189,7 +199,9 @@ Return ONLY a JSON object (no markdown, no commentary):
   {
     "preferred_modes": [<primitive names to favour>],
     "avoid_modes":     [<primitive names to discourage>],
-    "risk_budget":     <float in [0,1]; 1 = full size, lower = more cautious>,
+    "mode_pin":        <primitive name or null; BINDING next-window override; use sparingly>,
+    "risk_budget":     <float in [0,1.5]; 1 = full size, >1 = press harder, <1 = cautious>,
+    "price_bias_bps":  <float in [-200,200]; shifts quotes off fair value; positive = quote higher>,
     "soc_target":      <float in [0,1]; desired battery state of charge>,
     "execution_style": "<short grid-price timing preference, <=120 chars>",
     "lesson":          "<one durable takeaway from the last window, <=200 chars>",
@@ -204,9 +216,9 @@ Return ONLY a JSON object (no markdown, no commentary):
     }
   }
 If the policy is learning well, omit "meta_control" or leave it at the defaults. Treat
-null best_bid/best_ask as normal in this market. Your advice and meta-control are SOFT,
-clamped priors — the tactical policy may override the advice, and out-of-range knobs
-are clipped. Stay within bounds."""
+null best_bid/best_ask as normal in this market. Your advice and meta-control other
+than mode_pin are SOFT, clamped priors — the tactical policy may override that advice,
+and out-of-range knobs are clipped. Stay within bounds."""
 
 _REALPRICE_DISALLOWED_PREFERRED = {
     StrategyMode.PASSIVE_MARKET_MAKE,
@@ -264,6 +276,13 @@ def _parse_modes(value) -> tuple[StrategyMode, ...]:
     return tuple(out)
 
 
+def _parse_mode_pin(value) -> StrategyMode | None:
+    if value is None:
+        return None
+    name = str(value).strip().lower()
+    return StrategyMode(name) if name in _VALID_MODES else None
+
+
 def modes_from_names(names: list[str] | tuple[str, ...]) -> tuple[StrategyMode, ...]:
     """Public soft parser for externally supplied mode names (Tier A3 guidance
     ingestion): unknown names are dropped, never an error — same tolerance the
@@ -275,7 +294,8 @@ def _sanitize_guidance_for_market(guidance: StrategyGuidance, market_mode: str) 
     if market_mode != "realprice":
         return guidance
     preferred = tuple(m for m in guidance.preferred_modes if m not in _REALPRICE_DISALLOWED_PREFERRED)
-    return replace(guidance, preferred_modes=preferred)
+    mode_pin = None if guidance.mode_pin in _REALPRICE_DISALLOWED_PREFERRED else guidance.mode_pin
+    return replace(guidance, preferred_modes=preferred, mode_pin=mode_pin)
 
 
 def parse_guidance(content: str, *, market_mode: str = "p2p") -> StrategyGuidance:
@@ -291,11 +311,19 @@ def parse_guidance(content: str, *, market_mode: str = "p2p") -> StrategyGuidanc
     if data is None:
         raise GuidanceParseError(f"no JSON object in strategist response: {content[:160]!r}")
     try:
+        d = StrategyGuidance()
         guidance = StrategyGuidance(
             preferred_modes=_parse_modes(data.get("preferred_modes")),
             avoid_modes=_parse_modes(data.get("avoid_modes")),
-            risk_budget=float(data.get("risk_budget", 1.0)),
-            soc_target=float(data.get("soc_target", 0.5)),
+            mode_pin=_parse_mode_pin(data.get("mode_pin")),
+            risk_budget=_clamp(data.get("risk_budget", d.risk_budget), 0.0, RISK_BUDGET_MAX, d.risk_budget),
+            price_bias_bps=_clamp(
+                data.get("price_bias_bps", d.price_bias_bps),
+                -PRICE_BIAS_BPS_MAX,
+                PRICE_BIAS_BPS_MAX,
+                d.price_bias_bps,
+            ),
+            soc_target=_clamp(data.get("soc_target", d.soc_target), 0.0, 1.0, d.soc_target),
             execution_style=str(data.get("execution_style", "")),
             lesson=str(data.get("lesson", "")),
         ).clamped()
@@ -314,11 +342,19 @@ def external_guidance_from_dict(
     and a malformed meta_control degrades to None rather than raising. Server-side
     clamping is authoritative — callers echo the result, never the raw input.
     """
+    d = StrategyGuidance()
     guidance = StrategyGuidance(
         preferred_modes=modes_from_names(list(data.get("preferred_modes") or [])),
         avoid_modes=modes_from_names(list(data.get("avoid_modes") or [])),
-        risk_budget=float(data.get("risk_budget", 1.0)),
-        soc_target=float(data.get("soc_target", 0.5)),
+        mode_pin=_parse_mode_pin(data.get("mode_pin")),
+        risk_budget=_clamp(data.get("risk_budget", d.risk_budget), 0.0, RISK_BUDGET_MAX, d.risk_budget),
+        price_bias_bps=_clamp(
+            data.get("price_bias_bps", d.price_bias_bps),
+            -PRICE_BIAS_BPS_MAX,
+            PRICE_BIAS_BPS_MAX,
+            d.price_bias_bps,
+        ),
+        soc_target=_clamp(data.get("soc_target", d.soc_target), 0.0, 1.0, d.soc_target),
         execution_style=str(data.get("execution_style") or ""),
         lesson=str(data.get("lesson") or ""),
     ).clamped()
@@ -341,17 +377,28 @@ def external_guidance_from_dict(
 
 
 def apply_guidance(action: StrategyAction, guidance: StrategyGuidance | None) -> StrategyAction:
-    """Bias a chosen action by the guidance — softly. risk_budget scales size and
-    aggressiveness toward caution; a discouraged primitive is shrunk (not forbidden);
-    the SOC target is adopted. The primitive itself is left to the tactical policy, so
-    guidance never becomes a hard command (principle #4)."""
+    """Apply clamped strategic guidance to a chosen action.
+
+    `mode_pin` is binding by design for the next guidance window. Other guidance remains
+    soft: risk_budget scales size/aggressiveness, avoid_modes shrink unpinned discouraged
+    primitives, price_bias_bps shifts the quote, and soc_target is adopted.
+    """
     if guidance is None:
         return action
+    mode = guidance.mode_pin if guidance.mode_pin is not None else action.mode
     qty = action.qty_fraction * guidance.risk_budget
-    aggr = action.aggressiveness * guidance.risk_budget
-    if action.mode in guidance.avoid_modes:
+    aggr = min(1.0, action.aggressiveness * guidance.risk_budget)
+    if guidance.mode_pin is None and action.mode in guidance.avoid_modes:
         qty *= 0.25  # discourage, don't veto
-    return replace(action, qty_fraction=qty, aggressiveness=aggr, soc_target=guidance.soc_target)
+    bps = action.price_offset_bps + guidance.price_bias_bps
+    return replace(
+        action,
+        mode=mode,
+        qty_fraction=qty,
+        aggressiveness=aggr,
+        price_offset_bps=bps,
+        soc_target=guidance.soc_target,
+    )
 
 
 @runtime_checkable
@@ -427,7 +474,9 @@ class ExternalStrategist:
             "ok": True,
             "preferred_modes": [m.value for m in guidance.preferred_modes],
             "avoid_modes": [m.value for m in guidance.avoid_modes],
+            "mode_pin": None if guidance.mode_pin is None else guidance.mode_pin.value,
             "risk_budget": guidance.risk_budget,
+            "price_bias_bps": guidance.price_bias_bps,
             "soc_target": guidance.soc_target,
             "execution_style": guidance.execution_style,
             # Same fallback as LLMStrategist._entry so older UI copy degrades gracefully;
@@ -586,7 +635,9 @@ class LLMStrategist:
             "ok": ok,
             "preferred_modes": [m.value for m in guidance.preferred_modes],
             "avoid_modes": [m.value for m in guidance.avoid_modes],
+            "mode_pin": None if guidance.mode_pin is None else guidance.mode_pin.value,
             "risk_budget": guidance.risk_budget,
+            "price_bias_bps": guidance.price_bias_bps,
             "soc_target": guidance.soc_target,
             "execution_style": guidance.execution_style,
             # Keep rationale populated so older UI copy degrades gracefully.

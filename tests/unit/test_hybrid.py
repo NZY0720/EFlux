@@ -66,18 +66,77 @@ def test_hybrid_guidance_can_bias_preferred_primitive():
     assert sum(i.qty for i in intents) == Decimal("3.9999")
 
 
+def test_hybrid_guidance_mode_pin_flows_into_compiled_orders():
+    ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, soc_kwh=5.0)
+    intents = HybridPolicyAgent(
+        price_ref=Decimal("50.0"),
+        strategist=StaticStrategist(
+            StrategyGuidance(mode_pin=StrategyMode.BATTERY_ARBITRAGE, soc_target=0.4)
+        ),
+    ).decide(ctx)
+
+    assert len(intents) == 1
+    assert intents[0].side == "sell"
+    assert intents[0].dispatched is True
+    assert intents[0].qty == Decimal("1.0000")
+
+
+def test_hybrid_influence_stats_count_guidance_changes():
+    agent = HybridPolicyAgent(
+        price_ref=Decimal("50.0"),
+        strategist=StaticStrategist(StrategyGuidance(mode_pin=StrategyMode.LADDER_SELL)),
+    )
+
+    agent.decide(_make_ctx(pv_kw=5.0, load_kw=1.0))
+
+    assert agent.influence_stats == {
+        "guided_ticks": 1,
+        "guidance_change_rate": 1.0,
+        "mode_override_rate": 1.0,
+        "avg_price_dev_bps": None,
+    }
+
+
+def test_hybrid_record_trade_tracks_price_deviation_from_fair_value():
+    agent = HybridPolicyAgent(price_ref=Decimal("50.0"))
+    agent.decide(_make_ctx(pv_kw=5.0, load_kw=1.0))
+
+    agent.record_trade({"price": "5.5", "qty": "1", "side": "sell"})
+
+    assert agent.influence_stats["avg_price_dev_bps"] == pytest.approx(1000.0)
+
+
 def test_hybrid_exposes_guidance_diagnostics():
-    g = StrategyGuidance(avoid_modes=(), risk_budget=0.4, soc_target=0.55, lesson="be patient")
+    g = StrategyGuidance(
+        avoid_modes=(),
+        mode_pin=StrategyMode.COVER_DEFICIT,
+        risk_budget=0.4,
+        price_bias_bps=15.0,
+        soc_target=0.55,
+        lesson="be patient",
+    )
     agent = HybridPolicyAgent(strategist=StaticStrategist(g))
     agent.decide(_make_ctx(pv_kw=5.0, load_kw=1.0))
     diag = agent.diagnostics["guidance"]
     assert diag["risk_budget"] == 0.4 and diag["lesson"] == "be patient"
+    assert diag["mode_pin"] == "cover_deficit"
+    assert diag["price_bias_bps"] == 15.0
 
 
 def test_hybrid_exposes_risk_fallback_for_the_runner_hook():
     agent = HybridPolicyAgent()
-    # The runner's gate-fallback hook reads .risk_fallback; default is a Truthful agent.
+    # The runner's gate-fallback hook reads .risk_fallback; default is stand down.
+    assert agent.risk_fallback is None
+
+
+def test_fallback_policy_truthful_restores_legacy_hook():
+    agent = HybridPolicyAgent(fallback_policy="truthful")
     assert isinstance(agent.risk_fallback, TruthfulAgent)
+
+
+def test_fallback_policy_invalid_raises():
+    with pytest.raises(ValueError, match="fallback_policy must be one of"):
+        HybridPolicyAgent(fallback_policy="silent-truthful")
 
 
 def test_hybrid_custom_fallback_is_used():
