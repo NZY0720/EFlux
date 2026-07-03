@@ -88,3 +88,23 @@ async def test_magic_link_consume_then_session_protected_route(client):
 async def test_consume_rejects_invalid_token(client):
     r = await client.post("/auth/consume", json={"token": "this-is-not-real-1234567890"})
     assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_magic_link_rate_limited_per_email(client):
+    for _ in range(3):
+        r = await client.post("/auth/magic-link", json={"email": "burst@hku.hk"})
+        assert r.status_code == 200, r.text
+
+    r = await client.post("/auth/magic-link", json={"email": "BURST@hku.hk"})
+    assert r.status_code == 429
+
+
+@pytest.mark.asyncio
+async def test_consume_rate_limited_per_ip(client):
+    for i in range(20):
+        r = await client.post("/auth/consume", json={"token": f"not-a-real-token-{i:02d}"})
+        assert r.status_code == 400, r.text
+
+    r = await client.post("/auth/consume", json={"token": "not-a-real-token-final"})
+    assert r.status_code == 429

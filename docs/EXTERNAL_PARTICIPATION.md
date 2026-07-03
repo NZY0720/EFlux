@@ -158,13 +158,13 @@ Each mode maps to a participant persona:
     audit segmentation.
 - **Leaderboard role:** the open-class tier — bring any code.
 
-### Tier A2 — Networked RL environment (train locally)
+### Tier A2 — Local RL environment (train locally)
 
 - **For:** the *RL researcher* who wants EFlux as a training environment for *any*
   algorithm (not just our built-in PPO).
-- **Crosses the boundary:** `reset()` / `step(action)` semantics over the wire —
-  observation + reward + done flow out, encoded actions flow in. The learner and
-  its weights never leave the user's machine.
+- **Crosses the boundary:** no hosted transport for now. The supported path is to run
+  `VPPPrimitiveEnv` locally from the repo; the learner and its weights never leave the
+  user's machine.
 - **Stays private:** the RL algorithm and the trained policy.
 - **Reuses:** the proven obs/action **encoding and reward shape** —
   `VPPPrimitiveEnv` already trains over the exact live pipeline (oracle → compiler
@@ -172,16 +172,11 @@ Each mode maps to a participant persona:
   `ACTION_DIM`, `encode_obs`, `decode_action`) and the §7 reward weights
   (`primitive_env.py:50`). A trained checkpoint already transfers to live
   inference without action-semantics drift.
-- **Exists vs. build — important distinction.** Today's `VPPPrimitiveEnv` is
-  **single-agent against a *synthetic* counterparty (or replayed CAISO data)**,
-  in-process. A *networked env against the live shared market* is a **new
-  construction**: the env transport, and a decision about whether training runs
-  against the live multi-agent market or against a per-user **sandboxed training
-  market** (strongly preferred — see §5.4). The encoding and reward are reusable;
-  the over-the-wire env and live-market wiring are to build. Also: training implies
-  many fast `step()`s, which collides with the market's **realtime-only** external
-  constraint (`config.market_speed`, `is_realtime`) — another reason training must
-  use a separate, time-dilatable sandbox market, not the live 1× board.
+- **Exists vs. build — decision recorded (2026-07-03).** `VPPPrimitiveEnv`, the
+  obs/action codec, and the reward shape are complete and unit-tested for local,
+  in-process training. The hosted over-the-wire `reset()` / `step(action)` RL
+  transport is dropped for now; hosting will be revisited only on demand. There is
+  no hosted training market in the current plan.
 - **Leaderboard role:** entrants submit a *trained checkpoint or live policy* that
   is then evaluated on held-out scenarios (§6); the training env itself is practice,
   not scored.
@@ -244,9 +239,9 @@ rejected message is part of the contract, not an afterthought (§5.6).
   `cancel_orders([order_id])`, plus a read `get_vpp_state` / `get_open_orders`.
   Bounds mirror today's single-order path: `0 < price ≤ 1000`,
   `0.01 ≤ qty ≤ 1000` (`routers/orders.py:27`).
-- **A2 — RL env:** `reset() → obs`, `step(action) → {obs, reward, terminated,
-  truncated, info}` over the wire, using the existing `OBS_DIM`/`ACTION_DIM`
-  encoding. Adds an explicit **step budget** field (§5.2).
+- **A2 — local RL env:** run `VPPPrimitiveEnv` locally with the existing
+  `OBS_DIM`/`ACTION_DIM` encoding and reward. A hosted `reset()` / `step(action)`
+  transport is not part of the current supported path.
 - **A3 — guidance:** `put_guidance({preferred_modes, avoid_modes, risk_budget,
   soc_target, execution_style?, lesson?, meta_control?})` — exactly the parsed
   `StrategyGuidance` + `MetaControl` shape, clamped server-side on arrival.
@@ -274,7 +269,7 @@ governance layered at the gateway:
 
 - **Order/cancel rate** per account (not just per VPP) and per API key.
 - **API request rate** on read + write endpoints.
-- **RL-env step budget** per session/day (A2 training is cheap to abuse).
+- **RL-env step budget** if a hosted A2 transport is introduced later.
 - **Concurrency caps:** max active VPPs per account; max in-flight A3 guidance
   refreshes (mirroring the internal one-in-flight LLM semaphore).
 - **Cancel/replace ratio** ceiling (anti-spoofing; see §5.6).
@@ -300,10 +295,9 @@ one-in-flight** resource (`LLMStrategist.llm_gate`) refreshed on a cadence
 - `RiskGate` as the universal veto for *every* tier (already true; keep it true).
 - Price/qty/SOC bands and notional caps as the backstop against pathological
   learned/remote actions (already calibrated generously, `hybrid/risk.py` docstring).
-- **Training/live isolation:** A2 training must run in a **separate sandbox
-  market**, never the live leaderboard market — both for integrity (no practising
-  against live opponents' real orders) and because training needs time dilation the
-  live realtime-only market forbids.
+- **Training/live isolation:** A2 training is local-only for now, with no hosted
+  training market. If hosted training is introduced later, it must not share the live
+  leaderboard market.
 - **Quarantine / kill-switch:** deactivate a misbehaving account's VPPs
   (`DELETE /vpps/{id}` exists for self-service; an admin/forced variant is to build).
 - **Ephemeral demo accounts** for low-stakes trial (sessions already TTL out at 30d;
@@ -396,7 +390,7 @@ front-loading the lowest-barrier tier and the contract everything else depends o
 | **P0** | **Tier 0 provisioning**: endpoint to instantiate a `HybridPolicyAgent` for an external user from params+persona+preferences; preferences UI; reuse managed read APIs | ✅ **done** — provision / PATCH / DELETE + persistence (migration `0002`) + UI |
 | **P1** | **Agent Protocol v1** (§4) + **batch** submit/cancel + **state/open-orders** read + idempotency + **per-account rate limits** + **per-account audit segmentation** (Tier A1) | ✅ **done** — protocol/batch/state/idempotency/rate-limit (`AGENT_SPEC.md` §5); audit segmentation still open |
 | **P2** | **Python SDK** over the protocol, then an **MCP adapter** exposing the same gateway tools (`get_market_snapshot`, `submit_orders_batch`, …) | ✅ **done** — `eflux.sdk.EFluxClient` + `examples/market_maker.py` + `eflux.mcp.server` (7 tools); `AGENT_SPEC.md` §5 |
-| **P3** | **Networked RL env** (Tier A2) over the wire + **sandbox training market** + step budgets; reuse the existing encoding/reward | codec+reward ✅, transport+sandbox ❌ |
+| **P3** | **Tier A2 local RL env**: support `VPPPrimitiveEnv` from the repo; revisit hosted transport only on demand | ✅ local env + codec + reward unit-tested; hosted transport intentionally dropped |
 | **P4** | **External `StrategyGuidance` ingestion** (Tier A3) bound to a user's managed VPP + source auth + cadence limits | ✅ **done (2026-07-02)** — `PUT/DELETE /vpps/managed/{id}/guidance` (owner-scoped, clamped server-side, ~2/min token bucket, persisted in `managed_config` + rehydrated on restart, zero platform-LLM cost while active) via `ExternalStrategist` (`reflective/strategist.py`); SDK `put_guidance`/`release_guidance` + `examples/guidance_bot.py`; "externally steered" badge on My VPPs |
 | **P5** | **Leaderboard service** + standardized **evaluation harness** on the backtest runner (durable results, held-out scenarios, scoring) | ✅ **live-results half done (2026-07-02)** — durable `market_sessions` + `vpp_stat_snapshots` (migration `0003`; wall-clock-gated snapshotter off the tick path), endowment-normalized **score v1** (`stats/score.py`), public `GET /leaderboard` + `/sessions` + `/history` and a Leaderboard page (per-session + all-time, survives restarts); `GET /benchmarks*` + a Benchmarks page serve backtest artifacts read-only. **Still open:** submit-for-evaluation service (held-out scenarios, scoring queue) — hosted-only |
 
@@ -414,11 +408,12 @@ harness is wrapped, since the offline path already exists).
 
 - ~~No canonical Agent Protocol / gateway module (P1).~~ ✅ batch endpoint + envelope (P1).
 - ~~No batch endpoints or server-side agent **state/open-orders** read (P1).~~ ✅
-- **Partial:** per-account rate limits exist for order batches and guidance ingestion
-  (shared `api/ratelimit.py` token buckets); no limits yet on magic-link/single-order
-  paths, and no **model-cost metering** (§5.2–5.3).
+- **Partial:** per-account rate limits exist for order batches, single orders (shared
+  bucket with batches), guidance ingestion, and the magic-link/consume auth paths
+  (shared `api/ratelimit.py` token buckets); no **model-cost metering** yet (§5.2–5.3).
 - No **per-participant audit segmentation** — the event bus is global (§5.5).
-- No **networked RL env** or **sandbox training market** (P3).
+- No hosted **networked RL env** or **sandbox training market** by decision; Tier A2 is
+  local `VPPPrimitiveEnv` for now.
 - ~~No **Tier-0 provisioning** path.~~ ✅ `POST /vpps/managed` (P0).
 - No **collusion/wash-trade detection** (§5.6).
 - ~~No **durable leaderboard** store — live market state is ephemeral (§1, P5).~~
@@ -428,8 +423,8 @@ harness is wrapped, since the offline path already exists).
 **Decisions to make before/while building:**
 
 1. **Scoring formula** — exact endowment-normalization and risk-adjustment terms (§6).
-2. **One market or two** — does live trading and A2 training share infrastructure, or
-   is training always a per-user sandbox? (This doc recommends **separate**, §5.4.)
+2. **One market or two** — resolved for now: no hosted A2 training market. Live trading
+   remains the only hosted market; A2 training runs locally from the repo.
 3. **Platform vs. local model for A3** — do we allow A3 users to consume the platform
    LLM (metered, §5.3) or require local inference only?
 4. **Credit/cost model** — free tiers, quotas, and whether model cost is ever billed.

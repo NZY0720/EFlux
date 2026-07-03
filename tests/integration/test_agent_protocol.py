@@ -209,3 +209,30 @@ async def test_batch_rate_limit_429(client):
             break
         assert r.status_code == 200, r.text
     assert saw_429, "expected a 429 after bursting past the per-account rate cap"
+
+
+@pytest.mark.asyncio
+async def test_single_order_shares_batch_rate_limit_bucket(client):
+    auth = await _login(client, "single-shared-rate@hku.hk")
+    vpp_id = await _make_vpp(client, auth, "single-shared-rate-vpp")
+
+    for count in (50, 50, 20):
+        r = await client.post(
+            "/orders/batch",
+            headers=auth,
+            json={
+                "orders": [
+                    {"vpp_id": vpp_id, "side": "sell", "price": 900, "qty": 0.01}
+                    for _ in range(count)
+                ]
+            },
+        )
+        assert r.status_code == 200, r.text
+
+    r = await client.post(
+        "/orders",
+        headers=auth,
+        json={"vpp_id": vpp_id, "side": "sell", "price": 900, "qty": 0.01},
+    )
+    assert r.status_code == 429
+    assert r.json()["detail"].startswith("order rate limit exceeded")

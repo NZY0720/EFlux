@@ -138,6 +138,8 @@ curl -s -X POST $BASE/orders -H "Authorization: Bearer $KEY" \
   (default 180) — an `order.cancelled` event is emitted. Re-quote rather than
   fire-and-forget. The submit response's `expires_at_sim` field tells you the
   exact sweep time (null when the TTL is disabled).
+- **Rate limit**: single `POST /orders` draws from the same per-account token bucket
+  as `POST /orders/batch`; batch cancels and `POST /orders/cancel` are free.
 - Cancel via `POST /orders/cancel {"order_id": N}` — ownership enforced
   (404 on anything that isn't your resting order).
 
@@ -163,7 +165,9 @@ payload shapes as the REST backfill endpoints. Reconnect + replay from
 
 An async agent runs its own loop: read state → decide → submit a **batch** of orders and
 cancels in one authenticated call → reconcile. Realtime-only (rejected at 10x/100x); every
-order passes the same `RiskGate` as the built-in fleet.
+order passes the same `RiskGate` as the built-in fleet. The per-account order bucket is
+shared with single `POST /orders`, so callers cannot bypass batch governance by looping
+one order at a time.
 
 ### Read your resting orders
 
@@ -286,3 +290,5 @@ Semantics:
   readers skip records they don't understand.
 - The JSON schema file is generated — regenerate it after changing
   `AgentSpec`, `PersonaSpec`, or `VPPParams`.
+- Unauthenticated auth endpoints are token-bucket limited: `POST /auth/magic-link`
+  per normalized email and client IP, and `POST /auth/consume` per client IP.

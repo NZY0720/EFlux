@@ -55,6 +55,13 @@ async def submit_order(
     if vpp is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "VPP not found or not yours")
 
+    allowed, remaining = _rate_check(user.id, 1)
+    if not allowed:
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            f"order rate limit exceeded — {remaining} tokens left, refills at {_RATE_REFILL_PER_SEC}/s",
+        )
+
     try:
         result = await sim.submit_external(
             vpp_id=vpp.id, side=payload.side, price=payload.price, qty=payload.qty
