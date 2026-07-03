@@ -69,6 +69,28 @@ async def test_put_guidance_clamps_flips_source_and_feeds_reflections(client):
     assert any(e["execution_style"] == "sell the rich tape" for e in r.json())
 
 
+async def test_public_reflections_never_expose_lesson_fallback(client):
+    auth, _ = await _login(client, "lesson-private@hku.hk")
+    managed_id = await _managed(client, auth, "lesson-agent")
+    secret = "private alpha should stay owner-only"
+
+    r = await client.put(
+        f"/vpps/managed/{managed_id}/guidance",
+        headers=auth,
+        json={"risk_budget": 0.6, "soc_target": 0.7, "lesson": secret},
+    )
+    assert r.status_code == 200, r.text
+
+    r = await client.get("/market/reflections")
+    public_body = r.json()
+    assert secret not in str(public_body)
+    assert all(entry.get("lesson") is None for entry in public_body)
+
+    r = await client.get(f"/vpps/managed/{managed_id}/performance", headers=auth)
+    private_lessons = [entry["lesson"] for entry in r.json()["reflections"]]
+    assert secret in private_lessons
+
+
 async def test_release_restores_platform_and_is_idempotent(client):
     auth, _ = await _login(client)
     managed_id = await _managed(client, auth)

@@ -432,7 +432,7 @@ class ExternalStrategist:
             "execution_style": guidance.execution_style,
             # Same fallback as LLMStrategist._entry so older UI copy degrades gracefully;
             # tagged so readers can tell external steering from platform reflections.
-            "rationale": (guidance.execution_style or guidance.lesson or "external guidance"),
+            "rationale": (guidance.execution_style or "external guidance"),
             "lesson": guidance.lesson,
             "meta_control": meta_dict,
             "error": None,
@@ -590,7 +590,7 @@ class LLMStrategist:
             "soc_target": guidance.soc_target,
             "execution_style": guidance.execution_style,
             # Keep rationale populated so older UI copy degrades gracefully.
-            "rationale": guidance.execution_style or guidance.lesson,
+            "rationale": guidance.execution_style or "strategy guidance",
             "lesson": guidance.lesson,
             "meta_control": meta_dict,
             "error": None if error is None else error[:200],

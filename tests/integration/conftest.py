@@ -24,6 +24,7 @@ def _reset_order_router_state():
 
     reset_all_limiters()
     _orders._idempotency.clear()
+    _orders._idempotency_inflight.clear()
     yield
 
 

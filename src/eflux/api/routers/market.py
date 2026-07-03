@@ -13,12 +13,7 @@ from eflux.data.electricity_market import ExternalMarketQuote
 from eflux.db.models import VPP
 from eflux.market.events import ExternalTradeEvent, TradeEvent
 from eflux.market.units import internal_cash_to_usd
-
-# Canonical home is eflux.stats.categories (the stats snapshotter classifies agents
-# too); re-exported here so existing importers keep working.
 from eflux.stats.categories import agent_category
-
-__all__ = ["agent_category", "router"]
 
 router = APIRouter(prefix="/market", tags=["market"])
 

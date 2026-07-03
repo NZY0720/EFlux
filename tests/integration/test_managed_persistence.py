@@ -8,9 +8,13 @@ docs/EXTERNAL_PARTICIPATION.md and api/main._rehydrate_managed_vpps.
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
 from eflux.api.main import _rehydrate_managed_vpps
+from eflux.api.routers import vpps as vpps_router
+from eflux.agents.reflective.pool import SharedLLM
 from eflux.bridge import InMemoryBus
+from eflux.db.models import VPP
 from eflux.simulator.runner import Simulator
 
 
@@ -20,6 +24,27 @@ async def _login(client) -> tuple[str, int]:
     r = await client.post("/auth/consume", json={"token": token})
     body = r.json()
     return body["session_token"], body["user_id"]
+
+
+class _FakeLLMClient:
+    def __init__(self, model: str = "deepseek-v4-pro") -> None:
+        self.model = model
+
+    async def chat(self, messages, *, temperature=0.2, max_tokens=None):
+        del messages, temperature, max_tokens
+        return "{}"
+
+
+def _fake_shared_llm() -> SharedLLM:
+    client = _FakeLLMClient()
+    return SharedLLM(
+        client=client,
+        status="live fake",
+        strategy_suffix=f"fake:{client.model}",
+        base_url="http://fake",
+        api_key="fake",
+        default_model=client.model,
+    )
 
 
 @pytest.mark.asyncio
@@ -139,6 +164,61 @@ async def test_managed_agent_preferences_patch(client):
     # Patch on a non-existent managed agent → 404.
     r = await client.patch("/vpps/managed/999999", headers=auth, json={"persona": "x"})
     assert r.status_code == 404, r.text
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_retired_model_falls_back_to_default(client, db_session):
+    sess, user_id = await _login(client)
+    auth = {"Authorization": f"Bearer {sess}"}
+    r = await client.post(
+        "/vpps/managed",
+        headers=auth,
+        json={"name": "retired-model", "params": {"pv_kw_peak": 2.0, "battery_kwh": 5.0}},
+    )
+    assert r.status_code == 201, r.text
+    managed_id = r.json()["id"]
+
+    row = await db_session.get(VPP, managed_id)
+    row.managed_config = {**dict(row.managed_config or {}), "model": "retired-model-id"}
+    await db_session.commit()
+
+    fresh = Simulator(bus=InMemoryBus())
+    fresh.shared_llm = _fake_shared_llm()
+    await _rehydrate_managed_vpps(fresh)
+
+    vpp = fresh.my_managed_vpps(user_id)[0]
+    assert vpp.agent.strategist.client.model == "deepseek-v4-pro"
+
+
+@pytest.mark.asyncio
+async def test_rehydrate_scrubs_malformed_external_guidance(client, db_session):
+    sess, user_id = await _login(client)
+    auth = {"Authorization": f"Bearer {sess}"}
+    r = await client.post(
+        "/vpps/managed",
+        headers=auth,
+        json={"name": "bad-guidance", "params": {"pv_kw_peak": 2.0, "battery_kwh": 5.0}},
+    )
+    assert r.status_code == 201, r.text
+    managed_id = r.json()["id"]
+
+    row = (await db_session.execute(select(VPP).where(VPP.id == managed_id))).scalar_one()
+    row.managed_config = {
+        **dict(row.managed_config or {}),
+        "guidance_mode": "external",
+        "external_guidance": {"risk_budget": "not-a-number"},
+    }
+    await db_session.commit()
+
+    fresh = Simulator(bus=InMemoryBus())
+    fresh.shared_llm = _fake_shared_llm()
+    await _rehydrate_managed_vpps(fresh)
+
+    vpp = fresh.my_managed_vpps(user_id)[0]
+    assert vpps_router._guidance_source(vpp) == "platform"
+    await db_session.refresh(row)
+    assert row.managed_config["guidance_mode"] == "platform"
+    assert "external_guidance" not in row.managed_config
 
 
 @pytest.mark.asyncio

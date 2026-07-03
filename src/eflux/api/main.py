@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 # Ensure all models are imported before create_all.
 import eflux.db.models  # noqa: F401
 from eflux import __version__
+from eflux.agents.reflective.pool import CURATED_MODELS
+from eflux.agents.reflective.strategist import external_guidance_from_dict
 from eflux.api.routers import auth, benchmarks, health, leaderboard, market, orders, vpps
 from eflux.api.ws import market as market_ws
 from eflux.bridge import InMemoryBus, set_bus
@@ -46,6 +48,34 @@ async def _build_bus(settings) -> EventBus:
     return InMemoryBus()
 
 
+def _rehydrate_model(model: str | None) -> str | None:
+    if model is None or model in CURATED_MODELS:
+        return model
+    log.warning(
+        "Persisted managed-agent model %r is no longer curated; falling back to default model",
+        model,
+    )
+    return None
+
+
+def _validated_external_guidance(cfg: dict, *, market_mode: str) -> tuple[dict | None, dict, bool]:
+    guidance = cfg.get("external_guidance")
+    if cfg.get("guidance_mode") != "external":
+        return None, cfg, False
+    if not isinstance(guidance, dict):
+        scrubbed = {**cfg, "guidance_mode": "platform"}
+        scrubbed.pop("external_guidance", None)
+        return None, scrubbed, True
+    try:
+        external_guidance_from_dict(guidance, market_mode=market_mode)
+    except Exception:
+        log.exception("Persisted external guidance is invalid; scrubbing it from managed_config")
+        scrubbed = {**cfg, "guidance_mode": "platform"}
+        scrubbed.pop("external_guidance", None)
+        return None, scrubbed, True
+    return guidance, cfg, False
+
+
 async def _rehydrate_managed_vpps(sim: Simulator) -> None:
     """Re-provision persisted managed agents (Tier 0) so they survive a restart. Only the agent
     *definitions* persist (vpps.is_managed rows); the live market state is ephemeral."""
@@ -68,8 +98,15 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                 .scalars()
                 .all()
             )
+            scrubbed_any = False
             for row in rows:
-                cfg = row.managed_config or {}
+                cfg = dict(row.managed_config or {})
+                guidance, cfg, scrubbed = _validated_external_guidance(
+                    cfg, market_mode=sim.market_mode
+                )
+                if scrubbed:
+                    row.managed_config = cfg
+                    scrubbed_any = True
                 try:
                     vpp = provision_managed_vpp(
                         sim,
@@ -79,13 +116,12 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                         persona_prompt=cfg.get("persona"),
                         agent_params=cfg.get("agent_params") or {},
                         seed=cfg.get("seed"),
-                        model=cfg.get("model"),
+                        model=_rehydrate_model(cfg.get("model")),
                         managed_def_id=row.id,
                     )
                     # Restore external steering (Tier A3) so a restart neither burns
                     # platform LLM calls nor forgets the owner's last guidance.
-                    guidance = cfg.get("external_guidance")
-                    if cfg.get("guidance_mode") == "external" and isinstance(guidance, dict):
+                    if guidance is not None:
                         apply_external_guidance(vpp, guidance, market_mode=sim.market_mode)
                     apply_chat_prefs(vpp, cfg.get("chat"))
                     count += 1
@@ -93,6 +129,8 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                     log.exception(
                         "Failed to rehydrate managed VPP id=%s name=%s", row.id, row.name
                     )
+            if scrubbed_any:
+                await session.commit()
     except Exception:
         log.exception("Managed-VPP rehydration skipped (DB unavailable or schema not migrated?)")
     if count:

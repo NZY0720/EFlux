@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import OrderedDict
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -192,6 +193,16 @@ def _rate_check(user_id: int, cost: int) -> tuple[bool, int]:
 # re-submitting. In-memory, LRU-bounded — consistent with the ephemeral market.
 _IDEMPOTENCY_MAX = 2000
 _idempotency: OrderedDict[tuple[int, str], BatchResult] = OrderedDict()
+_idempotency_inflight: dict[tuple[int, str], asyncio.Future[BatchResult]] = {}
+
+
+def _consume_future_exception(fut: asyncio.Future[BatchResult]) -> None:
+    if fut.cancelled():
+        return
+    try:
+        fut.exception()
+    except Exception:
+        pass
 
 
 def _idem_get(user_id: int, key: str) -> BatchResult | None:
@@ -206,6 +217,33 @@ def _idem_put(user_id: int, key: str, response: BatchResult) -> None:
     _idempotency.move_to_end((user_id, key))
     while len(_idempotency) > _IDEMPOTENCY_MAX:
         _idempotency.popitem(last=False)
+
+
+async def _idem_begin(user_id: int, key: str) -> tuple[bool, asyncio.Future[BatchResult] | None, BatchResult | None]:
+    cached = _idem_get(user_id, key)
+    if cached is not None:
+        return False, None, cached
+    idem_key = (user_id, key)
+    existing = _idempotency_inflight.get(idem_key)
+    if existing is not None:
+        return False, existing, None
+    fut: asyncio.Future[BatchResult] = asyncio.get_running_loop().create_future()
+    fut.add_done_callback(_consume_future_exception)
+    _idempotency_inflight[idem_key] = fut
+    return True, fut, None
+
+
+def _idem_finish(user_id: int, key: str, fut: asyncio.Future[BatchResult], result: BatchResult) -> None:
+    _idem_put(user_id, key, result)
+    _idempotency_inflight.pop((user_id, key), None)
+    if not fut.done():
+        fut.set_result(result)
+
+
+def _idem_fail(user_id: int, key: str, fut: asyncio.Future[BatchResult], exc: Exception) -> None:
+    _idempotency_inflight.pop((user_id, key), None)
+    if not fut.done():
+        fut.set_exception(exc)
 
 
 @router.post("/batch", response_model=BatchResult)
@@ -230,62 +268,79 @@ async def submit_batch(
     if not payload.orders and not payload.cancels:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "empty batch")
 
-    # Idempotency replay — original result, no re-submit, no rate-limit charge.
+    idem_owner = False
+    idem_future: asyncio.Future[BatchResult] | None = None
     if payload.idempotency_key is not None:
-        cached = _idem_get(user.id, payload.idempotency_key)
+        idem_owner, idem_future, cached = await _idem_begin(user.id, payload.idempotency_key)
         if cached is not None:
             return cached
-
-    # Late-response policy.
-    if payload.deadline is not None:
-        deadline = (
-            payload.deadline if payload.deadline.tzinfo else payload.deadline.replace(tzinfo=UTC)
-        )
-        if deadline < datetime.now(UTC):
-            raise HTTPException(status.HTTP_409_CONFLICT, "batch deadline has passed")
-
-    # Ownership: every order's vpp must belong to the caller.
-    owned = set(
-        (await session.execute(select(VPP.id).where(VPP.owner_id == user.id, VPP.is_active.is_(True))))
-        .scalars()
-        .all()
-    )
-    for o in payload.orders:
-        if o.vpp_id not in owned:
-            raise HTTPException(status.HTTP_404_NOT_FOUND, f"vpp {o.vpp_id} not found or not yours")
-
-    # Rate limit: each order costs a token; cancels are free.
-    allowed, remaining = _rate_check(user.id, len(payload.orders))
-    if not allowed:
-        raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS,
-            f"order rate limit exceeded — {remaining} tokens left, refills at {_RATE_REFILL_PER_SEC}/s",
-        )
-
-    # Cancels only touch the caller's own resting orders; others report ok=false.
-    auth_cancels: list[int] = []
-    denied_cancels: list[BatchCancelResult] = []
-    for oid in payload.cancels:
-        order = sim.engine.book.get(oid)
-        if order is not None and order.vpp_id in owned:
-            auth_cancels.append(oid)
-        else:
-            denied_cancels.append(BatchCancelResult(order_id=oid, ok=False))
+        if not idem_owner and idem_future is not None:
+            return await idem_future
 
     try:
-        outcome = await sim.submit_external_batch(
-            orders=[o.model_dump() for o in payload.orders], cancels=auth_cancels
-        )
-    except PermissionError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+        # Late-response policy.
+        if payload.deadline is not None:
+            deadline = (
+                payload.deadline if payload.deadline.tzinfo else payload.deadline.replace(tzinfo=UTC)
+            )
+            if deadline < datetime.now(UTC):
+                raise HTTPException(status.HTTP_409_CONFLICT, "batch deadline has passed")
 
-    result = BatchResult(
-        protocol_version=1,
-        tick_id=outcome["tick_id"],
-        results=[BatchOrderResult(**r) for r in outcome["results"]],
-        cancelled=[BatchCancelResult(**c) for c in outcome["cancelled"]] + denied_cancels,
-        rate_limit_remaining=remaining,
-    )
-    if payload.idempotency_key is not None:
-        _idem_put(user.id, payload.idempotency_key, result)
+        # Ownership: every order's vpp must belong to the caller.
+        owned = set(
+            (await session.execute(select(VPP.id).where(VPP.owner_id == user.id, VPP.is_active.is_(True))))
+            .scalars()
+            .all()
+        )
+        for o in payload.orders:
+            if o.vpp_id not in owned:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, f"vpp {o.vpp_id} not found or not yours")
+
+        # Rate limit: each order costs a token; cancels are free.
+        allowed, remaining = _rate_check(user.id, len(payload.orders))
+        if not allowed:
+            raise HTTPException(
+                status.HTTP_429_TOO_MANY_REQUESTS,
+                f"order rate limit exceeded — {remaining} tokens left, refills at {_RATE_REFILL_PER_SEC}/s",
+            )
+
+        # Cancels only touch the caller's own resting orders; others report ok=false.
+        auth_cancels: list[int] = []
+        denied_cancels: list[BatchCancelResult] = []
+        for oid in payload.cancels:
+            order = sim.engine.book.get(oid)
+            if order is not None and order.vpp_id in owned:
+                auth_cancels.append(oid)
+            else:
+                denied_cancels.append(BatchCancelResult(order_id=oid, ok=False))
+
+        try:
+            outcome = await sim.submit_external_batch(
+                orders=[o.model_dump() for o in payload.orders], cancels=auth_cancels
+            )
+        except PermissionError as e:
+            raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+
+        result = BatchResult(
+            protocol_version=1,
+            tick_id=outcome["tick_id"],
+            results=[BatchOrderResult(**r) for r in outcome["results"]],
+            cancelled=[BatchCancelResult(**c) for c in outcome["cancelled"]] + denied_cancels,
+            rate_limit_remaining=remaining,
+        )
+    except Exception as e:
+        if payload.idempotency_key is not None and idem_owner and idem_future is not None:
+            _idem_fail(user.id, payload.idempotency_key, idem_future, e)
+        raise
+    except BaseException:
+        # Cancellation is not an Exception; without this branch a cancelled owner
+        # would strand the in-flight future and every retry of this key would hang.
+        if payload.idempotency_key is not None and idem_owner and idem_future is not None:
+            _idempotency_inflight.pop((user.id, payload.idempotency_key), None)
+            if not idem_future.done():
+                idem_future.cancel()
+        raise
+
+    if payload.idempotency_key is not None and idem_owner and idem_future is not None:
+        _idem_finish(user.id, payload.idempotency_key, idem_future, result)
     return result

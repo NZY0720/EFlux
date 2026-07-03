@@ -150,7 +150,7 @@ curl -s -X POST $BASE/orders -H "Authorization: Bearer $KEY" \
 | `GET /market/participants` | id → name/kind/strategy directory. |
 | `GET /market/supply_curve` | Resting orders with per-VPP category attribution (merit order). |
 | `GET /market/agents` | Live roster: endowments, PnL, SOC, power flows. |
-| `GET /market/reflections?limit=N` | LLM agents' guidance feed (incl. lessons). |
+| `GET /market/reflections?limit=N` | Public LLM agents' guidance feed. Excludes private `lesson` takeaways. |
 
 ### Streaming
 
@@ -268,9 +268,10 @@ Semantics:
   the strategy library; `risk_budget`/`soc_target` in [0,1]; optional `meta_control`).
   Unknown modes are dropped, numbers are clamped **server-side**, and the response echoes
   what was actually applied. Guidance biases the executor; it never places orders directly.
-- **Visible** — each update lands in the agent's reflection timeline (`/vpps/managed/{id}/performance`)
-  and the public `GET /market/reflections`; the My VPPs card shows an "externally steered" badge
-  and `guidance_source` is reported on `GET /vpps/managed`.
+- **Visible, with private lessons** — each update lands in the owner's reflection timeline
+  (`/vpps/managed/{id}/performance`), including `lesson`. Public `GET /market/reflections`
+  shows the applied guidance fields but excludes `lesson`; the My VPPs card shows an
+  "externally steered" badge and `guidance_source` is reported on `GET /vpps/managed`.
 - **Rate limited** — ~2 updates/min sustained per account (burst 10) → 429; comparable to the
   platform strategist's own cadence.
 - **Durable** — the last guidance persists with the agent definition and is re-applied on

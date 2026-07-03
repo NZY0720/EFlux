@@ -5,6 +5,9 @@ See docs/AGENT_SPEC.md §"Agent Protocol v1".
 
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
+
 import pytest
 
 
@@ -84,6 +87,88 @@ async def test_batch_idempotency_replay(client):
     assert r1.json()["results"][0]["order_id"] == r2.json()["results"][0]["order_id"]
     opens = (await client.get("/orders/open", headers=auth, params={"vpp_id": vpp_id})).json()
     assert len(opens) == 1
+
+
+@pytest.mark.asyncio
+async def test_batch_idempotency_concurrent_duplicate_guard():
+    """Direct router-level concurrency test: ASGI scheduling is unnecessary here."""
+    from eflux.api.ratelimit import reset_all_limiters
+    from eflux.api.routers import orders as orders_router
+
+    reset_all_limiters()
+    orders_router._idempotency.clear()
+    orders_router._idempotency_inflight.clear()
+
+    vpp_id = 123
+    entered_db = asyncio.Event()
+    release_db = asyncio.Event()
+    executions = 0
+
+    class Result:
+        def scalars(self):
+            return self
+
+        def all(self):
+            return [vpp_id]
+
+    class Session:
+        async def execute(self, stmt):
+            del stmt
+            entered_db.set()
+            await release_db.wait()
+            return Result()
+
+    class Book:
+        def get(self, order_id):
+            del order_id
+            return None
+
+    class Engine:
+        book = Book()
+
+    class Sim:
+        engine = Engine()
+
+        async def submit_external_batch(self, *, orders, cancels):
+            nonlocal executions
+            executions += 1
+            await asyncio.sleep(0)
+            return {
+                "tick_id": 7,
+                "results": [
+                    {
+                        "index": 0,
+                        "client_ref": orders[0].get("client_ref"),
+                        "status": "accepted",
+                        "order_id": 9001,
+                        "remaining_qty": "1",
+                        "expires_at_sim": None,
+                        "trades": [],
+                    }
+                ],
+                "cancelled": [],
+            }
+
+    payload = orders_router.OrderBatch(
+        idempotency_key="same-key",
+        orders=[{"vpp_id": vpp_id, "side": "sell", "price": "900", "qty": "1", "client_ref": "x"}],
+    )
+    kwargs = {
+        "payload": payload,
+        "session": Session(),
+        "user": SimpleNamespace(id=1),
+        "sim": Sim(),
+    }
+    first = asyncio.create_task(orders_router.submit_batch(**kwargs))
+    await entered_db.wait()
+    second = asyncio.create_task(orders_router.submit_batch(**kwargs))
+    await asyncio.sleep(0)
+    release_db.set()
+
+    r1, r2 = await asyncio.gather(first, second)
+    assert executions == 1
+    assert r1.results[0].order_id == r2.results[0].order_id == 9001
+    assert not orders_router._idempotency_inflight
 
 
 @pytest.mark.asyncio
