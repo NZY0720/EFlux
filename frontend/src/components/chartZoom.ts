@@ -6,7 +6,7 @@
 // data streams in. Absolute bounds keep a zoomed window pinned to real time;
 // null bounds mean "full range" (auto-follow new data).
 
-import { useMemo, useRef } from "react";
+import { useCallback, useMemo, useRef, useState, type MutableRefObject } from "react";
 
 export interface ZoomWindow {
   startValue: number | null;
@@ -23,6 +23,11 @@ interface ZoomEventParam {
 
 export const FULL_ZOOM: ZoomWindow = { startValue: null, endValue: null };
 
+interface ZoomExtent {
+  min: number;
+  max: number;
+}
+
 interface ZoomTheme {
   bg?: string;
   border?: string;
@@ -33,22 +38,37 @@ interface ZoomTheme {
   accent?: string;
 }
 
+const finiteNumber = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+
 /** Read a window from an echarts "datazoom" event, or null if it carries no usable bounds. */
-export function readZoomEvent(params: ZoomEventParam): ZoomWindow | null {
+export function readZoomEvent(params: ZoomEventParam, extent?: ZoomExtent | null): ZoomWindow | null {
   const z = params?.batch?.[0] ?? params;
   if (!z) return null;
-  // Zoomed fully out → resume auto-follow (full range).
-  if (z.start === 0 && z.end === 100) return { startValue: null, endValue: null };
-  if (typeof z.startValue === "number" && typeof z.endValue === "number") {
+  const hasExtentParam = extent !== undefined;
+  // Zoomed fully out → resume auto-follow (full range). Kept only for the
+  // historical no-extent path used by existing charts.
+  if (!hasExtentParam && z.start === 0 && z.end === 100) return { startValue: null, endValue: null };
+  if (finiteNumber(z.startValue) && finiteNumber(z.endValue)) {
     return { startValue: Math.round(z.startValue), endValue: Math.round(z.endValue) };
+  }
+  if (extent && finiteNumber(z.start) && finiteNumber(z.end)) {
+    const span = extent.max - extent.min;
+    if (Number.isFinite(span) && span >= 0) {
+      return {
+        startValue: Math.round(extent.min + (z.start / 100) * span),
+        endValue: Math.round(extent.min + (z.end / 100) * span),
+      };
+    }
   }
   return null;
 }
 
 /** dataZoom (scroll/drag "inside" + styled slider) honoring an absolute-time window. */
 export function timeZoom(z: ZoomWindow, theme: ZoomTheme = {}) {
-  const v: { startValue?: number; endValue?: number } =
-    z.startValue !== null && z.endValue !== null ? { startValue: z.startValue, endValue: z.endValue } : {};
+  const v: { start?: number; end?: number; startValue?: number; endValue?: number } =
+    z.startValue !== null && z.endValue !== null
+      ? { startValue: z.startValue, endValue: z.endValue }
+      : { start: 0, end: 100 };
   const accent = theme.accent ?? "#38bdf8";
   return [
     { type: "inside" as const, filterMode: "filter" as const, ...v },
@@ -70,17 +90,61 @@ export function timeZoom(z: ZoomWindow, theme: ZoomTheme = {}) {
   ];
 }
 
+interface PersistentZoomBase {
+  zoomRef: MutableRefObject<ZoomWindow>;
+  onEvents: {
+    datazoom: (params: ZoomEventParam) => void;
+  };
+}
+
+interface PersistentZoomTracked extends PersistentZoomBase {
+  autoFollow: boolean;
+  resetZoom: () => void;
+  setExtent: (min: number, max: number) => void;
+}
+
+interface PersistentZoomOptions {
+  trackAutoFollow?: boolean;
+}
+
+export function usePersistentTimeZoom(): PersistentZoomBase;
+export function usePersistentTimeZoom(opts: { trackAutoFollow?: false }): PersistentZoomBase;
+export function usePersistentTimeZoom(opts: { trackAutoFollow: true }): PersistentZoomTracked;
 /** Preserve an absolute-time zoom window across streaming chart option rebuilds. */
-export function usePersistentTimeZoom() {
+export function usePersistentTimeZoom(opts: PersistentZoomOptions = {}): PersistentZoomBase | PersistentZoomTracked {
   const zoomRef = useRef<ZoomWindow>(FULL_ZOOM);
+  const extentRef = useRef<ZoomExtent | null>(null);
+  const [autoFollow, setAutoFollowState] = useState(true);
+  const autoFollowRef = useRef(true);
+  const trackAutoFollow = opts.trackAutoFollow === true;
+
+  const setAutoFollow = useCallback((next: boolean) => {
+    autoFollowRef.current = next;
+    setAutoFollowState(next);
+  }, []);
+
+  const resetZoom = useCallback(() => {
+    zoomRef.current = FULL_ZOOM;
+    setAutoFollow(true);
+  }, [setAutoFollow]);
+
+  const setExtent = useCallback((min: number, max: number) => {
+    if (Number.isFinite(min) && Number.isFinite(max)) {
+      extentRef.current = { min, max };
+    }
+  }, []);
+
   const onEvents = useMemo(
     () => ({
       datazoom: (params: ZoomEventParam) => {
-        const w = readZoomEvent(params);
-        if (w) zoomRef.current = w;
+        const w = readZoomEvent(params, trackAutoFollow ? extentRef.current : undefined);
+        if (!w) return;
+        zoomRef.current = w;
+        if (trackAutoFollow && autoFollowRef.current) setAutoFollow(false);
       },
     }),
-    [],
+    [setAutoFollow, trackAutoFollow],
   );
-  return { zoomRef, onEvents };
+  if (!trackAutoFollow) return { zoomRef, onEvents };
+  return { zoomRef, onEvents, autoFollow, resetZoom, setExtent };
 }

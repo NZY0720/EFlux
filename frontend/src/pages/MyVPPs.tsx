@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   AlertCircle,
   BatteryCharging,
@@ -8,6 +8,7 @@ import {
   ChevronRight,
   CheckCircle2,
   Layers3,
+  LineChart,
   ListChecks,
   MapPinned,
   MessagesSquare,
@@ -41,7 +42,9 @@ const CHAT_COLORS = ["#059669", "#0284c7", "#7c3aed", "#d97706", "#e11d48", "#0d
 const LOAD_PROFILES = ["residential", "industrial", "commercial", "flat"];
 import type { AlgorithmInfo, AlgorithmParam, ManagedVPP, ManagedVPPPerformance, ReflectionEntry, VPP } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
+import PriceChart from "../components/PriceChart";
 import { strategyLabel } from "../lib/categories";
+import { useMarketMode } from "../state/marketMode";
 import { useMarket } from "../state/marketStream";
 
 type AlgorithmParamValue = number | string | boolean;
@@ -86,6 +89,26 @@ export default function MyVPPs() {
   const [price, setPrice] = useState(50);
   const [qty, setQty] = useState(0.05);
   const [lastOrder, setLastOrder] = useState<string | null>(null);
+  const [hiddenAgentIds, setHiddenAgentIds] = useState<Set<number>>(() => new Set());
+  const { recent, snapshot } = useMarket();
+  const { mode: marketMode } = useMarketMode();
+
+  const myAgents = useMemo(() => {
+    let idx = 0;
+    return [
+      ...managedVpps.map((v) => ({ id: v.vpp_id, name: v.name, color: CHAT_COLORS[idx++ % CHAT_COLORS.length] })),
+      ...vpps.map((v) => ({ id: v.id, name: v.name, color: CHAT_COLORS[idx++ % CHAT_COLORS.length] })),
+    ];
+  }, [vpps, managedVpps]);
+  const hiddenAgentIdList = useMemo(() => [...hiddenAgentIds], [hiddenAgentIds]);
+  const toggleAgent = (id: number) => {
+    setHiddenAgentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   const reload = async () => {
     try {
@@ -364,6 +387,57 @@ export default function MyVPPs() {
             </button>
           </div>
         </form>
+      </DashboardCard>
+
+      <DashboardCard className="lg:col-span-2">
+        <CardTitle icon={LineChart}>My trading activity</CardTitle>
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          {myAgents.map((agent) => {
+            const hidden = hiddenAgentIds.has(agent.id);
+            return (
+              <button
+                key={agent.id}
+                type="button"
+                onClick={() => toggleAgent(agent.id)}
+                className={`inline-flex h-7 max-w-[220px] items-center gap-1.5 rounded-md border px-2.5 text-xs font-medium transition-colors ${
+                  hidden
+                    ? "border-[var(--border)] text-[var(--text-subtle)] opacity-55 line-through hover:bg-[var(--surface-hover)]"
+                    : "border-[var(--border)] text-[var(--text)] hover:bg-[var(--surface-hover)]"
+                }`}
+              >
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: agent.color }} />
+                <span className="truncate">{agent.name}</span>
+              </button>
+            );
+          })}
+          {hiddenAgentIds.size > 0 && (
+            <button
+              type="button"
+              onClick={() => setHiddenAgentIds(new Set())}
+              className="inline-flex h-7 items-center rounded-md border border-[var(--border)] px-2.5 text-xs font-medium text-[var(--accent)] transition-colors hover:bg-[var(--surface-hover)]"
+            >
+              Show all
+            </button>
+          )}
+        </div>
+        <PriceChart
+          variant={marketMode === "realprice" ? "realprice" : "p2p"}
+          events={recent}
+          myAgents={myAgents}
+          hiddenAgentIds={hiddenAgentIdList}
+          initialPrice={snapshot?.last_price ? Number(snapshot.last_price) : null}
+          initialExternalPrice={
+            marketMode === "realprice" &&
+            snapshot?.external_market &&
+            (snapshot.external_market.status === "real" || snapshot.external_market.status === "fallback") &&
+            snapshot.external_market.raw_lmp
+              ? Number(snapshot.external_market.raw_lmp)
+              : null
+          }
+        />
+        <p className="mt-2 text-xs text-[var(--text-muted)]">
+          ▲ buys ▼ sells · color = agent · fills at the same timestamp are shown at their average price
+        </p>
       </DashboardCard>
 
       <DashboardCard>

@@ -82,6 +82,7 @@ export interface AlgorithmInfo {
 
 export interface ManagedVPP {
   id: number;
+  vpp_id: number;
   name: string;
   params: Record<string, number>;
   is_active: boolean;

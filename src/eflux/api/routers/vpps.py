@@ -55,6 +55,7 @@ class VPPOut(BaseModel):
 
 class ManagedVPPOut(BaseModel):
     id: int
+    vpp_id: int
     name: str
     params: VPPParamsPayload
     is_active: bool
@@ -204,6 +205,7 @@ def _managed_vpp_out(vpp) -> ManagedVPPOut:
     client = getattr(strategist, "client", None) if strategist is not None else None
     return ManagedVPPOut(
         id=vpp.managed_def_id if vpp.managed_def_id is not None else vpp.vpp_id,
+        vpp_id=vpp.vpp_id,
         name=vpp.name,
         params=vpp.params.to_dict(),
         is_active=True,
