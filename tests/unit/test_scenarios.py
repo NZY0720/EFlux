@@ -23,8 +23,8 @@ def _load(monkeypatch) -> Simulator:
 def test_default_scenario_loads_full_roster_incl_llm_fleet(monkeypatch):
     sim = _load(monkeypatch)
 
-    # 36 declared entries (4 zi + 20 truthful + 2 gas + 6 hybrid + 4 standalone PPO) plus
-    # 6 auto-spawned PPO mirrors (one per hybrid) = 42 live VPPs.
+    # 36 declared entries (4 classical baselines aa/zip/gd + 20 truthful + 2 gas + 6 hybrid
+    # + 4 standalone PPO) plus 6 auto-spawned PPO mirrors (one per hybrid) = 42 live VPPs.
     assert len(sim.vpps) == 42
     my_vpps = sim.my_managed_vpps()
     assert len(my_vpps) == 6
@@ -146,17 +146,19 @@ def test_default_scenario_has_diverse_vpp_types(monkeypatch):
 
 
 def test_cost_diversification_spreads_price_ref_excluding_llm(monkeypatch):
-    """Non-LLM truthful/ZI agents get a deterministic per-agent price_ref jitter
+    """Non-LLM truthful/baseline agents get a deterministic per-agent price_ref jitter
     so their cost levels fan out; hybrid LLM agents are left at the default."""
+    from eflux.agents.aa_agent import AAAgent
+    from eflux.agents.gd_agent import GDAgent
     from eflux.agents.truthful import TruthfulAgent
-    from eflux.agents.zi import ZIAgent
+    from eflux.agents.zip_agent import ZIPAgent
 
     sim = _load(monkeypatch)
 
     price_refs = [
         float(v.agent.price_ref)
         for v in sim.vpps.values()
-        if type(v.agent) in (TruthfulAgent, ZIAgent)
+        if type(v.agent) in (TruthfulAgent, AAAgent, ZIPAgent, GDAgent)
     ]
     assert len(price_refs) >= 5
     assert len(set(price_refs)) > 1, "jitter should spread price_ref off the flat 50"
@@ -171,15 +173,17 @@ def test_cost_diversification_spreads_price_ref_excluding_llm(monkeypatch):
 
 def test_cost_diversification_is_deterministic_across_loads(monkeypatch):
     """Same roster + seed ⇒ identical jittered price_refs (stable across restarts)."""
+    from eflux.agents.aa_agent import AAAgent
+    from eflux.agents.gd_agent import GDAgent
     from eflux.agents.truthful import TruthfulAgent
-    from eflux.agents.zi import ZIAgent
+    from eflux.agents.zip_agent import ZIPAgent
 
     def refs() -> dict[str, float]:
         sim = _load(monkeypatch)
         return {
             v.name: float(v.agent.price_ref)
             for v in sim.vpps.values()
-            if type(v.agent) in (TruthfulAgent, ZIAgent)
+            if type(v.agent) in (TruthfulAgent, AAAgent, ZIPAgent, GDAgent)
         }
 
     assert refs() == refs()
@@ -216,19 +220,17 @@ def _no_ppo_executor(monkeypatch):
     monkeypatch.setattr(scenarios, "_build_executor", lambda *args, **kwargs: None)
 
 
-def test_provision_managed_vpp_supports_all_algorithms(monkeypatch):
+def test_provision_managed_vpp_base_algorithms_no_llm(monkeypatch):
+    """Without the LLM the standalone base agent runs directly."""
     from eflux.agents.aa_agent import AAAgent
     from eflux.agents.gd_agent import GDAgent
     from eflux.agents.truthful import TruthfulAgent
-    from eflux.agents.zi import ZIAgent
     from eflux.agents.zip_agent import ZIPAgent
 
     _no_ppo_executor(monkeypatch)
     expected = {
-        "hybrid": HybridPolicyAgent,
         "ppo": StrategyAgent,
         "truthful": TruthfulAgent,
-        "zi": ZIAgent,
         "zip": ZIPAgent,
         "gd": GDAgent,
         "aa": AAAgent,
@@ -241,33 +243,60 @@ def test_provision_managed_vpp_supports_all_algorithms(monkeypatch):
             name=f"managed-{algorithm}",
             params={"pv_kw_peak": 2.0, "battery_kwh": 5.0},
             algorithm=algorithm,
+            llm_enabled=False,
         )
         assert isinstance(vpp.agent, cls)
         assert vpp.algorithm == algorithm
+        assert vpp.llm_enabled is False
 
 
-def test_managed_algorithm_categories_are_llm_only_for_hybrid(monkeypatch):
+def test_provision_managed_vpp_llm_wraps_any_base(monkeypatch):
+    """With the LLM enabled, every base runs the HybridPolicyAgent stack: ppo keeps the PPO
+    executor; a classical baseline is wrapped as a BaselinePolicy executor the strategist coaches."""
+    from eflux.agents.strategy.policy import BaselinePolicy
+
+    _no_ppo_executor(monkeypatch)
+    for algorithm in ("ppo", "truthful", "zip", "gd", "aa"):
+        sim = Simulator(bus=InMemoryBus())
+        vpp = provision_managed_vpp(
+            sim,
+            owner_id=1,
+            name=f"llm-{algorithm}",
+            params={"pv_kw_peak": 2.0, "battery_kwh": 5.0},
+            algorithm=algorithm,
+            llm_enabled=True,
+        )
+        assert isinstance(vpp.agent, HybridPolicyAgent)
+        assert vpp.algorithm == algorithm
+        assert vpp.llm_enabled is True
+        if algorithm != "ppo":
+            assert isinstance(vpp.agent._executor, BaselinePolicy)
+
+
+def test_managed_algorithm_categories_track_llm_flag(monkeypatch):
     from eflux.stats.categories import agent_category, is_llm_vpp
 
     _no_ppo_executor(monkeypatch)
     sim = Simulator(bus=InMemoryBus())
-    hybrid = provision_managed_vpp(
+    llm_ppo = provision_managed_vpp(
         sim,
         owner_id=1,
-        name="managed-hybrid",
+        name="llm-ppo",
         params={"pv_kw_peak": 2.0, "battery_kwh": 5.0},
-        algorithm="hybrid",
+        algorithm="ppo",
+        llm_enabled=True,
     )
-    assert agent_category(hybrid) == "llm"
-    assert is_llm_vpp(hybrid) is True
+    assert agent_category(llm_ppo) == "llm"
+    assert is_llm_vpp(llm_ppo) is True
 
-    for algorithm in ("ppo", "truthful", "zi", "zip", "gd", "aa"):
+    for algorithm in ("ppo", "truthful", "zip", "gd", "aa"):
         vpp = provision_managed_vpp(
             sim,
             owner_id=1,
-            name=f"managed-{algorithm}",
+            name=f"base-{algorithm}",
             params={"pv_kw_peak": 2.0, "battery_kwh": 5.0},
             algorithm=algorithm,
+            llm_enabled=False,
         )
         assert agent_category(vpp) == "solar"
         assert is_llm_vpp(vpp) is False
@@ -293,6 +322,7 @@ def test_managed_ppo_online_learning_toggle_reaches_executor(monkeypatch):
         name="managed-ppo",
         params={"pv_kw_peak": 2.0, "battery_kwh": 5.0},
         algorithm="ppo",
+        llm_enabled=False,
         online_learning=False,
     )
 

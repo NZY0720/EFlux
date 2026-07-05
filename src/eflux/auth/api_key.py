@@ -42,6 +42,27 @@ async def create_api_key(session: AsyncSession, user: User, name: str) -> Issued
     return IssuedApiKey(plaintext=plaintext, record=rec)
 
 
+async def list_api_keys(session: AsyncSession, user: User) -> list[ApiKey]:
+    """The user's API keys (newest first), including revoked ones so the UI can show status."""
+    stmt = select(ApiKey).where(ApiKey.user_id == user.id).order_by(ApiKey.created_at.desc())
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def revoke_api_key(session: AsyncSession, user: User, key_prefix: str) -> bool:
+    """Revoke one of the user's keys by its (non-secret) prefix. Idempotent — returns False if
+    no matching active key belongs to the user."""
+    stmt = select(ApiKey).where(
+        ApiKey.user_id == user.id,
+        ApiKey.key_prefix == key_prefix,
+        ApiKey.revoked_at.is_(None),
+    )
+    rec = (await session.execute(stmt)).scalar_one_or_none()
+    if rec is None:
+        return False
+    rec.revoked_at = datetime.now(UTC)
+    return True
+
+
 async def verify_api_key(session: AsyncSession, plaintext: str) -> User | None:
     settings = get_settings()
     if not plaintext.startswith(settings.api_key_prefix):

@@ -19,7 +19,9 @@ function typeBadge(a: MarketAgent): { label: string; tone: "violet" | "accent" |
   if (s.includes("Strategy") || s.includes("PPO")) return { label: "PPO", tone: "accent" };
   if (s.includes("Truthful")) return { label: "truthful", tone: "muted" };
   if (s.includes("Gas")) return { label: "gas", tone: "amber" };
-  if (s.includes("ZI")) return { label: "ZI", tone: "muted" };
+  if (s.includes("ZIP")) return { label: "ZIP", tone: "muted" };
+  if (s.includes("AA")) return { label: "AA", tone: "muted" };
+  if (s.includes("GD")) return { label: "GD", tone: "muted" };
   return { label: s || "agent", tone: "muted" };
 }
 

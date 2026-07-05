@@ -75,7 +75,8 @@ export interface AlgorithmInfo {
   id: string;
   label: string;
   description: string;
-  uses_llm: boolean;
+  /** Every base algorithm can be paired with the LLM strategist via the llm_enabled toggle. */
+  llm_capable: boolean;
   supports_online_learning: boolean;
   params: AlgorithmParam[];
 }
@@ -88,6 +89,8 @@ export interface ManagedVPP {
   is_active: boolean;
   is_external: boolean;
   algorithm: string;
+  /** Whether the LLM strategist is layered on the base algorithm (drives the "LLM + <ALGO>" label). */
+  llm_enabled: boolean;
   agent_kind: string;
   strategy: string;
   llm_live: boolean;

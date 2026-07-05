@@ -26,8 +26,8 @@ vpps:
   - name: demo-pv-seller
     agent: truthful
     params: { pv_kw_peak: 16.0, battery_kwh: 15.0, load_kw_base: 2.0, markup_floor: 0.4 }
-  - name: demo-zi-noise
-    agent: zi
+  - name: demo-aa-noise
+    agent: aa
     params: { pv_kw_peak: 6.0, battery_kwh: 10.0, load_kw_base: 4.0 }
   - name: demo-gas-backstop
     agent: gas

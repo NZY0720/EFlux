@@ -25,7 +25,7 @@ def _snap(session_id: int, name: str, *, tick_no: int, sim_ts: datetime, pnl: st
         name=name,
         managed_def_id=None,
         owner_id=None,
-        strategy="ZIAgent",
+        strategy="AAAgent",
         category="solar",
         is_llm=False,
         llm_model=None,

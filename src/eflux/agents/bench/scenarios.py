@@ -11,11 +11,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 
+from eflux.agents.aa_agent import AAAgent
 from eflux.agents.base import BaseAgent
 from eflux.agents.gas import GasGeneratorAgent
 from eflux.agents.hybrid import StrategyAgent
 from eflux.agents.truthful import TruthfulAgent
-from eflux.agents.zi import ZIAgent
+from eflux.agents.zip_agent import ZIPAgent
 from eflux.vpp.base import VPPParams
 
 
@@ -28,9 +29,9 @@ class BenchVPP:
 
 
 def counter_roster() -> list[BenchVPP]:
-    """Two-sided, stable liquidity: a constant load buyer, a big PV seller, ZI noise,
-    and a gas backstop that caps the price. Fresh agent instances each call (agents
-    carry per-tick state) so episodes never share mutable state."""
+    """Two-sided, stable liquidity: a constant load buyer, a big PV seller, a ZIP
+    adaptive-margin baseline, and a gas backstop that caps the price. Fresh agent instances
+    each call (agents carry per-tick state) so episodes never share mutable state."""
     return [
         BenchVPP(
             "buyer-load",
@@ -45,9 +46,9 @@ def counter_roster() -> list[BenchVPP]:
             102,
         ),
         BenchVPP(
-            "zi-noise",
+            "zip-noise",
             VPPParams(pv_kw_peak=6.0, battery_kwh=10.0, load_kw_base=4.0),
-            ZIAgent(price_ref=Decimal("50")),
+            ZIPAgent(price_ref=Decimal("50")),
             103,
         ),
         BenchVPP(
@@ -78,5 +79,5 @@ def candidates() -> dict[str, Callable[[], BaseAgent]]:
     return {
         "truthful": lambda: TruthfulAgent(price_ref=Decimal("50")),
         "strategy": lambda: StrategyAgent(price_ref=Decimal("50")),
-        "zi": lambda: ZIAgent(price_ref=Decimal("50")),
+        "aa": lambda: AAAgent(price_ref=Decimal("50")),
     }

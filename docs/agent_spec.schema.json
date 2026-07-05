@@ -69,9 +69,8 @@
       "type": "string"
     },
     "agent": {
-      "default": "zi",
+      "default": "truthful",
       "enum": [
-        "zi",
         "truthful",
         "gas",
         "strategy",

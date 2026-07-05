@@ -17,11 +17,19 @@ departs from Truthful while staying interpretable and risk-gated (design note §
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from eflux.agents.base import AgentContext
-from eflux.agents.strategy.schema import StrategyAction, StrategyMode
+from eflux.agents.strategy.schema import (
+    PRICE_MULT_MAX,
+    PRICE_MULT_MIN,
+    StrategyAction,
+    StrategyMode,
+)
 from eflux.agents.valuation import ValuationSignal
+
+if TYPE_CHECKING:
+    from eflux.agents._baseline_common import BaselineAgent
 
 
 @runtime_checkable
@@ -111,3 +119,44 @@ def _action_for_preferred(mode: StrategyMode) -> StrategyAction:
     if mode == StrategyMode.PASSIVE_MARKET_MAKE:
         return StrategyAction(mode=mode, qty_fraction=0.5, ladder_slope=0.02)
     return StrategyAction(mode=mode)
+
+
+@dataclass
+class BaselinePolicy:
+    """Adapt a classical CDA baseline (AA / ZIP / GD / Truthful) into the `StrategyPolicy`
+    seam so the slow LLM strategist can coach it *exactly* like the PPO executor.
+
+    The wrapped baseline computes its own target quote price via its `_quote_price` rule
+    (AA's p*/aggressiveness, ZIP's adaptive margin, GD's belief maximiser); we express that
+    price as a `StrategyAction` over the shared action space via `price_target_mult`. With no
+    guidance the neutral action reproduces the standalone baseline byte-for-byte (the compiler's
+    `_anchor` recovers `limit * (target/limit) == target`); when guidance arrives,
+    `apply_guidance` layers the LLM's binding mode_pin + soft risk/price/soc bias on top. The
+    oracle → compiler → RiskGate pipeline and the baseline's own individual-rationality clamp
+    are reused unchanged. Fills are forwarded so the baseline's online adaptation keeps learning.
+    """
+
+    base: BaselineAgent
+
+    def select_action(
+        self, ctx: AgentContext, valuation: ValuationSignal, guidance: object | None = None
+    ) -> StrategyAction:
+        min_qty = float(self.base.min_qty)
+        if valuation.surplus_kwh >= min_qty:
+            side, limit, mode = "sell", valuation.fair_sell_price, StrategyMode.LIQUIDATE_SURPLUS
+        elif valuation.deficit_kwh >= min_qty:
+            side, limit, mode = "buy", valuation.fair_buy_price, StrategyMode.COVER_DEFICIT
+        else:
+            return StrategyAction(mode=StrategyMode.NOOP)
+        anchor = float(limit)
+        if anchor <= 0:
+            return StrategyAction(mode=mode)
+        target = self.base._quote_price(side=side, limit=anchor, ctx=ctx, sig=valuation)
+        # Reuse the baseline's individual-rationality clamp: a seller never prices below its
+        # marginal cost (mult ≥ 1), a buyer never above its marginal value (mult ≤ 1).
+        target = self.base._rationalize(side, target, anchor)
+        mult = max(PRICE_MULT_MIN, min(PRICE_MULT_MAX, target / anchor))
+        return StrategyAction(mode=mode, price_target_mult=mult)
+
+    def record_trade(self, record: dict) -> None:
+        self.base.record_trade(record)

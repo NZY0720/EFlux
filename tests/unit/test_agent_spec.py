@@ -13,9 +13,9 @@ from eflux.simulator.agent_spec import (
 from eflux.vpp.base import VPPParams
 
 
-def test_minimal_spec_defaults_to_zi():
+def test_minimal_spec_defaults_to_truthful():
     spec = AgentSpec.model_validate({"name": "vpp-1"})
-    assert spec.agent == "zi"
+    assert spec.agent == "truthful"
     assert spec.params == {}
     assert spec.agent_params == {}
     assert spec.persona is None
@@ -41,7 +41,7 @@ def test_unknown_top_level_key_rejected():
 def test_persona_only_valid_for_llm_managed_agents():
     persona = {"name": "arb", "prompt": "Trade the spread aggressively."}
     with pytest.raises(ValidationError, match="persona"):
-        AgentSpec.model_validate({"name": "vpp-1", "agent": "zi", "persona": persona})
+        AgentSpec.model_validate({"name": "vpp-1", "agent": "truthful", "persona": persona})
     spec = AgentSpec.model_validate(
         {"name": "vpp-1", "agent": "hybrid", "persona": persona}
     )
@@ -87,7 +87,7 @@ def test_roster_params_are_coerced_not_raw(monkeypatch, tmp_path):
         """
 vpps:
   - name: quoted-numbers
-    agent: zi
+    agent: truthful
     params: { battery_kwh: "12", pv_kw_peak: "3.5" }
 """,
         encoding="utf-8",
@@ -149,9 +149,9 @@ def test_duplicate_names_rejected(monkeypatch, tmp_path):
         """
 vpps:
   - name: twin
-    agent: zi
+    agent: truthful
   - name: twin
-    agent: zi
+    agent: truthful
 """,
         encoding="utf-8",
     )
@@ -186,7 +186,7 @@ def test_executor_legacy_ppo_kind_rejected():
 def test_executor_only_valid_for_strategy_or_hybrid():
     with pytest.raises(ValidationError, match="executor is only valid"):
         AgentSpec.model_validate(
-            {"name": "z", "agent": "zi", "executor": {"kind": "ppo_online", "checkpoint": "ck"}}
+            {"name": "z", "agent": "truthful", "executor": {"kind": "ppo_online", "checkpoint": "ck"}}
         )
 
 

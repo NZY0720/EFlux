@@ -1,7 +1,7 @@
 # EFlux default scenario — every built-in VPP, validated entry-by-entry as an
 # AgentSpec (src/eflux/simulator/agent_spec.py; JSON Schema: eflux agent-spec-schema).
 #
-# Roster mix (declared entries): 4 zi · 20 truthful · 2 gas · 6 hybrid · 4 standalone PPO.
+# Roster mix (declared entries): 4 classical baselines (aa/zip/gd) · 20 truthful · 2 gas · 6 hybrid · 4 standalone PPO.
 # Each `hybrid` entry sets `mirror: true`, so the loader also spawns a strategist-less PPO
 # twin ("<name>-ppo-mirror") into the same market — the LLM-coached agent and its PPO-only
 # control trade side-by-side, isolating the LLM's marginal contribution. Live total = 42 VPPs
@@ -9,7 +9,7 @@
 #
 # Fields per entry:
 #   name         — shown in the trade tape / participants directory
-#   agent        — zi | truthful | gas | strategy | hybrid (LLM-steered)
+#   agent        — truthful | gas | strategy | hybrid (LLM-steered) | zip | gd | aa
 #   seed         — optional RNG seed (defaults to 42 + index)
 #   params       — VPPParams fields; unknown keys are rejected.
 #                  Real Open-Meteo data (PV via pvlib, wind via wind_speed_10m) is
@@ -33,23 +33,23 @@
 # ±6% so the band/deficit prices fan out; LLM agents are excluded; gas is set per-VPP.
 
 vpps:
-  # ===================== ZERO-INTELLIGENCE noise cohort (4) =====================
-  # One per archetype — a thin baseline of random-but-rational traders for liquidity.
-  - name: ordinary-zi-solar-01
-    agent: zi
+  # ================= Classical CDA baseline liquidity cohort (4) =================
+  # One per archetype — adaptive-but-rational quant baselines (AA / ZIP / GD) for liquidity.
+  - name: ordinary-aa-solar-01
+    agent: aa
     params: { pv_kw_peak: 10.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 1.2,
               pv_tilt: 22.0, pv_azimuth: 180.0 }
   - name: wind-coastal-12
-    agent: zi
+    agent: zip
     params: { pv_kw_peak: 0.0, wind_kw_rated: 8.0, wind_mean_speed: 8.5,
               battery_kwh: 5.0, battery_kw_max: 2.0,
               load_kw_base: 0.3 }
   - name: factory-textile-18
-    agent: zi
+    agent: gd
     params: { pv_kw_peak: 1.0, battery_kwh: 6.0, battery_kw_max: 3.0,
               load_kw_base: 8.0, load_profile: industrial }
   - name: mall-harbour-23
-    agent: zi
+    agent: aa
     params: { pv_kw_peak: 4.0, battery_kwh: 8.0, battery_kw_max: 3.0,
               load_kw_base: 10.0, load_profile: commercial }
 

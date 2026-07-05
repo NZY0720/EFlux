@@ -9,7 +9,6 @@ import pytest
 
 from eflux.agents.base import MarketSnapshot, OrderIntent
 from eflux.agents.truthful import TruthfulAgent
-from eflux.agents.zi import ZIAgent
 from eflux.bridge.bus import InMemoryBus
 from eflux.config import get_settings
 from eflux.data.electricity_market import synthetic_quote
@@ -28,7 +27,7 @@ def test_default_sim_epoch_uses_site_timezone(monkeypatch):
 
 def test_data_source_status_reports_startup_check_for_builtin_vpps():
     sim = Simulator(bus=InMemoryBus())
-    sim.add_builtin_vpp("stub-vpp", VPPParams(), ZIAgent())
+    sim.add_builtin_vpp("stub-vpp", VPPParams(), TruthfulAgent())
 
     sim.refresh_data_sources()
     status = sim.data_source_status()
@@ -41,7 +40,7 @@ def test_data_source_status_reports_startup_check_for_builtin_vpps():
 
 def test_data_source_reports_real_when_weather_covers_sim_hour():
     sim = Simulator(bus=InMemoryBus())
-    vpp = sim.add_builtin_vpp("solar", VPPParams(), ZIAgent())
+    vpp = sim.add_builtin_vpp("solar", VPPParams(), TruthfulAgent())
 
     class FakeWeather:
         empty = False
@@ -66,7 +65,7 @@ def test_data_source_status_recheck_after_ttl():
     from datetime import UTC, datetime, timedelta
 
     sim = Simulator(bus=InMemoryBus())
-    sim.add_builtin_vpp("stub", VPPParams(), ZIAgent())
+    sim.add_builtin_vpp("stub", VPPParams(), TruthfulAgent())
     sim.refresh_data_sources()
     # Age the check past the TTL; the next status read must re-check.
     stale = datetime.now(UTC) - timedelta(seconds=sim.DATA_SOURCE_TTL_SEC + 1)
@@ -79,7 +78,7 @@ def test_battery_intents_do_not_debit_pending_balance():
     """Battery-band quotes settle through the battery, not the PV-load
     imbalance — submitting one must leave pending_net_kwh untouched."""
     sim = Simulator(bus=InMemoryBus())
-    vpp = sim.add_builtin_vpp("batt", VPPParams(), ZIAgent())
+    vpp = sim.add_builtin_vpp("batt", VPPParams(), TruthfulAgent())
     vpp.state.pending_net_kwh = -0.5
     sim._submit_intent(
         vpp,
@@ -91,8 +90,8 @@ def test_battery_intents_do_not_debit_pending_balance():
 
 def test_internal_trade_updates_both_vpp_performance():
     sim = Simulator(bus=InMemoryBus())
-    seller = sim.add_builtin_vpp("seller", VPPParams(), ZIAgent())
-    buyer = sim.add_builtin_vpp("buyer", VPPParams(), ZIAgent())
+    seller = sim.add_builtin_vpp("seller", VPPParams(), TruthfulAgent())
+    buyer = sim.add_builtin_vpp("buyer", VPPParams(), TruthfulAgent())
     sim_ts = sim.clock.now_sim()
 
     sim._submit_intent(seller, OrderIntent(side="sell", price=Decimal("40"), qty=Decimal("1")), sim_ts)
@@ -178,7 +177,7 @@ def test_expired_order_refunds_pending_balance():
     from datetime import timedelta
 
     sim = Simulator(bus=InMemoryBus())
-    vpp = sim.add_builtin_vpp("seller", VPPParams(), ZIAgent())
+    vpp = sim.add_builtin_vpp("seller", VPPParams(), TruthfulAgent())
     vpp.state.pending_net_kwh = 2.0
     sim_ts = sim.clock.now_sim()
     sim._submit_intent(
@@ -199,7 +198,7 @@ def test_expired_dispatched_order_does_not_refund():
     from datetime import timedelta
 
     sim = Simulator(bus=InMemoryBus())
-    vpp = sim.add_builtin_vpp("batt", VPPParams(), ZIAgent())
+    vpp = sim.add_builtin_vpp("batt", VPPParams(), TruthfulAgent())
     vpp.state.pending_net_kwh = -0.5
     sim_ts = sim.clock.now_sim()
     sim._submit_intent(
@@ -218,8 +217,8 @@ def test_open_orders_net_by_vpp_signs_and_dispatched_excluded():
     buy -) and skips dispatched (battery-band/gas) quotes — this is what lets
     demand_beta see the deficit already parked in the book."""
     sim = Simulator(bus=InMemoryBus())
-    buyer = sim.add_builtin_vpp("buyer", VPPParams(), ZIAgent())
-    seller = sim.add_builtin_vpp("seller", VPPParams(), ZIAgent())
+    buyer = sim.add_builtin_vpp("buyer", VPPParams(), TruthfulAgent())
+    seller = sim.add_builtin_vpp("seller", VPPParams(), TruthfulAgent())
     sim_ts = sim.clock.now_sim()
     # Non-crossing prices so everything rests.
     sim._submit_intent(
@@ -242,11 +241,11 @@ def test_open_orders_net_by_vpp_signs_and_dispatched_excluded():
 
 def test_market_balance_reports_aggregates():
     sim = Simulator(bus=InMemoryBus())
-    sim.add_builtin_vpp("load", VPPParams(pv_kw_peak=0.0, load_kw_base=5.0), ZIAgent())
+    sim.add_builtin_vpp("load", VPPParams(pv_kw_peak=0.0, load_kw_base=5.0), TruthfulAgent())
     sim.add_builtin_vpp(
         "gas",
         VPPParams(gas_kw_max=20.0, battery_kwh=0.0, battery_kw_max=0.0, load_kw_base=0.0),
-        ZIAgent(),
+        TruthfulAgent(),
     )
     sim_ts = sim.clock.now_sim()
     tick_h = 1.0 / 3600.0
@@ -270,8 +269,8 @@ def test_realprice_market_settles_full_qty_against_grid_no_p2p_matching():
     happens — even a resting peer order that would cross in a P2P market is ignored."""
     sim = Simulator(bus=InMemoryBus())
     sim.market_mode = "realprice"
-    seller = sim.add_builtin_vpp("seller", VPPParams(), ZIAgent())
-    buyer = sim.add_builtin_vpp("buyer", VPPParams(), ZIAgent())
+    seller = sim.add_builtin_vpp("seller", VPPParams(), TruthfulAgent())
+    buyer = sim.add_builtin_vpp("buyer", VPPParams(), TruthfulAgent())
     sim._external_market_quote = synthetic_quote(price=Decimal("40"), status="real", source="CAISO OASIS RTM")
     sim_ts = sim.clock.now_sim()
     sim._current_tick_h = 1.0
@@ -309,7 +308,7 @@ def test_p2p_market_never_settles_against_grid():
     """P2P market (default): CAISO is reference-only. An order that would cross the
     grid import/export price just rests in the book — no external trade is made."""
     sim = Simulator(bus=InMemoryBus())  # default market_mode == "p2p"
-    seller = sim.add_builtin_vpp("seller", VPPParams(), ZIAgent())
+    seller = sim.add_builtin_vpp("seller", VPPParams(), TruthfulAgent())
     sim._external_market_quote = synthetic_quote(price=Decimal("40"), status="real", source="CAISO OASIS RTM")
     sim_ts = sim.clock.now_sim()
     seller.state.pending_net_kwh = 1.0
@@ -329,7 +328,7 @@ def test_p2p_market_never_settles_against_grid():
 
 def test_vpp_trade_count_is_cumulative_not_recent_buffer_length():
     sim = Simulator(bus=InMemoryBus())
-    vpp = sim.add_builtin_vpp("counter", VPPParams(), ZIAgent())
+    vpp = sim.add_builtin_vpp("counter", VPPParams(), TruthfulAgent())
 
     for i in range(55):
         sim._push_recent_trade(vpp, {"trade_id": i})
@@ -351,7 +350,7 @@ def test_truthful_vpp_trades_within_seconds_via_accumulator():
         VPPParams(pv_kw_peak=0.0, load_kw_base=5.0),
         TruthfulAgent(),
     )
-    counter = sim.add_builtin_vpp("counter-seller", VPPParams(), ZIAgent())
+    counter = sim.add_builtin_vpp("counter-seller", VPPParams(), TruthfulAgent())
     sim_ts = sim.clock.now_sim()
     # Resting ask the truthful buy (at price_ref=50) can cross.
     sim._submit_intent(

@@ -112,6 +112,9 @@ class SimulatorVPP:
     chat_color: str | None = None
     chat_avatar: str | None = None
     algorithm: str | None = None
+    # Whether the LLM strategist is layered on the base algorithm (set by provisioning). Drives
+    # the UI's "LLM + <ALGO>" label and gates external-guidance (Tier A3) steering.
+    llm_enabled: bool = False
     rng: random.Random = field(default_factory=random.Random)
     open_order_ids: list[int] = field(default_factory=list)
     recent_trades: list[dict] = field(default_factory=list)

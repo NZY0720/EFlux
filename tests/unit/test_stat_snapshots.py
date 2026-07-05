@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from eflux.agents.zi import ZIAgent
+from eflux.agents.truthful import TruthfulAgent
 from eflux.bridge.bus import InMemoryBus
 from eflux.simulator.runner import Simulator
 from eflux.vpp.base import VPPParams
@@ -14,9 +14,9 @@ from eflux.vpp.base import VPPParams
 def _sim_with_two_vpps() -> Simulator:
     sim = Simulator(bus=InMemoryBus())
     sim.add_builtin_vpp(
-        "solar-a", VPPParams(pv_kw_peak=4.0, battery_kwh=10.0, battery_kw_max=3.0), ZIAgent()
+        "solar-a", VPPParams(pv_kw_peak=4.0, battery_kwh=10.0, battery_kw_max=3.0), TruthfulAgent()
     )
-    sim.add_builtin_vpp("gas-a", VPPParams(gas_kw_max=20.0, gas_cost_per_kwh=60.0), ZIAgent())
+    sim.add_builtin_vpp("gas-a", VPPParams(gas_kw_max=20.0, gas_cost_per_kwh=60.0), TruthfulAgent())
     return sim
 
 

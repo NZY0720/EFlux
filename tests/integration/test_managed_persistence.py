@@ -99,6 +99,7 @@ async def test_zip_managed_agent_persists_algorithm_across_restart(client):
         json={
             "name": "persistent-zip",
             "algorithm": "zip",
+            "llm_enabled": False,
             "params": {"pv_kw_peak": 3.0, "battery_kwh": 8.0},
             "agent_params": {"beta": 0.25},
         },
@@ -112,11 +113,12 @@ async def test_zip_managed_agent_persists_algorithm_across_restart(client):
     assert [v.name for v in mine] == ["persistent-zip"]
     assert mine[0].managed_def_id == managed_id
     assert mine[0].algorithm == "zip"
+    assert mine[0].llm_enabled is False
     assert isinstance(mine[0].agent, ZIPAgent)
 
 
 @pytest.mark.asyncio
-async def test_legacy_managed_config_without_algorithm_rehydrates_as_hybrid(client, db_session):
+async def test_legacy_managed_config_without_algorithm_rehydrates_as_llm_ppo(client, db_session):
     sess, user_id = await _login(client)
     auth = {"Authorization": f"Bearer {sess}"}
     await client.get("/vpps/managed", headers=auth)
@@ -141,7 +143,9 @@ async def test_legacy_managed_config_without_algorithm_rehydrates_as_hybrid(clie
     await _rehydrate_managed_vpps(fresh)
     mine = fresh.my_managed_vpps(user_id)
     assert [v.name for v in mine] == ["legacy-hybrid"]
-    assert mine[0].algorithm == "hybrid"
+    # A pre-split row with no algorithm key was the LLM+PPO hybrid → base ppo with the LLM on.
+    assert mine[0].algorithm == "ppo"
+    assert mine[0].llm_enabled is True
     assert isinstance(mine[0].agent, HybridPolicyAgent)
 
 

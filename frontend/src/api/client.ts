@@ -121,9 +121,17 @@ export async function listAlgorithms(): Promise<AlgorithmInfo[]> {
   return data.algorithms;
 }
 
-export async function createVPP(name: string, params: Record<string, number>): Promise<VPP> {
+export async function createVPP(
+  name: string,
+  params: Record<string, number | string>,
+): Promise<VPP> {
   const { data } = await api.post<VPP>("/vpps", { name, params });
   return data;
+}
+
+/** Deactivate a self-created (passive) VPP. Its resting orders are cancelled server-side. */
+export async function deleteVPP(id: number): Promise<void> {
+  await api.delete(`/vpps/${id}`);
 }
 
 // --- Managed agents (Tier 0: platform-hosted, LLM-steered) ---
@@ -132,6 +140,7 @@ export interface ManagedVPPCreatePayload {
   name: string;
   params: Record<string, number | string>;
   algorithm?: string;
+  llm_enabled?: boolean;
   online_learning?: boolean;
   persona?: string | null;
   agent_params?: Record<string, number | string | boolean>;
@@ -212,6 +221,35 @@ export interface ModelsInfo {
 export async function listModels(): Promise<ModelsInfo> {
   const { data } = await api.get<ModelsInfo>("/vpps/models");
   return data;
+}
+
+// --- API keys (Tier A1: drive your VPPs from an external app) ---
+
+export interface ApiKeyInfo {
+  name: string;
+  prefix: string;
+  created_at: string;
+  last_used_at?: string | null;
+  revoked_at?: string | null;
+}
+
+/** A freshly minted key — `key` is the plaintext, shown to the user exactly once. */
+export interface MintedApiKey extends ApiKeyInfo {
+  key: string;
+}
+
+export async function listApiKeys(): Promise<ApiKeyInfo[]> {
+  const { data } = await api.get<ApiKeyInfo[]>("/auth/api-keys");
+  return data;
+}
+
+export async function mintApiKey(name: string): Promise<MintedApiKey> {
+  const { data } = await api.post<MintedApiKey>("/auth/api-keys", { name });
+  return data;
+}
+
+export async function revokeApiKey(prefix: string): Promise<void> {
+  await api.delete(`/auth/api-keys/${prefix}`);
 }
 
 // --- Orders ---

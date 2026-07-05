@@ -25,6 +25,7 @@ from eflux.simulator.scenarios import (
     apply_chat_prefs,
     apply_external_guidance,
     load_default_scenario,
+    normalize_managed_config,
     provision_managed_vpp,
 )
 from eflux.stats.session import close_market_session, open_market_session, prune_old_snapshots
@@ -104,9 +105,10 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
             scrubbed_any = False
             for row in rows:
                 cfg = dict(row.managed_config or {})
-                algorithm = cfg.get("algorithm") or "hybrid"
+                # Translate legacy fused values (hybrid / removed zi) to (base, llm_enabled).
+                algorithm, llm_enabled = normalize_managed_config(cfg)
                 online_learning = cfg.get("online_learning", True)
-                if algorithm == "hybrid":
+                if llm_enabled:
                     guidance, cfg, scrubbed = _validated_external_guidance(
                         cfg, market_mode=sim.market_mode
                     )
@@ -127,11 +129,12 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                         model=_rehydrate_model(cfg.get("model")),
                         managed_def_id=row.id,
                         algorithm=algorithm,
+                        llm_enabled=llm_enabled,
                         online_learning=online_learning,
                     )
                     # Restore external steering (Tier A3) so a restart neither burns
                     # platform LLM calls nor forgets the owner's last guidance.
-                    if algorithm == "hybrid" and guidance is not None:
+                    if llm_enabled and guidance is not None:
                         apply_external_guidance(vpp, guidance, market_mode=sim.market_mode)
                     apply_chat_prefs(vpp, cfg.get("chat"))
                     count += 1

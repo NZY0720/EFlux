@@ -126,6 +126,12 @@ class HybridPolicyAgent(BaseAgent):
         return compiled.order_intents
 
     def record_trade(self, record: dict) -> None:
+        # Forward fills to a stateful executor (e.g. a BaselinePolicy wrapping AA/ZIP/GD) so its
+        # online adaptation keeps learning off the tick path; a PPO/scripted executor has no
+        # record_trade and is left untouched.
+        fwd = getattr(self._executor, "record_trade", None)
+        if callable(fwd):
+            fwd(record)
         if self._last_fair is None:
             return
         fair_buy, fair_sell = self._last_fair

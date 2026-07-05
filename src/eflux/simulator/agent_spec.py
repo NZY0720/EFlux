@@ -92,8 +92,8 @@ class AgentSpec(BaseModel):
     # hybrid LLM strategist stack for both reflective and hybrid entries. `zip`/`gd`/`aa`
     # are the classical quantitative baselines (continuous double auction).
     agent: Literal[
-        "zi", "truthful", "gas", "strategy", "hybrid", "reflective", "zip", "gd", "aa"
-    ] = "zi"
+        "truthful", "gas", "strategy", "hybrid", "reflective", "zip", "gd", "aa"
+    ] = "truthful"
     seed: int | None = None
     # DER portfolio — sparse VPPParams fields (see validate_vpp_params).
     params: dict = Field(default_factory=dict)

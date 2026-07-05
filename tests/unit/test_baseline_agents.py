@@ -167,3 +167,46 @@ def test_aa_aggressiveness_stays_bounded():
     for last in (10.0, 90.0, 20.0, 80.0) * 5:
         agent.decide(_make_ctx(pv_kw=0.5, load_kw=3.0, last_price=last, recent_trades=[{"price": last, "qty": 1.0}]))
         assert -1.0 <= agent._r <= 1.0
+
+
+# --------------------------------------------------------------- BaselinePolicy (LLM-coachable)
+def test_baseline_policy_reproduces_standalone_quote_without_guidance():
+    """A BaselinePolicy wrapping AA, run over the same oracle valuation with no guidance, must
+    compile to the same order the standalone AA agent quotes — this is what makes LLM+AA fall
+    back to plain AA when the strategist is silent."""
+    import pytest
+
+    from eflux.agents.strategy.policy import BaselinePolicy
+    from eflux.agents.strategy.primitives import build_program
+    from eflux.agents.valuation import TruthfulValuationOracle
+
+    ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, recent_trades=[{"price": 51.0, "qty": 1.0}])
+    standalone = AAAgent(price_ref=Decimal("50.0"))
+    intents = standalone.decide(ctx)
+    assert intents and intents[0].side == "sell"
+
+    policy = BaselinePolicy(AAAgent(price_ref=Decimal("50.0")))
+    val = TruthfulValuationOracle(price_ref=Decimal("50.0")).estimate(ctx)
+    action = policy.select_action(ctx, val, None)
+    assert action.mode.value == "liquidate_surplus"
+    program = build_program(action, ctx, val)
+    assert program.orders and program.orders[0].side == "sell"
+    assert float(program.orders[0].price) == pytest.approx(float(intents[0].price), rel=1e-3)
+
+
+def test_baseline_policy_forwards_record_trade_to_base():
+    from eflux.agents.strategy.policy import BaselinePolicy
+
+    base = AAAgent(price_ref=Decimal("50.0"))
+    BaselinePolicy(base).record_trade({"price": 55.0})
+    assert base._pstar == 55.0  # the fill seeds the equilibrium estimate, proving learning flows
+
+
+def test_baseline_policy_balanced_position_is_noop():
+    from eflux.agents.strategy.policy import BaselinePolicy
+    from eflux.agents.valuation import TruthfulValuationOracle
+
+    ctx = _make_ctx(pv_kw=2.0, load_kw=2.0)  # balanced → no imbalance
+    val = TruthfulValuationOracle(price_ref=Decimal("50.0")).estimate(ctx)
+    action = BaselinePolicy(AAAgent(price_ref=Decimal("50.0"))).select_action(ctx, val, None)
+    assert action.mode.value == "noop"

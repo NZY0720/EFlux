@@ -23,6 +23,7 @@ from eflux.simulator.scenarios import (
     MANAGED_BASELINE_FACTORIES,
     apply_chat_prefs,
     apply_external_guidance,
+    normalize_managed_config,
     provision_managed_vpp,
     validate_managed_agent_params,
 )
@@ -60,7 +61,9 @@ class ManagedVPPOut(BaseModel):
     params: VPPParamsPayload
     is_active: bool
     is_external: bool
-    algorithm: str = "hybrid"
+    algorithm: str = "ppo"
+    # Whether the LLM strategist is layered on the base algorithm (drives the "LLM + <ALGO>" label).
+    llm_enabled: bool = False
     agent_kind: str
     strategy: str
     llm_live: bool
@@ -140,9 +143,10 @@ class ManagedVPPPerformanceOut(BaseModel):
 
 @router.get("", response_model=list[VPPOut])
 async def list_my_vpps(session: DbSession, user: CurrentUser) -> list[VPPOut]:
+    # Only live VPPs — a soft-deleted (is_active=False) one is gone from the user's view.
     stmt = (
         select(VPP)
-        .where(VPP.owner_id == user.id, VPP.is_managed.is_(False))
+        .where(VPP.owner_id == user.id, VPP.is_managed.is_(False), VPP.is_active.is_(True))
         .order_by(VPP.created_at.desc())
     )
     rows = (await session.execute(stmt)).scalars().all()
@@ -210,7 +214,8 @@ def _managed_vpp_out(vpp) -> ManagedVPPOut:
         params=vpp.params.to_dict(),
         is_active=True,
         is_external=False,
-        algorithm=getattr(vpp, "algorithm", None) or "hybrid",
+        algorithm=getattr(vpp, "algorithm", None) or "ppo",
+        llm_enabled=getattr(vpp, "llm_enabled", False),
         agent_kind=vpp.agent.__class__.__name__,
         strategy=vpp.strategy,
         llm_live=vpp.llm_live,
@@ -308,7 +313,8 @@ class AlgorithmOut(BaseModel):
     id: str
     label: str
     description: str
-    uses_llm: bool
+    # Every base algorithm can be paired with the LLM strategist via the llm_enabled toggle.
+    llm_capable: bool
     supports_online_learning: bool
     params: list[AlgorithmParamOut]
 
@@ -316,31 +322,17 @@ class AlgorithmOut(BaseModel):
 class AlgorithmsOut(BaseModel):
     algorithms: list[AlgorithmOut]
     default: str
+    default_llm_enabled: bool = True
 
 
+# The user-selectable *base* algorithms. Every base is `llm_capable`: pairing it with the LLM
+# strategist (the `llm_enabled` toggle) yields the combinations shown in the Benchmark —
+# "LLM + PPO" (the classic Hybrid stack), "LLM + AA", etc. Params are the base agent's own knobs;
+# the strategist adds no extra user knobs (its fallback defaults to "hold").
 _ALGORITHM_ROSTER = {
-    "hybrid": {
-        "label": "Hybrid LLM + PPO",
-        "description": "LLM strategist with an online PPO tactical executor.",
-        "uses_llm": True,
-        "supports_online_learning": True,
-        "factory": None,
-        "params": {
-            "demand_beta": ("float", 0.0, 0.0, 5.0, "Scarcity sensitivity for buy bids."),
-            "price_cap_mult": ("float", 1.5, 1.0, 10.0, "Maximum scarcity bid multiple."),
-            "fallback_policy": (
-                "enum",
-                "hold",
-                None,
-                None,
-                "Fallback after risk veto: hold, noop, or truthful.",
-            ),
-        },
-    },
     "ppo": {
         "label": "PPO",
-        "description": "Structured-policy StrategyAgent with no LLM strategist.",
-        "uses_llm": False,
+        "description": "Structured-policy tactical executor over the shared action space.",
         "supports_online_learning": True,
         "factory": None,
         "params": {
@@ -351,7 +343,6 @@ _ALGORITHM_ROSTER = {
     "truthful": {
         "label": "Truthful",
         "description": "Cost/value baseline that quotes its valuation directly.",
-        "uses_llm": False,
         "supports_online_learning": False,
         "factory": MANAGED_BASELINE_FACTORIES["truthful"],
         "params": {
@@ -361,20 +352,9 @@ _ALGORITHM_ROSTER = {
             "price_cap_mult": ("float", 1.5, 1.0, 10.0, "Maximum scarcity bid multiple."),
         },
     },
-    "zi": {
-        "label": "Zero Intelligence",
-        "description": "Random rational quotes around the valuation reference.",
-        "uses_llm": False,
-        "supports_online_learning": False,
-        "factory": MANAGED_BASELINE_FACTORIES["zi"],
-        "params": {
-            "spread_frac": ("float", 0.5, 0.0, 2.0, "Half-width of the random price band."),
-        },
-    },
     "zip": {
         "label": "ZIP",
         "description": "Zero-Intelligence Plus adaptive-margin baseline.",
-        "uses_llm": False,
         "supports_online_learning": False,
         "factory": MANAGED_BASELINE_FACTORIES["zip"],
         "params": {
@@ -389,7 +369,6 @@ _ALGORITHM_ROSTER = {
     "gd": {
         "label": "GD",
         "description": "Gjerstad-Dickhaut belief-based baseline.",
-        "uses_llm": False,
         "supports_online_learning": False,
         "factory": MANAGED_BASELINE_FACTORIES["gd"],
         "params": {},
@@ -397,7 +376,6 @@ _ALGORITHM_ROSTER = {
     "aa": {
         "label": "AA",
         "description": "Adaptive Aggressiveness baseline.",
-        "uses_llm": False,
         "supports_online_learning": False,
         "factory": MANAGED_BASELINE_FACTORIES["aa"],
         "params": {
@@ -444,7 +422,7 @@ def _algorithm_out(algorithm: str) -> AlgorithmOut:
         id=algorithm,
         label=entry["label"],
         description=entry["description"],
-        uses_llm=entry["uses_llm"],
+        llm_capable=True,
         supports_online_learning=entry["supports_online_learning"],
         params=params,
     )
@@ -452,11 +430,13 @@ def _algorithm_out(algorithm: str) -> AlgorithmOut:
 
 @router.get("/algorithms", response_model=AlgorithmsOut)
 async def list_algorithms(user: CurrentUser) -> AlgorithmsOut:
-    """Managed-agent algorithms available at creation time."""
+    """Managed-agent base algorithms available at creation time. Each can be paired with the LLM
+    strategist via the llm_enabled toggle — the same public roster the Benchmark reports."""
 
     return AlgorithmsOut(
         algorithms=[_algorithm_out(algorithm) for algorithm in MANAGED_ALGORITHMS],
-        default="hybrid",
+        default="ppo",
+        default_llm_enabled=True,
     )
 
 
@@ -466,19 +446,21 @@ MAX_MANAGED_VPPS_PER_USER = 5
 class ManagedVPPCreate(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     params: dict[str, object] = Field(default_factory=dict)
-    algorithm: Literal["hybrid", "ppo", "truthful", "zi", "zip", "gd", "aa"] = "hybrid"
+    # The base tactical algorithm; llm_enabled layers the LLM strategist on top of it.
+    algorithm: Literal["ppo", "truthful", "zip", "gd", "aa"] = "ppo"
+    llm_enabled: bool = True
     online_learning: bool = True
-    # Optional LLM strategy brief (the Tier-0 persona) and tactical agent_params
-    # (e.g. demand_beta, price_cap_mult) — validated against the HybridPolicyAgent.
+    # Optional LLM strategy brief (the Tier-0 persona), the LLM model, and tactical agent_params
+    # (e.g. demand_beta, price_cap_mult) — the persona/model apply only when the LLM is enabled.
     persona: str | None = Field(default=None, max_length=600)
     agent_params: dict[str, object] = Field(default_factory=dict)
     seed: int | None = None
     model: str | None = None
 
     @model_validator(mode="after")
-    def _check_hybrid_only_fields(self) -> ManagedVPPCreate:
-        if self.algorithm != "hybrid" and (self.persona is not None or self.model is not None):
-            raise ValueError("persona and model are only supported for algorithm='hybrid'")
+    def _check_llm_only_fields(self) -> ManagedVPPCreate:
+        if not self.llm_enabled and (self.persona is not None or self.model is not None):
+            raise ValueError("persona and model are only supported when llm_enabled is true")
         return self
 
 
@@ -531,10 +513,12 @@ async def create_managed_vpp(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             [{"loc": ["body", "params"], "msg": str(e), "type": "value_error"}],
         ) from e
-    if payload.algorithm == "hybrid":
+    if payload.llm_enabled:
         _validate_model(payload.model)
     try:
-        validate_managed_agent_params(payload.name, payload.agent_params, payload.algorithm)
+        validate_managed_agent_params(
+            payload.name, payload.agent_params, payload.algorithm, llm_enabled=payload.llm_enabled
+        )
     except (ValueError, ValidationError) as e:
         msg = e.errors()[0]["msg"] if isinstance(e, ValidationError) else str(e)
         raise HTTPException(
@@ -566,6 +550,7 @@ async def create_managed_vpp(
             "seed": payload.seed,
             "model": payload.model,
             "algorithm": payload.algorithm,
+            "llm_enabled": payload.llm_enabled,
             "online_learning": payload.online_learning,
         },
     )
@@ -589,6 +574,7 @@ async def create_managed_vpp(
                 model=payload.model,
                 managed_def_id=row.id,
                 algorithm=payload.algorithm,
+                llm_enabled=payload.llm_enabled,
                 online_learning=payload.online_learning,
             )
     except (ValueError, ValidationError) as e:
@@ -623,21 +609,16 @@ async def update_managed_vpp(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "managed agent not found")
 
     cfg = dict(row.managed_config or {})
-    algorithm = cfg.get("algorithm") or "hybrid"
-    if algorithm not in MANAGED_ALGORITHMS:
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            [{"loc": ["body"], "msg": f"unknown stored algorithm {algorithm!r}", "type": "value_error"}],
-        )
+    algorithm, llm_enabled = normalize_managed_config(cfg)
     persona_change = "persona" in payload.model_fields_set and payload.persona is not None
     model_change = "model" in payload.model_fields_set and payload.model is not None
-    if algorithm != "hybrid" and (persona_change or model_change):
+    if not llm_enabled and (persona_change or model_change):
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             [
                 {
                     "loc": ["body"],
-                    "msg": "persona and model changes are only supported for algorithm='hybrid'",
+                    "msg": "persona and model changes are only supported when the LLM strategist is enabled",
                     "type": "value_error",
                 }
             ],
@@ -651,13 +632,13 @@ async def update_managed_vpp(
     )
     new_seed = cfg.get("seed")
     new_model = cfg.get("model") if payload.model is None else payload.model
-    if algorithm == "hybrid":
+    if llm_enabled:
         _validate_model(new_model)
 
     # Validate everything BEFORE touching the live agent, so a bad patch can't strand it.
     try:
         parsed = validate_vpp_params(new_params)
-        validate_managed_agent_params(row.name, new_agent_params, algorithm)
+        validate_managed_agent_params(row.name, new_agent_params, algorithm, llm_enabled=llm_enabled)
     except ValidationError as e:
         detail = [
             {"loc": ["body", *err["loc"]], "msg": err["msg"], "type": err["type"]}
@@ -681,6 +662,7 @@ async def update_managed_vpp(
         "seed": new_seed,
         "model": new_model,
         "algorithm": algorithm,
+        "llm_enabled": llm_enabled,
         "online_learning": cfg.get("online_learning", True),
     }
 
@@ -710,6 +692,7 @@ async def update_managed_vpp(
             model=new_model,
             managed_def_id=managed_id,
             algorithm=algorithm,
+            llm_enabled=llm_enabled,
             online_learning=cfg.get("online_learning", True),
         )
         if carry is not None:
@@ -723,7 +706,7 @@ async def update_managed_vpp(
         # The fresh agent instance must inherit the owner's standing state: external
         # steering (Tier A3) and chatroom presence both survive a preferences patch.
         guidance = cfg.get("external_guidance")
-        if algorithm == "hybrid" and cfg.get("guidance_mode") == "external" and isinstance(guidance, dict):
+        if llm_enabled and cfg.get("guidance_mode") == "external" and isinstance(guidance, dict):
             apply_external_guidance(vpp, guidance, market_mode=sim.market_mode)
         apply_chat_prefs(vpp, cfg.get("chat"))
     return _managed_vpp_out(vpp)
@@ -866,10 +849,10 @@ async def put_guidance(
     vpp = next((v for v in sim.my_managed_vpps(user.id) if v.managed_def_id == managed_id), None)
     if vpp is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "managed VPP not found")
-    if (getattr(vpp, "algorithm", None) or "hybrid") != "hybrid":
+    if not getattr(vpp, "llm_enabled", False):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "external guidance is only supported for managed hybrid agents",
+            "external guidance is only supported for LLM-steered managed agents",
         )
     row = await _owned_managed_row(session, user.id, managed_id)
 
@@ -901,10 +884,10 @@ async def release_guidance(
     vpp = next((v for v in sim.my_managed_vpps(user.id) if v.managed_def_id == managed_id), None)
     if vpp is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "managed VPP not found")
-    if (getattr(vpp, "algorithm", None) or "hybrid") != "hybrid":
+    if not getattr(vpp, "llm_enabled", False):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "external guidance is only supported for managed hybrid agents",
+            "external guidance is only supported for LLM-steered managed agents",
         )
     row = await _owned_managed_row(session, user.id, managed_id)
 

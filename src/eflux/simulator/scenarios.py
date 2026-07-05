@@ -1,10 +1,10 @@
 """Built-in scenario loading — roster comes from a YAML file (scenarios/default.yaml).
 
 Every entry is validated as an AgentSpec (see simulator/agent_spec.py — the same
-schema external participants integrate against). Strategy kinds: zi | truthful |
-gas | strategy | hybrid. Hybrid LLM-managed entries share one SharedLLM connection
-and get evenly staggered strategist refresh offsets so the single slow endpoint
-is never hit concurrently. `reflective` is kept as a legacy alias for hybrid.
+schema external participants integrate against). Strategy kinds: truthful | gas |
+strategy | hybrid | zip | gd | aa. Hybrid LLM-managed entries share one SharedLLM
+connection and get evenly staggered strategist refresh offsets so the single slow
+endpoint is never hit concurrently. `reflective` is kept as a legacy alias for hybrid.
 """
 
 from __future__ import annotations
@@ -24,8 +24,8 @@ from eflux.agents.gd_agent import GDAgent
 from eflux.agents.hybrid import HybridPolicyAgent, StrategyAgent
 from eflux.agents.reflective.pool import SharedLLM
 from eflux.agents.reflective.strategist import LLMStrategist
+from eflux.agents.strategy.policy import BaselinePolicy, StrategyPolicy
 from eflux.agents.truthful import TruthfulAgent
-from eflux.agents.zi import ZIAgent
 from eflux.agents.zip_agent import ZIPAgent
 from eflux.config import PROJECT_ROOT, get_settings
 from eflux.data.caiso_reference import caiso_reference_price
@@ -36,7 +36,6 @@ from eflux.vpp.base import VPPParams
 log = logging.getLogger(__name__)
 
 AGENT_FACTORIES: dict[str, type[BaseAgent]] = {
-    "zi": ZIAgent,
     "truthful": TruthfulAgent,
     "gas": GasGeneratorAgent,
     "strategy": StrategyAgent,
@@ -48,10 +47,12 @@ AGENT_FACTORIES: dict[str, type[BaseAgent]] = {
     "aa": AAAgent,
 }
 
-MANAGED_ALGORITHMS = ("hybrid", "ppo", "truthful", "zi", "zip", "gd", "aa")
+# The user-selectable *base* algorithms (Deploy-a-cloud-hosted-agent picker / Benchmark).
+# Any base can be paired with the LLM strategist via the llm_enabled toggle: "ppo" + LLM is
+# the classic Hybrid stack; a baseline + LLM wraps that baseline as a BaselinePolicy executor.
+MANAGED_ALGORITHMS = ("ppo", "truthful", "zip", "gd", "aa")
 MANAGED_BASELINE_FACTORIES: dict[str, type[BaseAgent]] = {
     "truthful": TruthfulAgent,
-    "zi": ZIAgent,
     "zip": ZIPAgent,
     "gd": GDAgent,
     "aa": AAAgent,
@@ -59,7 +60,7 @@ MANAGED_BASELINE_FACTORIES: dict[str, type[BaseAgent]] = {
 
 # Cost-based agents whose price_ref is re-based to the CAISO reference + jittered for cost
 # diversification (LLM/gas/strategy-with-pinned-ref are handled elsewhere).
-_COST_DIVERSIFIED_KINDS = frozenset({"zi", "truthful", "strategy", "zip", "gd", "aa"})
+_COST_DIVERSIFIED_KINDS = frozenset({"truthful", "strategy", "zip", "gd", "aa"})
 
 # Dataclass fields that hold injected policy/strategist objects, never YAML kwargs.
 _INJECTED_FIELDS = frozenset(
@@ -143,11 +144,15 @@ def _managed_executor_spec(*, online_learning: bool) -> ExecutorSpec:
     )
 
 
-def _managed_factory(algorithm: str) -> type[BaseAgent]:
-    if algorithm == "hybrid":
-        return HybridPolicyAgent
-    if algorithm == "ppo":
-        return StrategyAgent
+def _managed_factory(algorithm: str, *, llm_enabled: bool = False) -> type[BaseAgent]:
+    """The dataclass the managed agent_params are validated against. ``ppo`` maps to the
+    LLM-steered HybridPolicyAgent when the strategist is enabled (it accepts the extra
+    strategist knobs, e.g. fallback_policy) and the bare StrategyAgent otherwise; a classical
+    baseline validates against its own factory whether or not an LLM coaches it — the strategist
+    wraps the baseline as a BaselinePolicy, it does not change the baseline's params. ``hybrid``
+    is kept as a legacy alias for ppo+LLM."""
+    if algorithm in ("ppo", "hybrid"):
+        return HybridPolicyAgent if (llm_enabled or algorithm == "hybrid") else StrategyAgent
     try:
         return MANAGED_BASELINE_FACTORIES[algorithm]
     except KeyError as e:
@@ -156,8 +161,10 @@ def _managed_factory(algorithm: str) -> type[BaseAgent]:
         ) from e
 
 
-def _managed_agent_params(name: str, agent_params: dict | None, algorithm: str) -> dict:
-    factory = _managed_factory(algorithm)
+def _managed_agent_params(
+    name: str, agent_params: dict | None, algorithm: str, *, llm_enabled: bool = False
+) -> dict:
+    factory = _managed_factory(algorithm, llm_enabled=llm_enabled)
     params = dict(agent_params or {})
     _validate_agent_params(name, params, factory)
     if "price_ref" not in params and "price_ref" in factory.__dataclass_fields__:
@@ -342,12 +349,19 @@ def _add_hybrid_vpp(
     n_managed: int,
     owner_id: int | None = None,
     model: str | None = None,
+    executor_override: StrategyPolicy | None = None,
+    algorithm: str = "hybrid",
+    strategy_label: str | None = None,
 ) -> SimulatorVPP:
     """Add one HybridPolicyAgent VPP sharing the SharedLLM connection.
 
     Offsets are spread evenly over the reflection interval (index-based —
     deterministic, no collisions) so calls to the single endpoint stagger
     instead of landing on the same tick.
+
+    `executor_override` swaps in a pre-built tactical policy (e.g. a BaselinePolicy wrapping
+    AA/ZIP/GD/Truthful) in place of the default PPO executor, so the same LLM strategist coaches
+    a classical baseline; `algorithm`/`strategy_label` tag the resulting VPP for the UI.
     """
     settings = get_settings()
     interval = settings.reflective_interval_ticks
@@ -367,11 +381,16 @@ def _add_hybrid_vpp(
     seed = spec.seed if spec.seed is not None else default_seed
     agent_params = dict(spec.agent_params)
     agent_params.setdefault("price_ref", _ppo_price_ref())  # match the PPO normalization scale
+    executor = (
+        executor_override
+        if executor_override is not None
+        else _build_executor(
+            spec.name, spec.executor, seed=seed, auto_update=not settings.online_update_async
+        )
+    )
     agent = HybridPolicyAgent(
         **agent_params,
-        executor=_build_executor(
-            spec.name, spec.executor, seed=seed, auto_update=not settings.online_update_async
-        ),
+        executor=executor,
         strategist=strategist,
         refresh_every_n_ticks=interval,
         refresh_offset_ticks=offset,
@@ -382,13 +401,17 @@ def _add_hybrid_vpp(
         params=_build_params(spec, use_real_weather),
         agent=agent,
         seed=seed,
-        strategy=f"HybridPolicyAgent ({model or shared.default_model or shared.strategy_suffix})",
+        strategy=strategy_label
+        or f"HybridPolicyAgent ({model or shared.default_model or shared.strategy_suffix})",
         is_my_vpp=True,
         owner_id=owner_id,
         llm_live=shared.live,
         llm_status=shared.status,
-        algorithm="hybrid",
+        algorithm=algorithm,
     )
+    # Every _add_hybrid_vpp agent runs the LLM strategist stack — mark it so the UI label and
+    # is_llm_vpp() are accurate for both the built-in roster fleet and provisioned agents.
+    vpp.llm_enabled = True
     log.info(
         "Hybrid LLM VPP %s loaded (interval=%d ticks, offset=%d, live_llm=%s)",
         spec.name,
@@ -410,55 +433,99 @@ def provision_managed_vpp(
     seed: int | None = None,
     model: str | None = None,
     managed_def_id: int | None = None,
-    algorithm: str = "hybrid",
+    algorithm: str = "ppo",
+    llm_enabled: bool = True,
     online_learning: bool = True,
 ) -> SimulatorVPP:
-    """Provision a cloud-hosted managed (LLM-steered HybridPolicyAgent) VPP for an external
-    user at runtime — the same construction and validation as the roster's hybrid entries,
-    but attributed to ``owner_id`` so ``my_managed_vpps(owner_id)`` scopes it to that user.
-    The agent is then driven autonomously by the simulator tick loop.
+    """Provision a cloud-hosted managed VPP for an external user at runtime, attributed to
+    ``owner_id`` so ``my_managed_vpps(owner_id)`` scopes it to that user. The agent is then
+    driven autonomously by the simulator tick loop.
+
+    ``algorithm`` is the *base* tactical algorithm (ppo / truthful / zip / gd / aa) and
+    ``llm_enabled`` layers the LLM strategist on top: ppo+LLM is the classic Hybrid stack (PPO
+    executor coached by the strategist), while a baseline+LLM wraps that baseline as a
+    ``BaselinePolicy`` executor so the *same* guidance seam applies. Without the LLM the
+    standalone agent runs directly.
 
     Raises ``ValueError`` / pydantic ``ValidationError`` on invalid params or agent_params
     (the API layer maps these to HTTP 422). Nothing is added to the simulator on failure.
     """
-    algorithm = algorithm or "hybrid"
+    algorithm = algorithm or "ppo"
     if algorithm not in MANAGED_ALGORITHMS:
         raise ValueError(
             f"unknown managed algorithm {algorithm!r}; choose from {list(MANAGED_ALGORITHMS)}"
         )
-    if algorithm != "hybrid" and (persona_prompt is not None or model is not None):
-        raise ValueError("persona/model are only supported for managed hybrid agents")
+    if not llm_enabled and (persona_prompt is not None or model is not None):
+        raise ValueError("persona/model are only supported when the LLM strategist is enabled")
 
     if sim.shared_llm is None:
         # The scenario loader sets this at startup; build on demand as a defensive fallback.
         sim.shared_llm = SharedLLM.from_settings(get_settings())
 
-    if algorithm == "hybrid":
-        spec = AgentSpec(
-            name=name,
-            agent="hybrid",
-            seed=seed,
-            params=dict(params),
-            agent_params=dict(agent_params or {}),
-            persona={"name": name, "prompt": persona_prompt} if persona_prompt else None,
-            executor=_managed_executor_spec(online_learning=online_learning),
-        )
+    if llm_enabled:
         # Stagger this agent's strategist refresh against the managed agents already running so
         # the single shared LLM endpoint is not hit concurrently (the gate also enforces this).
         existing = len(sim.my_managed_vpps())
-        vpp = _add_hybrid_vpp(
-            sim,
-            spec,
-            shared=sim.shared_llm,
-            use_real_weather=_real_pv_available(),
-            default_seed=seed if seed is not None else 42,
-            offset_index=existing,
-            n_managed=existing + 1,
-            owner_id=owner_id,
-            model=model,
-        )
+        persona = {"name": name, "prompt": persona_prompt} if persona_prompt else None
+        if algorithm == "ppo":
+            spec = AgentSpec(
+                name=name,
+                agent="hybrid",
+                seed=seed,
+                params=dict(params),
+                agent_params=dict(agent_params or {}),
+                persona=persona,
+                executor=_managed_executor_spec(online_learning=online_learning),
+            )
+            vpp = _add_hybrid_vpp(
+                sim,
+                spec,
+                shared=sim.shared_llm,
+                use_real_weather=_real_pv_available(),
+                default_seed=seed if seed is not None else 42,
+                offset_index=existing,
+                n_managed=existing + 1,
+                owner_id=owner_id,
+                model=model,
+                algorithm="ppo",
+            )
+        else:
+            # Wrap the classical baseline as the tactical executor the strategist coaches. Its
+            # own economic params (price_ref/demand_beta/price_cap_mult) mirror the hybrid oracle
+            # so the executor's `limit` and the oracle's fair price agree.
+            baseline_params = _managed_agent_params(name, agent_params, algorithm)
+            baseline = MANAGED_BASELINE_FACTORIES[algorithm](**baseline_params)
+            oracle_params = {
+                k: baseline_params[k]
+                for k in ("price_ref", "demand_beta", "price_cap_mult")
+                if k in baseline_params
+            }
+            spec = AgentSpec(
+                name=name,
+                agent="hybrid",
+                seed=seed,
+                params=dict(params),
+                agent_params=oracle_params,
+                persona=persona,
+                executor=None,
+            )
+            vpp = _add_hybrid_vpp(
+                sim,
+                spec,
+                shared=sim.shared_llm,
+                use_real_weather=_real_pv_available(),
+                default_seed=seed if seed is not None else 42,
+                offset_index=existing,
+                n_managed=existing + 1,
+                owner_id=owner_id,
+                model=model,
+                executor_override=BaselinePolicy(baseline),
+                algorithm=algorithm,
+                strategy_label=f"LLM + {algorithm.upper()} (managed)",
+            )
         vpp.managed_def_id = managed_def_id
-        vpp.algorithm = "hybrid"
+        vpp.algorithm = algorithm
+        vpp.llm_enabled = True
         return vpp
 
     spec = AgentSpec(
@@ -500,15 +567,37 @@ def provision_managed_vpp(
         algorithm=algorithm,
     )
     vpp.managed_def_id = managed_def_id
+    vpp.llm_enabled = False
     return vpp
 
 
 def validate_managed_agent_params(
-    name: str, agent_params: dict | None, algorithm: str = "hybrid"
+    name: str, agent_params: dict | None, algorithm: str = "ppo", *, llm_enabled: bool = False
 ) -> None:
     """Raise ValueError if agent_params aren't accepted by the managed algorithm — the same check
     provisioning runs, exposed so callers can pre-validate before mutating a live agent."""
-    _managed_agent_params(name, agent_params, algorithm or "hybrid")
+    _managed_agent_params(name, agent_params, algorithm or "ppo", llm_enabled=llm_enabled)
+
+
+def normalize_managed_config(cfg: dict) -> tuple[str, bool]:
+    """Map a stored ``managed_config`` to ``(base_algorithm, llm_enabled)``, translating legacy
+    fused values recorded before the basexLLM split:
+
+    - a **missing** ``algorithm`` key (very old rows, predating multi-algorithm support) or the
+      explicit fused ``'hybrid'`` → ``('ppo', llm on)`` — those were always LLM+PPO;
+    - the removed ``'zi'`` → ``'truthful'``;
+    - any other explicit base without ``llm_enabled`` (pre-split ppo/baseline rows) → LLM off.
+
+    Unknown algorithms fall back to ``'ppo'`` so a stale row still rehydrates instead of crashing
+    startup."""
+    raw = cfg.get("algorithm")
+    stored = cfg.get("llm_enabled")
+    if raw is None or raw == "hybrid":
+        return "ppo", True if stored is None else bool(stored)
+    algorithm = "truthful" if raw == "zi" else raw
+    if algorithm not in MANAGED_ALGORITHMS:
+        algorithm = "ppo"
+    return algorithm, bool(stored) if stored is not None else False
 
 
 def apply_chat_prefs(vpp: SimulatorVPP, chat: dict | None) -> None:

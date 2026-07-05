@@ -11,7 +11,6 @@ from eflux.agents.base import MarketSnapshot, OrderIntent
 from eflux.agents.gas import GasGeneratorAgent
 from eflux.agents.hybrid import RiskGate, RiskLimits
 from eflux.agents.truthful import TruthfulAgent
-from eflux.agents.zi import ZIAgent
 from eflux.bridge.bus import InMemoryBus
 from eflux.simulator.runner import Simulator
 from eflux.vpp.base import VPPParams
@@ -158,7 +157,7 @@ def test_full_roster_tick_loop_has_zero_vetoes(caplog):
         VPPParams(pv_kw_peak=0.0, battery_kwh=20.0, load_kw_base=8.0),
         TruthfulAgent(price_ref=Decimal("47.0")),
     )
-    sim.add_builtin_vpp("zi", VPPParams(pv_kw_peak=5.0, battery_kwh=10.0, load_kw_base=2.0), ZIAgent())
+    sim.add_builtin_vpp("zi", VPPParams(pv_kw_peak=5.0, battery_kwh=10.0, load_kw_base=2.0), TruthfulAgent())
     sim.add_builtin_vpp(
         "wind-truthful",
         VPPParams(wind_kw_rated=15.0, battery_kwh=20.0, load_kw_base=4.0),

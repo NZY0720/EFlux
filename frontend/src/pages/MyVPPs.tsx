@@ -7,6 +7,8 @@ import {
   ChevronDown,
   ChevronRight,
   CheckCircle2,
+  Copy,
+  KeyRound,
   Layers3,
   LineChart,
   ListChecks,
@@ -16,20 +18,26 @@ import {
   Save,
   Settings2,
   ShoppingCart,
+  Terminal,
   Trash2,
   Zap,
 } from "lucide-react";
 
 import {
+  type ApiKeyInfo,
   createManagedVPP,
   createVPP,
   deleteManagedVPP,
+  deleteVPP,
   fetchManagedVPPPerformance,
   listAlgorithms,
+  listApiKeys,
   listManagedVPPs,
   listModels,
   listVPPs,
+  mintApiKey,
   releaseGuidance,
+  revokeApiKey,
   sayInChatroom,
   setChatPrefs,
   submitOrder,
@@ -60,6 +68,9 @@ export default function MyVPPs() {
   const [newName, setNewName] = useState("");
   const [pvKw, setPvKw] = useState(6);
   const [battKwh, setBattKwh] = useState(12);
+  const [newLoad, setNewLoad] = useState(2);
+  const [newWind, setNewWind] = useState(0);
+  const [newLoadProfile, setNewLoadProfile] = useState("residential");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [pvLat, setPvLat] = useState<string>("");
   const [pvLon, setPvLon] = useState<string>("");
@@ -76,7 +87,8 @@ export default function MyVPPs() {
   const [mgModel, setMgModel] = useState("");
   const [mgWind, setMgWind] = useState(0);
   const [mgLoadProfile, setMgLoadProfile] = useState("residential");
-  const [mgAlgorithm, setMgAlgorithm] = useState("hybrid");
+  const [mgAlgorithm, setMgAlgorithm] = useState("ppo");
+  const [mgLlmEnabled, setMgLlmEnabled] = useState(true);
   const [mgOnlineLearning, setMgOnlineLearning] = useState(true);
   const [mgAdvancedOpen, setMgAdvancedOpen] = useState(false);
   const [mgAdvancedParams, setMgAdvancedParams] = useState<Record<string, AlgorithmParamValue>>({});
@@ -132,7 +144,7 @@ export default function MyVPPs() {
     listAlgorithms()
       .then((roster) => {
         setAlgorithms(roster);
-        setMgAlgorithm((cur) => (roster.some((a) => a.id === cur) ? cur : (roster[0]?.id ?? "hybrid")));
+        setMgAlgorithm((cur) => (roster.some((a) => a.id === cur) ? cur : (roster[0]?.id ?? "ppo")));
       })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -141,11 +153,11 @@ export default function MyVPPs() {
   const selectedAlgorithm =
     algorithms.find((a) => a.id === mgAlgorithm) ??
     ({
-      id: "hybrid",
-      label: "Hybrid",
-      description: "LLM strategist + policy executor + risk gate.",
-      uses_llm: true,
-      supports_online_learning: false,
+      id: "ppo",
+      label: "PPO",
+      description: "Structured-policy tactical executor over the shared action space.",
+      llm_capable: true,
+      supports_online_learning: true,
       params: [{ name: "demand_beta", type: "float", default: 0.5, min: 0, max: 1, help: "Demand response sensitivity." }],
     } satisfies AlgorithmInfo);
   const supportsDemandBeta = selectedAlgorithm.params.some((p) => p.name === "demand_beta");
@@ -187,7 +199,13 @@ export default function MyVPPs() {
     setBusy(true);
     setError(null);
     try {
-      const params: Record<string, number> = { pv_kw_peak: pvKw, battery_kwh: battKwh };
+      const params: Record<string, number | string> = {
+        pv_kw_peak: pvKw,
+        battery_kwh: battKwh,
+        load_kw_base: newLoad,
+        load_profile: newLoadProfile,
+      };
+      if (newWind > 0) params.wind_kw_rated = newWind;
       if (pvLat !== "" && pvLon !== "") {
         params.pv_lat = Number(pvLat);
         params.pv_lon = Number(pvLon);
@@ -225,9 +243,10 @@ export default function MyVPPs() {
         name: mgName.trim(),
         params,
         algorithm: selectedAlgorithm.id,
+        llm_enabled: mgLlmEnabled,
         ...(isPpoAlgorithm ? { online_learning: mgOnlineLearning } : {}),
         ...(Object.keys(agentParams).length > 0 ? { agent_params: agentParams } : {}),
-        ...(selectedAlgorithm.uses_llm
+        ...(mgLlmEnabled
           ? {
               persona: mgPersona.trim() || null,
               model: mgModel || null,
@@ -257,6 +276,18 @@ export default function MyVPPs() {
     }
   };
 
+  const onDeleteVPP = async (id: number) => {
+    if (!window.confirm("Delete this VPP? Its resting orders are cancelled.")) return;
+    setError(null);
+    try {
+      await deleteVPP(id);
+      if (orderVpp === id) setOrderVpp(null);
+      await reload();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+
   const onOrder = async (e: FormEvent) => {
     e.preventDefault();
     if (orderVpp === null) return;
@@ -278,9 +309,9 @@ export default function MyVPPs() {
       <DashboardCard className="lg:col-span-2">
         <CardTitle icon={Bot}>Deploy a cloud-hosted agent</CardTitle>
         <p className="mb-4 text-sm text-[var(--text-muted)]">
-          We run an LLM-steered trading agent for you — no code, no infrastructure. Pick a DER
-          endowment and a strategy brief; the platform&apos;s HybridPolicyAgent (LLM strategist + PPO
-          executor + risk gate) trades on your behalf. Tune or remove it anytime.
+          We run a trading agent for you — no code, no infrastructure. Pick a DER endowment and a base
+          algorithm (PPO or a classical baseline), then optionally layer an LLM strategist on top to
+          coach it. Every order passes the platform risk gate. Tune or remove it anytime.
         </p>
         <form onSubmit={onCreateManaged} className="grid grid-cols-1 gap-4 md:grid-cols-2">
           <div className="space-y-3">
@@ -298,7 +329,24 @@ export default function MyVPPs() {
               onChange={setAlgorithm}
             />
             <p className="text-xs text-[var(--text-muted)]">{selectedAlgorithm.description}</p>
-            {selectedAlgorithm.uses_llm && (
+            <label className="flex items-center gap-2 text-xs font-medium text-[var(--text)]">
+              <input
+                type="checkbox"
+                checked={mgLlmEnabled}
+                onChange={(e) => setMgLlmEnabled(e.target.checked)}
+                className="h-4 w-4 accent-[var(--accent)]"
+              />
+              Enable LLM strategist
+              <StatusPill tone="accent" className="py-0 text-[10px]">
+                {mgLlmEnabled ? `LLM + ${selectedAlgorithm.label}` : selectedAlgorithm.label}
+              </StatusPill>
+            </label>
+            <p className="text-[11px] text-[var(--text-subtle)]">
+              {mgLlmEnabled
+                ? "A slow LLM strategist coaches the base executor (mode bias, risk & price nudges); the base algorithm still drives quoting."
+                : "Runs the base algorithm on its own — no LLM, zero platform model cost."}
+            </p>
+            {mgLlmEnabled && (
               <SelectField label="LLM model" value={mgModel} options={models} onChange={setMgModel} />
             )}
             <div className="grid grid-cols-2 gap-2">
@@ -334,7 +382,7 @@ export default function MyVPPs() {
                 onChange={setMgDemandBeta}
               />
             )}
-            {!selectedAlgorithm.uses_llm && !isPpoAlgorithm && advancedParams.length > 0 && (
+            {!isPpoAlgorithm && advancedParams.length > 0 && (
               <>
                 <button
                   type="button"
@@ -365,7 +413,7 @@ export default function MyVPPs() {
             )}
           </div>
           <div className="flex flex-col">
-            {selectedAlgorithm.uses_llm && (
+            {mgLlmEnabled && (
               <label className="flex flex-1 flex-col text-xs font-medium text-[var(--text-muted)]">
                 Strategy brief (persona) — optional
                 <textarea
@@ -463,10 +511,10 @@ export default function MyVPPs() {
                       )}
                       <span className="font-medium text-[var(--text)]">{v.name}</span>
                       <StatusPill tone="accent" className="py-0 text-[10px]">{algorithmChipLabel(v)}</StatusPill>
-                      {isHybridManaged(v) && v.model && (
+                      {isLlmManaged(v) && v.model && (
                         <StatusPill tone="muted" className="py-0 text-[10px]">{v.model}</StatusPill>
                       )}
-                      {isHybridManaged(v) && v.guidance_source === "external" && (
+                      {isLlmManaged(v) && v.guidance_source === "external" && (
                         <StatusPill tone="violet" className="py-0 text-[10px]">externally steered</StatusPill>
                       )}
                     </div>
@@ -474,9 +522,9 @@ export default function MyVPPs() {
                       PV {v.params.pv_kw_peak}kW / Batt {v.params.battery_kwh}kWh / Load {v.params.load_kw_base}kW
                     </div>
                     <div className="mt-1 text-xs text-[var(--accent)]">{strategyLabel(v.strategy)}</div>
-                    {isHybridManaged(v) && <div className="mt-1 text-xs text-[var(--text-subtle)]">{v.llm_status}</div>}
+                    {isLlmManaged(v) && <div className="mt-1 text-xs text-[var(--text-subtle)]">{v.llm_status}</div>}
                   </div>
-                  {isHybridManaged(v) && <LLMBadge state={v.llm_health_state} />}
+                  {isLlmManaged(v) && <LLMBadge state={v.llm_health_state} />}
                 </button>
                 {selectedManaged === v.id && (
                   <>
@@ -503,10 +551,24 @@ export default function MyVPPs() {
                     <span className="font-medium text-[var(--text)]">{v.name}</span>
                     <span className="ml-2 text-xs text-[var(--text-subtle)]">#{v.id}</span>
                   </div>
-                  <StatusPill tone={v.is_active ? "success" : "danger"}>{v.is_active ? "active" : "inactive"}</StatusPill>
+                  <div className="flex items-center gap-2">
+                    <StatusPill tone={v.is_active ? "success" : "danger"}>{v.is_active ? "active" : "inactive"}</StatusPill>
+                    {v.is_active && (
+                      <button
+                        type="button"
+                        onClick={() => onDeleteVPP(v.id)}
+                        aria-label={`delete ${v.name}`}
+                        title="Delete this VPP"
+                        className="eflux-btn eflux-btn-danger h-7 px-2 text-xs"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="mt-1 text-xs text-[var(--text-muted)]">
                   PV {v.params.pv_kw_peak}kW / Batt {v.params.battery_kwh}kWh / Load {v.params.load_kw_base}kW
+                  {v.params.wind_kw_rated ? ` / Wind ${v.params.wind_kw_rated}kW` : ""}
                 </div>
               </li>
             ))}
@@ -528,7 +590,15 @@ export default function MyVPPs() {
           <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             <NumberField label="PV peak (kW)" value={pvKw} step="0.5" onChange={setPvKw} />
             <NumberField label="Battery (kWh)" value={battKwh} step="1" onChange={setBattKwh} />
+            <NumberField label="Load (kW)" value={newLoad} step="0.5" onChange={setNewLoad} />
+            <NumberField label="Wind (kW)" value={newWind} step="0.5" onChange={setNewWind} />
           </div>
+          <SelectField
+            label="Load profile"
+            value={newLoadProfile}
+            options={LOAD_PROFILES}
+            onChange={setNewLoadProfile}
+          />
           <button
             type="button"
             onClick={() => setAdvancedOpen(!advancedOpen)}
@@ -625,6 +695,8 @@ export default function MyVPPs() {
         )}
       </DashboardCard>
 
+      <ApiAutomationCard vpps={vpps} onError={setError} />
+
       {error && (
         <div className="lg:col-span-2 flex items-start gap-2 rounded-lg border border-[color-mix(in_srgb,var(--danger)_42%,transparent)] bg-[var(--danger-soft)] p-3 text-sm text-[var(--danger)]">
           <AlertCircle size={17} className="mt-0.5 shrink-0" />
@@ -648,7 +720,7 @@ function ManagedControls({
   onDelete: () => void;
   onError: (msg: string | null) => void;
 }) {
-  const hybrid = isHybridManaged(vpp);
+  const hybrid = isLlmManaged(vpp);
   const [persona, setPersona] = useState(vpp.persona ?? "");
   const [model, setModel] = useState(vpp.model ?? "");
   const [demandBeta, setDemandBeta] = useState(0.5);
@@ -876,21 +948,214 @@ function ManagedControls({
   );
 }
 
-function isHybridManaged(vpp: ManagedVPP): boolean {
-  return vpp.algorithm === "hybrid" || (!vpp.algorithm && vpp.strategy.startsWith("HybridPolicyAgent"));
+function ApiAutomationCard({ vpps, onError }: { vpps: VPP[]; onError: (msg: string | null) => void }) {
+  const [keys, setKeys] = useState<ApiKeyInfo[]>([]);
+  const [keyName, setKeyName] = useState("");
+  const [minted, setMinted] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [selectedVppId, setSelectedVppId] = useState<number | null>(null);
+
+  const reloadKeys = async () => {
+    try {
+      setKeys(await listApiKeys());
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  };
+  useEffect(() => {
+    reloadKeys();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const onMint = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!keyName.trim()) return;
+    setBusy(true);
+    onError(null);
+    try {
+      const k = await mintApiKey(keyName.trim());
+      setMinted(k.key);
+      setKeyName("");
+      await reloadKeys();
+    } catch (err) {
+      onError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onRevoke = async (prefix: string) => {
+    if (!window.confirm("Revoke this API key? Apps using it will stop working.")) return;
+    onError(null);
+    try {
+      await revokeApiKey(prefix);
+      await reloadKeys();
+    } catch (err) {
+      onError((err as Error).message);
+    }
+  };
+
+  const activeKeys = keys.filter((k) => !k.revoked_at);
+  // The VPP this snippet targets — the one the user picked, else their first VPP.
+  const targetVpp = vpps.find((v) => v.id === selectedVppId) ?? vpps[0] ?? null;
+  const targetId = targetVpp ? String(targetVpp.id) : "<your_vpp_id>";
+  const snippet = `# pip install -e .   (then adapt the repo's examples/market_maker.py)
+from eflux.sdk import EFluxClient
+
+client = EFluxClient(base_url="http://localhost:8000", api_key="<YOUR_API_KEY>")
+
+# Read the market, then submit a replay-safe batch for ${targetVpp ? `"${targetVpp.name}"` : "your VPP"}.
+snap = await client.market_snapshot(depth=10)
+await client.submit_batch(
+    orders=[{"vpp_id": ${targetId}, "side": "buy", "price": 48.0, "qty": 0.2}],
+    idempotency_key="quote-001",  # a resend returns the original result, never a double order
+)`;
+
+  const copySnippet = async () => {
+    try {
+      await navigator.clipboard.writeText(snippet);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* clipboard unavailable — the user can select the text manually */
+    }
+  };
+
+  return (
+    <DashboardCard className="lg:col-span-2">
+      <CardTitle icon={Terminal}>Automate your VPPs (external app)</CardTitle>
+      <p className="mb-3 text-sm text-[var(--text-muted)]">
+        First create a VPP under <span className="font-semibold text-[var(--text)]">My VPPs</span> above,
+        then pick it here to drive it from your own local bot via the Agent Protocol. The platform
+        provides the interface and policies; your decision logic stays on your machine.
+      </p>
+
+      <div className="space-y-2">
+        <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--text)]">
+          <KeyRound size={15} className="text-[var(--accent)]" /> API keys
+        </h3>
+        <form onSubmit={onMint} className="flex flex-wrap gap-2">
+          <input
+            value={keyName}
+            onChange={(e) => setKeyName(e.target.value)}
+            placeholder="key name (e.g. market-maker-bot)"
+            maxLength={100}
+            className="eflux-input min-w-0 flex-1 rounded-md px-3 py-2 text-sm outline-none"
+          />
+          <button
+            disabled={busy || !keyName.trim()}
+            className="eflux-btn eflux-btn-primary h-9 px-4 text-sm font-semibold disabled:opacity-50"
+          >
+            <KeyRound size={14} /> Mint key
+          </button>
+        </form>
+        {minted && (
+          <div className="rounded-lg border border-[color-mix(in_srgb,var(--warning)_45%,transparent)] bg-[var(--warning-soft)] p-3 text-xs">
+            <div className="mb-1 font-semibold text-[var(--warning)]">
+              Copy this key now — it is shown only once.
+            </div>
+            <code className="block break-all font-mono text-[var(--text)]">{minted}</code>
+          </div>
+        )}
+        {activeKeys.length > 0 ? (
+          <ul className="space-y-1">
+            {activeKeys.map((k) => (
+              <li
+                key={k.prefix}
+                className="flex items-center justify-between gap-2 rounded-md bg-[var(--surface-inset)] px-3 py-1.5 text-xs"
+              >
+                <span className="min-w-0 truncate">
+                  <span className="font-medium text-[var(--text)]">{k.name}</span>
+                  <span className="ml-2 font-mono text-[var(--text-subtle)]">{k.prefix}…</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onRevoke(k.prefix)}
+                  className="eflux-btn eflux-btn-danger h-7 px-2 text-xs"
+                >
+                  <Trash2 size={12} /> Revoke
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-xs text-[var(--text-subtle)]">No active keys. Mint one to authenticate your bot.</p>
+        )}
+      </div>
+
+      <div className="mt-4 space-y-1 text-xs text-[var(--text-muted)]">
+        <div>
+          <span className="font-semibold text-[var(--text)]">Endpoint</span> —{" "}
+          <code className="font-mono">POST /orders/batch</code> (Agent Protocol v1:{" "}
+          <code className="font-mono">idempotency_key</code>, <code className="font-mono">deadline</code>, cancels-first)
+        </div>
+        <div>
+          <span className="font-semibold text-[var(--text)]">Auth</span> —{" "}
+          <code className="font-mono">Authorization: Bearer &lt;API_KEY&gt;</code>
+        </div>
+        <div>
+          <span className="font-semibold text-[var(--text)]">Rate limit</span> — 120 burst / 2·s⁻¹ per account
+          (429 on exceed); every order still passes the RiskGate.
+        </div>
+      </div>
+
+      {vpps.length === 0 ? (
+        <div className="mt-4 rounded-lg border border-dashed border-[var(--border)] bg-[var(--surface-inset)] p-3 text-xs text-[var(--text-muted)]">
+          <span className="font-semibold text-[var(--text)]">No VPP to automate yet.</span> Create one
+          under <span className="font-semibold">My VPPs</span> above, then pick it here to get a
+          ready-to-run snippet that targets it.
+        </div>
+      ) : (
+        <div className="mt-4 space-y-2">
+          <SelectField
+            label="Automate this VPP"
+            value={targetId}
+            options={vpps.map((v) => ({ value: String(v.id), label: `${v.name} (#${v.id})` }))}
+            onChange={(val) => setSelectedVppId(Number(val))}
+          />
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-[var(--text)]">Quick start</span>
+            <button type="button" onClick={copySnippet} className="eflux-btn h-7 px-2 text-xs">
+              <Copy size={12} /> {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+          <pre className="eflux-inset overflow-x-auto rounded-lg p-3 text-[11px] leading-relaxed text-[var(--text)]">
+            <code>{snippet}</code>
+          </pre>
+          <p className="text-[11px] text-[var(--text-subtle)]">
+            Full runnable example: <code className="font-mono">examples/market_maker.py</code> · SDK:{" "}
+            <code className="font-mono">eflux.sdk.EFluxClient</code> · MCP server:{" "}
+            <code className="font-mono">eflux.mcp.server</code>.
+          </p>
+        </div>
+      )}
+    </DashboardCard>
+  );
 }
 
+function isLlmManaged(vpp: ManagedVPP): boolean {
+  // The LLM strategist is layered on the base algorithm. Fall back to legacy signals for rows
+  // provisioned before llm_enabled existed (old "hybrid" tag / HybridPolicyAgent strategy string).
+  return (
+    vpp.llm_enabled ||
+    vpp.algorithm === "hybrid" ||
+    (!vpp.algorithm && vpp.strategy.startsWith("HybridPolicyAgent"))
+  );
+}
+
+const ALGORITHM_LABELS: Record<string, string> = {
+  hybrid: "PPO", // legacy fused tag → base is PPO
+  ppo: "PPO",
+  truthful: "Truthful",
+  zip: "ZIP",
+  gd: "GD",
+  aa: "AA",
+};
+
 function algorithmChipLabel(vpp: ManagedVPP): string {
-  const labels: Record<string, string> = {
-    hybrid: "Hybrid",
-    ppo: "PPO",
-    truthful: "Truthful",
-    zi: "ZI",
-    zip: "ZIP",
-    gd: "GD",
-    aa: "AA",
-  };
-  return labels[vpp.algorithm] ?? vpp.algorithm ?? "managed";
+  const base = ALGORITHM_LABELS[vpp.algorithm] ?? vpp.algorithm ?? "managed";
+  return isLlmManaged(vpp) ? `LLM + ${base}` : base;
 }
 
 function SelectField({
