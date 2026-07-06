@@ -8,6 +8,7 @@ via `eflux.agents.ppo.eval`.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
 from eflux.agents.ppo.primitive_encoding import (
     ACTION_DIM,
@@ -15,7 +16,7 @@ from eflux.agents.ppo.primitive_encoding import (
     PRIMITIVE_MODES,
     decode_action,
 )
-from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
+from eflux.agents.ppo.primitive_env import SOC_HIGH, SOC_LOW, W_SOC, VPPPrimitiveEnv
 from eflux.agents.strategy.schema import StrategyAction
 
 
@@ -72,3 +73,17 @@ def test_noop_action_keeps_reward_finite():
     for _ in range(5):
         _, r, _, _, _ = env.step(noop)
         assert np.isfinite(r)
+
+
+def test_soc_reward_band_allows_high_solar_charge():
+    assert SOC_LOW == 0.1
+    assert SOC_HIGH == 0.95
+    assert W_SOC == 8.0
+
+    soc_dev_90 = max(0.0, SOC_LOW - 0.9) + 0.25 * max(0.0, 0.9 - SOC_HIGH)
+    soc_dev_empty = max(0.0, SOC_LOW - 0.05) + 0.25 * max(0.0, 0.05 - SOC_HIGH)
+    soc_dev_full = max(0.0, SOC_LOW - 1.0) + 0.25 * max(0.0, 1.0 - SOC_HIGH)
+
+    assert soc_dev_90 == 0.0
+    assert W_SOC * soc_dev_empty == 0.4
+    assert W_SOC * soc_dev_full == pytest.approx(0.1)

@@ -63,7 +63,8 @@ class VPPState:
     # waiting to be sold, negative = deficit waiting to be bought. With a 1-second
     # tick the per-tick net energy (~1e-3 kWh) is far below any sane order size, so
     # agents quote from this accumulator once it clears their min_qty threshold.
-    # The runner credits it every tick and debits it when an order is submitted.
+    # The runner updates this only with energy the battery cannot buffer or fills
+    # that clear the forced position.
     pending_net_kwh: float = 0.0
     pnl: Decimal = field(default_factory=lambda: Decimal("0"))
     cumulative_energy_sold_kwh: float = 0.0

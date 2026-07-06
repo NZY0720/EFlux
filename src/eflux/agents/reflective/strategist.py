@@ -3,8 +3,8 @@
 The LLM operates over a longer horizon than the tactical policy: it reads the regime,
 reviews the last window, and recommends/discourages strategy primitives, a risk budget,
 an optional binding mode pin, and an SOC target. Its output is `StrategyGuidance`,
-applied as clamped execution guidance (`apply_guidance`): everything remains a soft prior
-except `mode_pin`, which is an explicit short-window primitive override. The guidance
+applied as clamped execution guidance (`apply_guidance`): binding levers can halt,
+veto modes, or force passive execution; the remaining fields bias execution. The guidance
 text is audit/UI metadata only (principle #9), never execution logic.
 
 The strategist runs off the critical tick path (principle #1): an async refresh updates a
@@ -63,6 +63,8 @@ class StrategyGuidance:
     preferred_modes: tuple[StrategyMode, ...] = ()
     avoid_modes: tuple[StrategyMode, ...] = ()
     mode_pin: StrategyMode | None = None  # binding primitive override for the next window
+    halt: bool = False  # binding curtail/self-store: no orders, surplus buffers into SOC
+    passive_only: bool = False  # binding maker-only execution: never cross
     risk_budget: float = 1.0  # [0,1.5] — scales order size / aggressiveness
     price_bias_bps: float = 0.0  # [-200,200] — shifts quotes off fair value
     soc_target: float = 0.5  # [0,1] — desired battery state of charge
@@ -164,6 +166,8 @@ Return ONLY a JSON object (no markdown, no commentary):
     "preferred_modes": [<primitive names to favour>],
     "avoid_modes":     [<primitive names to discourage>],
     "mode_pin":        <primitive name or null; BINDING next-window override; use sparingly>,
+    "halt":         <bool; BINDING: stop trading and hold — surplus buffers into the battery. Use in oversupply/illiquidity>,
+    "passive_only": <bool; BINDING: maker-only, never cross the spread. Use when liquidity is thin>,
     "risk_budget":     <float in [0,1.5]; 1 = full size, >1 = press harder, <1 = cautious>,
     "price_bias_bps":  <float in [-200,200]; shifts quotes off fair value; positive = quote higher>,
     "soc_target":      <float in [0,1]; desired battery state of charge>,
@@ -179,9 +183,13 @@ Return ONLY a JSON object (no markdown, no commentary):
       "mode_reg_coef":    <float in [0,1]; >0 pulls the learner toward preferred_modes>
     }
   }
-If the policy is learning well, omit "meta_control" or leave it at the defaults. Your
-advice and meta-control other than mode_pin are SOFT, clamped priors — the tactical
-policy may override that advice, and out-of-range knobs are clipped. Stay within bounds."""
+Read `regime_note` in the input and act on extremes with the BINDING levers, not just soft advice:
+- Heavy oversupply / price collapsed near zero: do NOT keep dumping surplus. Set "halt": true (or "mode_pin": "hold_energy") to store it in the battery, add "liquidate_surplus" to "avoid_modes", lower "risk_budget", and set "meta_control".w_soc_mult below 1 so charging is not penalized.
+- Thin/illiquid book: set "passive_only": true (p2p: prefer "passive_market_make").
+- Scarcity (bids elevated, few/no asks): press with "risk_budget" > 1 and prefer "aggressive_taker" / "cover_deficit".
+
+If the policy is learning well, omit "meta_control" or leave it at the defaults.
+mode_pin, halt, passive_only, and avoid_modes are BINDING; the other fields are soft, clamped priors — the tactical policy may override those, and out-of-range knobs are clipped. Stay within bounds."""
 
 REALPRICE_STRATEGIST_SYSTEM_PROMPT = """\
 You are the slow strategist for a Virtual Power Plant trading in a real-time grid
@@ -200,6 +208,8 @@ Return ONLY a JSON object (no markdown, no commentary):
     "preferred_modes": [<primitive names to favour>],
     "avoid_modes":     [<primitive names to discourage>],
     "mode_pin":        <primitive name or null; BINDING next-window override; use sparingly>,
+    "halt":         <bool; BINDING: stop trading and hold — surplus buffers into the battery. Use in oversupply/illiquidity>,
+    "passive_only": <bool; BINDING: maker-only, never cross the spread. Use when liquidity is thin>,
     "risk_budget":     <float in [0,1.5]; 1 = full size, >1 = press harder, <1 = cautious>,
     "price_bias_bps":  <float in [-200,200]; shifts quotes off fair value; positive = quote higher>,
     "soc_target":      <float in [0,1]; desired battery state of charge>,
@@ -215,10 +225,13 @@ Return ONLY a JSON object (no markdown, no commentary):
       "mode_reg_coef":    <float in [0,1]; >0 pulls the learner toward preferred_modes>
     }
   }
+Read `regime_note` in the input and act on extremes with the BINDING levers, not just soft advice:
+- Heavy oversupply / price collapsed near zero: do NOT keep dumping surplus. Set "halt": true (or "mode_pin": "hold_energy") to store it in the battery, add "liquidate_surplus" to "avoid_modes", lower "risk_budget", and set "meta_control".w_soc_mult below 1 so charging is not penalized.
+- Thin/illiquid book: set "passive_only": true.
+- Scarcity (bids elevated, few/no asks): press with "risk_budget" > 1 and prefer "aggressive_taker" / "cover_deficit".
+
 If the policy is learning well, omit "meta_control" or leave it at the defaults. Treat
-null best_bid/best_ask as normal in this market. Your advice and meta-control other
-than mode_pin are SOFT, clamped priors — the tactical policy may override that advice,
-and out-of-range knobs are clipped. Stay within bounds."""
+null best_bid/best_ask as normal in this market. mode_pin, halt, passive_only, and avoid_modes are BINDING; the other fields are soft, clamped priors — the tactical policy may override those, and out-of-range knobs are clipped. Stay within bounds."""
 
 _REALPRICE_DISALLOWED_PREFERRED = {
     StrategyMode.PASSIVE_MARKET_MAKE,
@@ -283,6 +296,22 @@ def _parse_mode_pin(value) -> StrategyMode | None:
     return StrategyMode(name) if name in _VALID_MODES else None
 
 
+def _parse_bool(value, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v in {"true", "1", "yes", "y", "on"}:
+            return True
+        if v in {"false", "0", "no", "n", "off"}:
+            return False
+    return default
+
+
 def modes_from_names(names: list[str] | tuple[str, ...]) -> tuple[StrategyMode, ...]:
     """Public soft parser for externally supplied mode names (Tier A3 guidance
     ingestion): unknown names are dropped, never an error — same tolerance the
@@ -316,6 +345,8 @@ def parse_guidance(content: str, *, market_mode: str = "p2p") -> StrategyGuidanc
             preferred_modes=_parse_modes(data.get("preferred_modes")),
             avoid_modes=_parse_modes(data.get("avoid_modes")),
             mode_pin=_parse_mode_pin(data.get("mode_pin")),
+            halt=_parse_bool(data.get("halt"), d.halt),
+            passive_only=_parse_bool(data.get("passive_only"), d.passive_only),
             risk_budget=_clamp(data.get("risk_budget", d.risk_budget), 0.0, RISK_BUDGET_MAX, d.risk_budget),
             price_bias_bps=_clamp(
                 data.get("price_bias_bps", d.price_bias_bps),
@@ -347,6 +378,8 @@ def external_guidance_from_dict(
         preferred_modes=modes_from_names(list(data.get("preferred_modes") or [])),
         avoid_modes=modes_from_names(list(data.get("avoid_modes") or [])),
         mode_pin=_parse_mode_pin(data.get("mode_pin")),
+        halt=_parse_bool(data.get("halt"), d.halt),
+        passive_only=_parse_bool(data.get("passive_only"), d.passive_only),
         risk_budget=_clamp(data.get("risk_budget", d.risk_budget), 0.0, RISK_BUDGET_MAX, d.risk_budget),
         price_bias_bps=_clamp(
             data.get("price_bias_bps", d.price_bias_bps),
@@ -379,17 +412,22 @@ def external_guidance_from_dict(
 def apply_guidance(action: StrategyAction, guidance: StrategyGuidance | None) -> StrategyAction:
     """Apply clamped strategic guidance to a chosen action.
 
-    `mode_pin` is binding by design for the next guidance window. Other guidance remains
-    soft: risk_budget scales size/aggressiveness, avoid_modes shrink unpinned discouraged
-    primitives, price_bias_bps shifts the quote, and soc_target is adopted.
+    Binding precedence is mode_pin > halt > avoid_modes. risk_budget scales
+    size/aggressiveness, passive_only forces maker-only aggressiveness, price_bias_bps
+    shifts the quote, and soc_target is adopted.
     """
     if guidance is None:
         return action
     mode = guidance.mode_pin if guidance.mode_pin is not None else action.mode
+    if guidance.mode_pin is None:
+        if guidance.halt:
+            mode = StrategyMode.HOLD_ENERGY
+        elif mode in guidance.avoid_modes:
+            mode = StrategyMode.HOLD_ENERGY
     qty = action.qty_fraction * guidance.risk_budget
     aggr = min(1.0, action.aggressiveness * guidance.risk_budget)
-    if guidance.mode_pin is None and action.mode in guidance.avoid_modes:
-        qty *= 0.25  # discourage, don't veto
+    if guidance.passive_only:
+        aggr = 0.0
     bps = action.price_offset_bps + guidance.price_bias_bps
     return replace(
         action,
@@ -475,6 +513,8 @@ class ExternalStrategist:
             "preferred_modes": [m.value for m in guidance.preferred_modes],
             "avoid_modes": [m.value for m in guidance.avoid_modes],
             "mode_pin": None if guidance.mode_pin is None else guidance.mode_pin.value,
+            "halt": guidance.halt,
+            "passive_only": guidance.passive_only,
             "risk_budget": guidance.risk_budget,
             "price_bias_bps": guidance.price_bias_bps,
             "soc_target": guidance.soc_target,
@@ -636,6 +676,8 @@ class LLMStrategist:
             "preferred_modes": [m.value for m in guidance.preferred_modes],
             "avoid_modes": [m.value for m in guidance.avoid_modes],
             "mode_pin": None if guidance.mode_pin is None else guidance.mode_pin.value,
+            "halt": guidance.halt,
+            "passive_only": guidance.passive_only,
             "risk_budget": guidance.risk_budget,
             "price_bias_bps": guidance.price_bias_bps,
             "soc_target": guidance.soc_target,

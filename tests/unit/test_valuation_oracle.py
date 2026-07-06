@@ -79,11 +79,13 @@ def test_deficit_flat_bid_without_demand_beta():
 
 def test_demand_beta_prices_scarcity_with_book_depth():
     oracle = TruthfulValuationOracle(price_ref=Decimal("50.0"), demand_beta=0.5)
-    ctx = _make_ctx(pv_kw=0.5, load_kw=3.0)  # this tick's sliver: -2.5 kWh
+    ctx = _make_ctx(pv_kw=0.5, load_kw=3.0)
+    ctx.state.pending_net_kwh = -7.5
     ctx.open_orders_net_kwh = -5.0  # 5 kWh already resting unfilled
     sig = oracle.estimate(ctx)
-    # total unserved 7.5 / 10 kWh battery → frac 0.75 → 50 * (1 + 0.5*0.75) = 68.75
-    assert sig.fair_buy_price == 68.75
+    assert sig.deficit_kwh == 2.5
+    # Separate scarcity remains pending + open_orders: 12.5 kWh caps at 1.5 * price_ref.
+    assert sig.fair_buy_price == 75.0
 
 
 def test_demand_beta_capped_at_price_cap_mult():

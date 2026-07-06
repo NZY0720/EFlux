@@ -24,8 +24,8 @@ class OrderIntent:
     price: Decimal
     qty: Decimal
     # True for dispatched energy (battery-band arbitrage, gas generation):
-    # it settles through storage or fuel on fill, not through the ambient
-    # renewable-load balance — the runner must not debit pending_net_kwh.
+    # it is excluded from ambient resting-order exposure. Fills still use the
+    # unified settlement path.
     dispatched: bool = False
 
 
@@ -122,12 +122,9 @@ class AgentContext:
     market: MarketSnapshot
     rng: random.Random
     tick_duration_h: float
-    # Signed energy this VPP has "spoken for" in resting (non-dispatched) book
-    # orders: sell remainders positive, buy remainders negative — the same
-    # convention as pending_net_kwh, which is debited at submit time. Together
-    # `pending_net_kwh + open_orders_net_kwh` is the true unserved position;
-    # without it a deficit agent sees only the post-debit sliver and can never
-    # price scarcity (the demand_beta mechanism). Populated by the runner.
+    # Signed energy this VPP has resting in non-dispatched book orders: sell
+    # remainders positive, buy remainders negative — the same convention as
+    # pending_net_kwh. Populated by the runner.
     open_orders_net_kwh: float = 0.0
     # This VPP's own resting orders (id, side, price, remaining qty, age). Empty
     # unless the runner populates it; strategy primitives that cancel/reprice

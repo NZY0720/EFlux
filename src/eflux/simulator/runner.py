@@ -175,11 +175,6 @@ class Simulator:
         self.fallback_invocations_by_vpp: dict[int, int] = {}
         self.veto_holds_by_vpp: dict[int, int] = {}
         self.decide_ticks_by_vpp: dict[int, int] = {}
-        # tick_h of the tick currently being processed. Trade settlement reads this
-        # so battery charge/discharge use the actual tick duration, not a global
-        # default — they diverge whenever the loop is stepped at a non-default
-        # cadence (e.g. the benchmark's coarse ticks).
-        self._current_tick_h: float = tick_sec / 3600.0
         # Site-weather memo: several VPPs share coords (e.g. the HKU rooftop),
         # and today/future forecast days are deliberately not disk-cached.
         self._site_weather_cache: dict[tuple[float, float], object] = {}
@@ -1151,8 +1146,9 @@ class Simulator:
     def _open_orders_net_by_vpp(self) -> dict[int, float]:
         """Signed resting (non-dispatched) book exposure per VPP: sell
         remainders +, buy remainders - (the pending_net_kwh convention).
-        Lets agents see their true unserved position — pending alone is the
-        post-debit balance. One book walk per tick; depth is TTL-bounded."""
+        Lets agents avoid re-quoting the same forced position while scarcity
+        pricing can still see resting demand depth. One book walk per tick;
+        depth is TTL-bounded."""
         out: dict[int, float] = {}
         for side in ("buy", "sell"):
             for order in self.engine.book.iter_orders(side):
@@ -1193,17 +1189,23 @@ class Simulator:
         vpp.state.wind_kw = vpp.wind.output_kw(sim_ts, vpp.rng) if vpp.wind else 0.0
         vpp.state.load_kw = vpp.load.draw_kw(sim_ts, vpp.rng)
         vpp.state.update_net()
-        # Credit this tick's net energy to the untraded balance. Clamped to the
-        # battery capacity on either side: if orders rest unfilled for a long
-        # stretch, the physical buffer is what bounds how much energy can pile up.
+        # Route this tick's DER balance through the physical buffer first. Only the
+        # unbuffered overflow/shortfall becomes a forced market position.
         cap = max(vpp.params.battery_kwh, 1.0)
-        vpp.state.pending_net_kwh = min(
-            cap, max(-cap, vpp.state.pending_net_kwh + vpp.state.net_kw * tick_h)
-        )
+        gen_kwh = vpp.state.net_kw * tick_h
+        max_rate_kwh = max(0.0, vpp.battery.max_power_kw * tick_h)
+        if gen_kwh >= 0.0:
+            absorbed = min(gen_kwh, max(0.0, vpp.battery.capacity_kwh - vpp.battery.soc_kwh), max_rate_kwh)
+            vpp.battery.apply_kwh(absorbed)
+            vpp.state.pending_net_kwh += gen_kwh - absorbed
+        else:
+            needed = -gen_kwh
+            supplied = min(needed, max(0.0, vpp.battery.soc_kwh), max_rate_kwh)
+            vpp.battery.apply_kwh(-supplied)
+            vpp.state.pending_net_kwh -= needed - supplied
+        vpp.state.soc_kwh = vpp.battery.soc_kwh
+        vpp.state.pending_net_kwh = min(cap, max(-cap, vpp.state.pending_net_kwh))
 
-        # Trade settlement (battery charge/discharge) reads this so it uses the
-        # cadence the loop is actually stepping at, not the configured default.
-        self._current_tick_h = tick_h
         ctx = AgentContext(
             vpp_id=vpp.vpp_id,
             params=vpp.params,
@@ -1268,10 +1270,7 @@ class Simulator:
             self.risk_rejections_by_vpp[vpp_id] = self.risk_rejections_by_vpp.get(vpp_id, 0) + n
 
     def _expire_orders(self, sim_ts: datetime) -> None:
-        """Expire TTL'd resting orders; refund the unfilled remainder to the
-        owner's accumulator. The agent 'spoke for' that energy at submit time
-        (the debit in _submit_intent) and it was never delivered/received —
-        without the refund agents permanently understate their position."""
+        """Expire TTL'd resting orders and shed local open-order ids."""
         expired = self.engine.expire(sim_ts=sim_ts, wall_ts=datetime.now(UTC))
         for order in expired:
             vpp = self.vpps.get(order.vpp_id)
@@ -1279,15 +1278,6 @@ class Simulator:
                 continue  # external order — the owner re-quotes on its own
             if order.order_id in vpp.open_order_ids:
                 vpp.open_order_ids.remove(order.order_id)
-            if order.dispatched:
-                continue  # battery-band/gas quotes never touched the accumulator
-            signed = (
-                float(order.remaining_qty) if order.side == "sell" else -float(order.remaining_qty)
-            )
-            cap = max(vpp.params.battery_kwh, 1.0)
-            vpp.state.pending_net_kwh = min(
-                cap, max(-cap, vpp.state.pending_net_kwh + signed)
-            )
 
     def market_balance(self) -> MarketBalanceSummary:
         """Aggregate live supply/demand across built-in VPPs plus book depth —
@@ -1326,13 +1316,6 @@ class Simulator:
                 dispatched=intent.dispatched,
                 rest_unfilled=True,
             )
-            # Debit the untraded balance for the quoted quantity — the agent has
-            # now "spoken for" that energy, whether or not the order fills.
-            # Battery-band quotes settle through the battery, not the PV-load
-            # imbalance, so they leave the accumulator alone.
-            if not intent.dispatched:
-                signed = -float(intent.qty) if intent.side == "sell" else float(intent.qty)
-                vpp.state.pending_net_kwh += signed
             if result.order.remaining_qty > 0:
                 vpp.open_order_ids.append(result.order.order_id)
             self._record_trades(result.trades)
@@ -1363,12 +1346,6 @@ class Simulator:
         except Exception:
             log.exception("VPP %s grid settlement failed", vpp.vpp_id)
             return
-        # Mirror the P2P balance debit, but only on an actual fill (nothing rests).
-        # Battery-band (dispatched) quotes settle through the battery, not the PV-load
-        # imbalance, so they leave the accumulator alone.
-        if not intent.dispatched:
-            signed = -float(intent.qty) if intent.side == "sell" else float(intent.qty)
-            vpp.state.pending_net_kwh += signed
 
     def _external_quote_for_intent(
         self, intent: OrderIntent, *, include_dispatched: bool = False
@@ -1500,15 +1477,20 @@ class Simulator:
     ) -> None:
         """Apply a fill's cash, energy counters, and battery SoC to a VPP. Shared
         by internal (P2P) and external (CAISO) settlement so the two can't drift."""
-        tick_h = self._current_tick_h
         if side == "buy":
             vpp.state.pnl -= cash
             vpp.state.cumulative_energy_bought_kwh += qty_f
-            vpp.battery.charge(power_kw=qty_f / max(1e-9, tick_h), duration_h=tick_h)
+            cover = min(qty_f, max(0.0, -vpp.state.pending_net_kwh))
+            vpp.state.pending_net_kwh += cover
+            vpp.battery.apply_kwh(qty_f - cover)
+            vpp.state.soc_kwh = vpp.battery.soc_kwh
         else:
             vpp.state.pnl += cash
             vpp.state.cumulative_energy_sold_kwh += qty_f
-            vpp.battery.discharge(power_kw=qty_f / max(1e-9, tick_h), duration_h=tick_h)
+            clear = min(qty_f, max(0.0, vpp.state.pending_net_kwh))
+            vpp.state.pending_net_kwh -= clear
+            vpp.battery.apply_kwh(-(qty_f - clear))
+            vpp.state.soc_kwh = vpp.battery.soc_kwh
 
     def _push_recent_trade(self, vpp: SimulatorVPP, record: dict) -> None:
         vpp.trade_count += 1

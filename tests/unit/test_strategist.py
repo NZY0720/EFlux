@@ -22,13 +22,15 @@ def test_parse_guidance_extracts_and_clamps():
     raw = """Here is my advice:
     {"preferred_modes": ["ladder_sell", "passive_market_make"], "avoid_modes": ["aggressive_taker"],
      "risk_budget": 0.4, "soc_target": 0.55, "execution_style": "Prefer maker orders.",
-     "mode_pin": "cover_deficit", "price_bias_bps": -25.0,
+     "mode_pin": "cover_deficit", "halt": true, "passive_only": true, "price_bias_bps": -25.0,
      "lesson": "Crossed the spread too often last window."}
     """
     g = parse_guidance(raw)
     assert g.preferred_modes == (StrategyMode.LADDER_SELL, StrategyMode.PASSIVE_MARKET_MAKE)
     assert g.avoid_modes == (StrategyMode.AGGRESSIVE_TAKER,)
     assert g.mode_pin is StrategyMode.COVER_DEFICIT
+    assert g.halt is True
+    assert g.passive_only is True
     assert g.risk_budget == 0.4 and g.soc_target == 0.55
     assert g.price_bias_bps == -25.0
     assert "maker" in g.execution_style
@@ -56,7 +58,19 @@ def test_realprice_prompt_uses_grid_price_taker_context():
     assert "caiso" in prompt and "grid" in prompt
     assert "continuous double auction" not in prompt
     assert "order book depth" not in prompt
-    assert "maker" not in prompt
+    assert "passive_market_make" not in prompt
+
+
+def test_prompts_describe_binding_extreme_regime_levers():
+    p2p = build_strategist_system_prompt(market_mode="p2p")
+    realprice = build_strategist_system_prompt(market_mode="realprice")
+    for prompt in (p2p, realprice):
+        assert '"halt":         <bool; BINDING: stop trading and hold' in prompt
+        assert '"passive_only": <bool; BINDING: maker-only, never cross the spread' in prompt
+        assert "Read `regime_note` in the input and act on extremes" in prompt
+        assert "mode_pin, halt, passive_only, and avoid_modes are BINDING" in prompt
+    assert 'prefer "passive_market_make"' in p2p
+    assert 'prefer "passive_market_make"' not in realprice
 
 
 def test_realprice_user_message_carries_grid_fields():
@@ -92,11 +106,13 @@ def test_p2p_user_message_keeps_book_fields_without_grid_fields():
         best_bid=48.0,
         best_ask=52.0,
         last_price=50.0,
+        regime_note="balanced market",
         market_mode="p2p",
     )
     data = json.loads(msg)
     assert data["market_mode"] == "p2p"
     assert data["best_bid"] == 48.0 and data["best_ask"] == 52.0
+    assert data["regime_note"] == "balanced market"
     assert "grid_raw_lmp" not in data
 
 
@@ -123,7 +139,32 @@ def test_apply_guidance_scales_size_by_risk_budget():
     assert out.mode is StrategyMode.LIQUIDATE_SURPLUS  # primitive untouched
 
 
-def test_apply_guidance_mode_pin_is_binding_and_skips_avoid_shrink():
+def test_parse_guidance_round_trips_binding_levers():
+    g = parse_guidance('{"halt": true, "passive_only": "true"}')
+
+    assert g.halt is True
+    assert g.passive_only is True
+
+
+def test_apply_guidance_halt_forces_hold_energy():
+    a = StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS, qty_fraction=1.0, aggressiveness=0.8)
+    out = apply_guidance(a, StrategyGuidance(halt=True, risk_budget=1.0))
+
+    assert out.mode is StrategyMode.HOLD_ENERGY
+    assert out.qty_fraction == 1.0
+    assert out.aggressiveness == pytest.approx(0.8)
+
+
+def test_apply_guidance_passive_only_forces_zero_aggressiveness():
+    a = StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS, qty_fraction=1.0, aggressiveness=0.8)
+    out = apply_guidance(a, StrategyGuidance(passive_only=True, risk_budget=1.5))
+
+    assert out.mode is StrategyMode.LIQUIDATE_SURPLUS
+    assert out.qty_fraction == 1.5
+    assert out.aggressiveness == 0.0
+
+
+def test_apply_guidance_mode_pin_is_binding_and_wins_over_halt_and_avoid():
     a = StrategyAction(
         mode=StrategyMode.AGGRESSIVE_TAKER,
         qty_fraction=1.0,
@@ -135,6 +176,7 @@ def test_apply_guidance_mode_pin_is_binding_and_skips_avoid_shrink():
         StrategyGuidance(
             avoid_modes=(StrategyMode.AGGRESSIVE_TAKER,),
             mode_pin=StrategyMode.BATTERY_ARBITRAGE,
+            halt=True,
             risk_budget=1.5,
             price_bias_bps=20.0,
         ),
@@ -145,11 +187,12 @@ def test_apply_guidance_mode_pin_is_binding_and_skips_avoid_shrink():
     assert out.price_offset_bps == 30.0
 
 
-def test_apply_guidance_discourages_avoided_mode_softly():
+def test_apply_guidance_vetoes_avoided_mode():
     a = StrategyAction(mode=StrategyMode.AGGRESSIVE_TAKER, qty_fraction=1.0)
     out = apply_guidance(a, StrategyGuidance(avoid_modes=(StrategyMode.AGGRESSIVE_TAKER,), risk_budget=1.0))
-    # Shrunk, not vetoed — still the same primitive (soft prior, principle #4).
-    assert out.qty_fraction == 0.25 and out.mode is StrategyMode.AGGRESSIVE_TAKER
+
+    assert out.mode is StrategyMode.HOLD_ENERGY
+    assert out.qty_fraction == 1.0
 
 
 def test_apply_guidance_none_is_identity():

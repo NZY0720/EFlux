@@ -59,8 +59,8 @@ class HybridPolicyAgent(BaseAgent):
     energy, the compiler lowers the chosen action, and the runner's RiskGate has final
     say (with a configurable fallback policy when the executor's batch is fully vetoed).
 
-    LLM guidance enters through apply_guidance and audit metadata: mode_pin is a binding
-    primitive override for its short window, while the other fields remain soft priors.
+    LLM guidance enters through apply_guidance and audit metadata: mode_pin, halt,
+    avoid-mode vetoes, and passive-only execution are binding short-window levers.
     Swap the executor (scripted / PPO / BC) and strategist without touching the oracle,
     compiler, or gate."""
 
@@ -208,6 +208,7 @@ class HybridPolicyAgent(BaseAgent):
                 best_bid=float(m.best_bid) if m.best_bid is not None else None,
                 best_ask=float(m.best_ask) if m.best_ask is not None else None,
                 last_price=float(m.last_price) if m.last_price is not None else None,
+                regime_note=self._regime_note(ctx),
                 market_mode=m.market_mode,
                 grid_raw_lmp=float(grid.raw_lmp) if grid is not None else None,
                 grid_import_price=float(grid.import_price) if grid is not None else None,
@@ -215,6 +216,41 @@ class HybridPolicyAgent(BaseAgent):
                 grid_status=grid.status if grid is not None else None,
             )
         )
+
+    def _regime_note(self, ctx: AgentContext) -> str:
+        """Cheap deterministic market-regime summary for the slow strategist."""
+        def _as_float(value) -> float | None:
+            if value is None:
+                return None
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        m = ctx.market
+        ref = float(self.price_ref)
+        last = _as_float(m.last_price)
+        bid = _as_float(m.best_bid)
+        ask = _as_float(m.best_ask)
+        soc = ctx.battery.soc_frac
+        notes: list[str] = []
+
+        if last is not None and last < 0.3 * ref:
+            notes.append(f"price collapsed to {last:.1f} (<30% of ~{ref:.0f}); heavy oversupply")
+        if bid is None:
+            notes.append("no resting bids — illiquid demand")
+        elif bid < 0.3 * ref:
+            notes.append(f"best bid {bid:.1f} very low")
+        if ask is None:
+            notes.append("no resting asks — scarce supply")
+        elif ask > 1.3 * ref:
+            notes.append(f"best ask {ask:.1f} elevated; scarcity")
+        if soc > 0.9:
+            notes.append(f"battery near full (SOC {soc:.0%}) — little headroom to buffer")
+        elif soc < 0.1:
+            notes.append(f"battery near empty (SOC {soc:.0%}) — cannot cover load")
+
+        return "; ".join(notes) or "balanced market"
 
     @property
     def diagnostics(self) -> dict:
@@ -227,6 +263,8 @@ class HybridPolicyAgent(BaseAgent):
                 "preferred_modes": [m.value for m in g.preferred_modes],
                 "avoid_modes": [m.value for m in g.avoid_modes],
                 "mode_pin": None if g.mode_pin is None else g.mode_pin.value,
+                "halt": g.halt,
+                "passive_only": g.passive_only,
                 "risk_budget": g.risk_budget,
                 "price_bias_bps": g.price_bias_bps,
                 "soc_target": g.soc_target,

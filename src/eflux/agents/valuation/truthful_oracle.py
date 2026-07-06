@@ -63,11 +63,14 @@ class TruthfulValuationOracle:
         battery_sell_price = pr / sqrt_eta  # cost to deliver from battery
         battery_buy_price = pr * sqrt_eta  # value of storing to battery
 
-        # Quote the accumulated untraded balance (maintained by the runner), not
-        # this tick's sub-min_qty sliver.
+        # Quote only the forced balance not already resting on the same side of
+        # the book. This assumes a VPP is not intentionally resting both sides for
+        # the same forced position; two-sided market making remains represented by
+        # the separate scarcity term below.
         net_kwh = ctx.state.pending_net_kwh
-        surplus_kwh = max(0.0, net_kwh)
-        deficit_kwh = max(0.0, -net_kwh)
+        effective_kwh = net_kwh - ctx.open_orders_net_kwh
+        surplus_kwh = max(0.0, effective_kwh)
+        deficit_kwh = max(0.0, -effective_kwh)
 
         # Sell-side marginal cost: surplus within current PV+wind output (load
         # fully covered) is pure renewable export → quote the floor; surplus
@@ -78,9 +81,8 @@ class TruthfulValuationOracle:
             fair_sell_price = battery_sell_price
 
         # Buy-side marginal value: pay up to price_ref to cover load, rising with
-        # scarcity. The unserved deficit must include resting bids — pending is
-        # debited at submit, so pending alone is the post-debit sliver and the bid
-        # would never leave price_ref (and gas at 55-72 would never clear).
+        # scarcity. Keep this separate from effective_kwh above: resting bids
+        # still indicate unserved demand depth for the scarcity premium.
         unserved_kwh = max(0.0, -(net_kwh + ctx.open_orders_net_kwh))
         deficit_frac = min(1.0, unserved_kwh / max(ctx.params.battery_kwh, 1.0))
         fair_buy_price = pr * min(self.price_cap_mult, 1.0 + self.demand_beta * deficit_frac)

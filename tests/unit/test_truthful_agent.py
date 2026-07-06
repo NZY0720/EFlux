@@ -112,18 +112,19 @@ def test_demand_beta_defaults_to_legacy_flat_bid():
 
 
 def test_demand_beta_sees_resting_book_deficit():
-    """In the real runner, pending is debited at submit — the unmet deficit
-    sits in resting bids. The deficit fraction must include that book exposure
-    or the bid never leaves price_ref (and gas at 55-72 never clears)."""
+    """Resting same-side bids reduce the re-quoted deficit quantity but still
+    contribute to demand_beta scarcity."""
     agent = TruthfulAgent(price_ref=Decimal("50.0"), demand_beta=0.5)
-    ctx = _make_ctx(pv_kw=0.5, load_kw=3.0)  # this tick's sliver: -2.5 kWh
-    # 5 kWh of earlier deficit already quoted and resting in the book (buy = negative).
+    ctx = _make_ctx(pv_kw=0.5, load_kw=3.0)
+    # Full forced deficit is 7.5 kWh; 5 kWh is already resting in bids (buy = negative).
+    ctx.state.pending_net_kwh = -7.5
     ctx.open_orders_net_kwh = -5.0
     intents = agent.decide(ctx)
     assert len(intents) == 1 and intents[0].side == "buy"
-    # total unserved 7.5 kWh on a 10 kWh battery → frac 0.75 → 50*(1+0.5*0.75)
-    assert intents[0].price == Decimal("68.7500")
-    # the new order still quotes only this tick's accumulated balance
+    # The separate scarcity term still includes resting demand depth:
+    # -(pending + open) = 12.5 kWh, capped at 1.5 * price_ref.
+    assert intents[0].price == Decimal("75.0000")
+    # the new order quotes only the un-rested remainder
     assert intents[0].qty == Decimal("2.5000")
 
 

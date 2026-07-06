@@ -122,6 +122,65 @@ def _action_for_preferred(mode: StrategyMode) -> StrategyAction:
 
 
 @dataclass
+class BatteryAwareStrategyPolicy:
+    """Deterministic PPO-space demonstrator for the battery-buffer environment.
+
+    It first clears forced imbalance, then uses the battery primitive only when price
+    is on the right side of the oracle's battery value and SOC has room inside the
+    demonstrator guard band. This keeps BC targets in the four PPO modes while avoiding
+    invalid battery actions at the SOC extremes.
+    """
+
+    min_qty: float = 0.01
+    battery_buy_price_mult: float = 1.2
+    battery_sell_price_mult: float = 1.0
+    battery_aggressiveness: float = 1.0
+
+    def select_action(
+        self, ctx: AgentContext, valuation: ValuationSignal, guidance: object | None = None
+    ) -> StrategyAction:
+        min_qty = max(0.0, float(self.min_qty))
+        surplus = max(0.0, float(valuation.surplus_kwh or 0.0))
+        deficit = max(0.0, float(valuation.deficit_kwh or 0.0))
+        soc = max(0.0, min(1.0, float(valuation.soc_frac or 0.0)))
+        last = self._last_price(ctx)
+
+        if deficit >= min_qty:
+            return StrategyAction(mode=StrategyMode.COVER_DEFICIT)
+
+        if surplus >= min_qty:
+            fair_sell = float(valuation.fair_sell_price or 0.0)
+            if last is None or last >= fair_sell:
+                return StrategyAction(mode=StrategyMode.LIQUIDATE_SURPLUS)
+            return StrategyAction(mode=StrategyMode.NOOP)
+
+        if last is not None:
+            battery_buy = float(valuation.battery_buy_price or 0.0)
+            battery_sell = float(valuation.battery_sell_price or 0.0)
+            if battery_buy > 0.0 and last <= battery_buy * self.battery_buy_price_mult and soc < 0.9:
+                return StrategyAction(
+                    mode=StrategyMode.BATTERY_ARBITRAGE,
+                    aggressiveness=self.battery_aggressiveness,
+                    soc_target=0.9,
+                )
+            if battery_sell > 0.0 and last >= battery_sell * self.battery_sell_price_mult and soc > 0.2:
+                return StrategyAction(
+                    mode=StrategyMode.BATTERY_ARBITRAGE,
+                    aggressiveness=self.battery_aggressiveness,
+                    soc_target=0.2,
+                )
+
+        return StrategyAction(mode=StrategyMode.NOOP)
+
+    def _last_price(self, ctx: AgentContext) -> float | None:
+        if ctx.market.last_price is not None:
+            return float(ctx.market.last_price)
+        if ctx.market.mid_price is not None:
+            return float(ctx.market.mid_price)
+        return None
+
+
+@dataclass
 class BaselinePolicy:
     """Adapt a classical CDA baseline (AA / ZIP / GD / Truthful) into the `StrategyPolicy`
     seam so the slow LLM strategist can coach it *exactly* like the PPO executor.

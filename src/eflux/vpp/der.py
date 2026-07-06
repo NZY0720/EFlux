@@ -110,6 +110,12 @@ class Battery:
     eta_rt: float = 0.9  # round-trip efficiency
     soc_kwh: float = 0.0
 
+    def apply_kwh(self, delta_kwh: float) -> float:
+        """Move cell SOC losslessly. Returns the actual signed SOC delta."""
+        before = self.soc_kwh
+        self.soc_kwh = min(self.capacity_kwh, max(0.0, self.soc_kwh + delta_kwh))
+        return self.soc_kwh - before
+
     def charge(self, power_kw: float, duration_h: float) -> float:
         """Charge at given power for duration. Returns actual kWh stored."""
         if power_kw <= 0:

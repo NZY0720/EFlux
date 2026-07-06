@@ -47,11 +47,11 @@ log = logging.getLogger(__name__)
 class RewardWeights:
     inventory: float = 0.1   # mark-to-market value of unsettled energy (W_INVENTORY)
     imbalance: float = 1.0   # unserved position (W_IMBALANCE)
-    soc: float = 15.0        # deviation outside the SOC band (W_SOC)
+    soc: float = 5.0         # asymmetric deviation outside the SOC band (live LLM lever)
     degrade: float = 0.3     # battery throughput this step (W_DEGRADE)
     invalid: float = 10.0    # per gate-vetoed order (W_INVALID)
-    soc_low: float = 0.2
-    soc_high: float = 0.8
+    soc_low: float = 0.1
+    soc_high: float = 0.95
     # Opt-in shaping toward the (LLM-set) soc_target — couples the M4 battery-drain gap to
     # guidance. 0 = off (default), so behaviour matches the offline env unless enabled.
     soc_target_weight: float = 0.0
@@ -86,9 +86,9 @@ def compute_step_reward(prev: _Snap, cur: _Snap, w: RewardWeights) -> float:
     """Reward for the action taken at the *prev* tick, read off the deltas to the *cur*
     tick. Pure function of two snapshots + weights, so it is unit-testable in isolation."""
     realized = cur.pnl - prev.pnl
-    inv_delta = (cur.pending - prev.pending) * price_ref_scale()
+    inv_delta = ((cur.pending + cur.soc_kwh) - (prev.pending + prev.soc_kwh)) * price_ref_scale()
     imbalance = abs(cur.pending + cur.open_net)
-    soc_dev = max(0.0, w.soc_low - cur.soc_frac) + max(0.0, cur.soc_frac - w.soc_high)
+    soc_dev = max(0.0, w.soc_low - cur.soc_frac) + 0.25 * max(0.0, cur.soc_frac - w.soc_high)
     degrade = abs(cur.soc_kwh - prev.soc_kwh)
     n_rejected = max(0.0, cur.rejections - prev.rejections)
     reward = (

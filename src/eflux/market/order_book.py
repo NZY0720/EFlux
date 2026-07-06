@@ -28,8 +28,8 @@ class LimitOrder:
     sim_ts: datetime
     seq: int = 0  # tie-breaker for time priority
     expires_at: datetime | None = None  # sim-time TTL; None = rests forever
-    # True = energy settles outside pending_net_kwh (battery band / gas), so
-    # expiry must not refund the accumulator.
+    # True = energy settles outside the ambient forced-position book exposure
+    # (battery band / gas).
     dispatched: bool = False
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import random
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -110,6 +111,8 @@ def test_hybrid_exposes_guidance_diagnostics():
     g = StrategyGuidance(
         avoid_modes=(),
         mode_pin=StrategyMode.COVER_DEFICIT,
+        halt=True,
+        passive_only=True,
         risk_budget=0.4,
         price_bias_bps=15.0,
         soc_target=0.55,
@@ -120,6 +123,8 @@ def test_hybrid_exposes_guidance_diagnostics():
     diag = agent.diagnostics["guidance"]
     assert diag["risk_budget"] == 0.4 and diag["lesson"] == "be patient"
     assert diag["mode_pin"] == "cover_deficit"
+    assert diag["halt"] is True
+    assert diag["passive_only"] is True
     assert diag["price_bias_bps"] == 15.0
 
 
@@ -127,6 +132,36 @@ def test_hybrid_exposes_risk_fallback_for_the_runner_hook():
     agent = HybridPolicyAgent()
     # The runner's gate-fallback hook reads .risk_fallback; default is stand down.
     assert agent.risk_fallback is None
+
+
+def test_hybrid_regime_note_flags_oversupply_illiquidity_and_full_soc():
+    ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, soc_kwh=9.5)
+    ctx.market.last_price = Decimal("10.0")
+    ctx.market.best_bid = None
+    agent = HybridPolicyAgent(price_ref=Decimal("50.0"))
+
+    note = agent._regime_note(ctx)
+
+    assert "oversupply" in note
+    assert "illiquid" in note
+    assert "near full" in note
+
+
+def test_hybrid_regime_note_flags_scarcity():
+    ctx = _make_ctx(pv_kw=1.0, load_kw=5.0)
+    ctx.market.best_ask = None
+    agent = HybridPolicyAgent(price_ref=Decimal("50.0"))
+
+    assert "scarce" in agent._regime_note(ctx)
+
+    ctx.market.best_ask = Decimal("70.0")
+    assert "scarcity" in agent._regime_note(ctx)
+
+
+def test_hybrid_regime_note_balanced_for_benign_market():
+    agent = HybridPolicyAgent(price_ref=Decimal("50.0"))
+
+    assert agent._regime_note(_make_ctx(pv_kw=2.0, load_kw=2.0)) == "balanced market"
 
 
 def test_fallback_policy_truthful_restores_legacy_hook():
@@ -180,3 +215,35 @@ async def test_hybrid_schedules_offline_refresh_under_running_loop():
     await agent._reflection_task  # let the off-path refresh complete
     g = agent.strategist.current_guidance()
     assert g is not None and g.risk_budget == 0.5
+
+
+@pytest.mark.asyncio
+async def test_hybrid_refresh_threads_regime_note_into_strategist_payload():
+    from eflux.agents.reflective.strategist import LLMStrategist
+
+    class FakeClient:
+        def __init__(self):
+            self.messages = None
+
+        async def chat(self, messages, *, temperature=0.2):
+            self.messages = messages
+            return '{"risk_budget": 0.5}'
+
+    client = FakeClient()
+    agent = HybridPolicyAgent(
+        price_ref=Decimal("50.0"),
+        strategist=LLMStrategist(client=client),
+        refresh_every_n_ticks=1,
+    )
+    ctx = _make_ctx(pv_kw=5.0, load_kw=1.0)
+    ctx.market.last_price = Decimal("10.0")
+    ctx.market.best_bid = None
+
+    agent.decide(ctx)
+    assert agent._reflection_task is not None
+    await agent._reflection_task
+
+    payload = json.loads(client.messages[1]["content"])
+    assert payload["regime_note"]
+    assert "oversupply" in payload["regime_note"]
+    assert "illiquid" in payload["regime_note"]

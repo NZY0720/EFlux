@@ -21,14 +21,17 @@ def test_strategy_agent_is_competitive_with_truthful_and_clean():
     # It participates and is profitable.
     assert strat.energy_traded_kwh > 0
     assert strat.mark_to_market > 0
-    # Reproduces Truthful's balance trades exactly (identical energy bought).
-    assert strat.energy_bought_kwh == pytest.approx(truth.energy_bought_kwh, abs=1e-6)
+    # Tracks Truthful's balance behavior closely (both cover deficits off the same oracle),
+    # now within a band rather than bit-identical: with the battery-buffer physics each VPP's
+    # SOC evolves independently, so Truthful's throttled battery-band quotes drift from the
+    # scripted policy's.
+    assert strat.energy_bought_kwh == pytest.approx(truth.energy_bought_kwh, rel=0.35)
     # The adaptive AA baseline is also a clean, participating candidate.
     assert rows["aa"].risk_rejections == 0
     assert rows["aa"].energy_traded_kwh > 0
-    # Competitive with Truthful, trailing only by the battery arbitrage it forgoes
-    # (the headroom the PPO policy in M4 is meant to capture); never exceeds it.
-    assert 0.4 * truth.mark_to_market <= strat.mark_to_market <= truth.mark_to_market + 1.0
+    # Competitive with Truthful — now that the battery buffers generation into SOC, the scripted
+    # policy tracks (and can slightly edge) Truthful rather than strictly trailing it.
+    assert 0.5 * truth.mark_to_market <= strat.mark_to_market <= 1.5 * truth.mark_to_market
 
 
 def test_benchmark_is_deterministic():

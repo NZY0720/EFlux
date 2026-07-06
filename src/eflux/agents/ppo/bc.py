@@ -1,11 +1,11 @@
 """Behavior-cloning warm-start (design note §7, Stage 2).
 
-Map an expert policy (the scripted StrategyPolicy / Truthful behaviour) into the
+Map an expert policy (the battery-aware StrategyPolicy demonstrator) into the
 structured action space and clone it with supervised learning, so a learned policy
 starts near the baseline instead of exploring unsafely from scratch — better sample
 efficiency and fewer invalid early actions before PPO fine-tuning.
 
-The cloned `BCPolicy` implements the same `StrategyPolicy` seam as the scripted and PPO
+The cloned `BCPolicy` implements the same `StrategyPolicy` seam as scripted and PPO
 policies, so it drops into a `StrategyAgent` unchanged, and its network is the natural
 initialization for the PPO module (same obs/action encoding).
 """
@@ -36,7 +36,7 @@ from eflux.agents.ppo.primitive_encoding import (
 from eflux.agents.ppo.primitive_encoding import (
     action_dim as encoding_action_dim,
 )
-from eflux.agents.strategy.policy import ScriptedStrategyPolicy, StrategyPolicy
+from eflux.agents.strategy.policy import BatteryAwareStrategyPolicy, StrategyPolicy
 from eflux.agents.strategy.schema import StrategyAction
 from eflux.agents.valuation import TruthfulValuationOracle, ValuationSignal
 
@@ -246,7 +246,7 @@ def train_bc_policy(
     encoding_version: int = ENCODING_V1,
 ) -> BCPolicy:
     obs, acts = collect_demonstrations(
-        expert or ScriptedStrategyPolicy(), n_episodes=n_episodes, seed=seed, encoding_version=encoding_version
+        expert or BatteryAwareStrategyPolicy(), n_episodes=n_episodes, seed=seed, encoding_version=encoding_version
     )
     return BCPolicy(train_bc(obs, acts, epochs=epochs, seed=seed, encoding_version=encoding_version))
 

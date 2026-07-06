@@ -20,6 +20,8 @@ ENTRY_KEYS = {
     "preferred_modes",
     "avoid_modes",
     "mode_pin",
+    "halt",
+    "passive_only",
     "risk_budget",
     "price_bias_bps",
     "soc_target",
@@ -41,6 +43,8 @@ def test_external_guidance_from_dict_clamps_and_sanitizes():
         {
             "preferred_modes": ["liquidate_surplus"],
             "mode_pin": "battery_arbitrage",
+            "halt": "true",
+            "passive_only": 1,
             "risk_budget": 99.0,
             "price_bias_bps": -999.0,
             "soc_target": -3.0,
@@ -49,6 +53,8 @@ def test_external_guidance_from_dict_clamps_and_sanitizes():
         }
     )
     assert g.mode_pin is StrategyMode.BATTERY_ARBITRAGE
+    assert g.halt is True
+    assert g.passive_only is True
     assert g.risk_budget == 1.5
     assert g.price_bias_bps == -200.0
     assert g.soc_target == 0.0
@@ -66,13 +72,22 @@ def test_external_guidance_from_dict_clamps_and_sanitizes():
 
 def test_external_guidance_round_trips_v2_fields():
     g, _ = external_guidance_from_dict(
-        {"mode_pin": "cover_deficit", "price_bias_bps": 42.0, "risk_budget": 1.2}
+        {
+            "mode_pin": "cover_deficit",
+            "halt": True,
+            "passive_only": True,
+            "price_bias_bps": 42.0,
+            "risk_budget": 1.2,
+        }
     )
     ext = ExternalStrategist()
     entry = ext.set_guidance(g)
     assert g.mode_pin is StrategyMode.COVER_DEFICIT
+    assert g.halt is True and g.passive_only is True
     assert g.price_bias_bps == 42.0
     assert entry["mode_pin"] == "cover_deficit"
+    assert entry["halt"] is True
+    assert entry["passive_only"] is True
     assert entry["price_bias_bps"] == 42.0
 
 

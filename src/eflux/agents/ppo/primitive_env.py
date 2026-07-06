@@ -54,12 +54,12 @@ _SYNTHETIC_EPOCH = datetime(2024, 6, 21, tzinfo=UTC)
 # Reward weights (§7). Realized cash is the primary term; the rest shape behaviour.
 W_INVENTORY = 0.1     # mark-to-market value of unsettled energy
 W_IMBALANCE = 1.0     # unserved position
-W_SOC = 15.0          # deviation outside the SOC band
+W_SOC = 8.0           # asymmetric deviation outside the SOC band
 W_INVALID = 10.0      # per gate-vetoed order
 W_DEGRADE = 0.3       # per kWh of battery throughput
 W_EXCESS_ORDERS = 4.0  # per order beyond the soft cap
 ORDER_SOFT_CAP = 3
-SOC_LOW, SOC_HIGH = 0.2, 0.8
+SOC_LOW, SOC_HIGH = 0.1, 0.95
 
 
 class VPPPrimitiveEnv(gym.Env):
@@ -145,11 +145,9 @@ class VPPPrimitiveEnv(gym.Env):
         return self._obs(), {}
 
     def step(self, action):
-        cap = max(self._params.battery_kwh, 1.0)
-        # Credit this tick's net energy into the untraded balance (DER accumulation).
-        self._state.pending_net_kwh = min(cap, max(-cap, self._state.pending_net_kwh + self._state.net_kw * TICK_DURATION_H))
+        self._apply_der_balance()
         scale = price_ref_scale()
-        inv_start = self._state.pending_net_kwh * scale
+        inv_start = (self._state.pending_net_kwh + self._battery.soc_kwh) * scale
         soc_throughput_start = self._battery.soc_kwh
 
         ctx = self._make_ctx()
@@ -175,11 +173,11 @@ class VPPPrimitiveEnv(gym.Env):
         self._expire_orders()
 
         # Reward terms (§7).
-        inv_end = self._state.pending_net_kwh * scale
+        inv_end = (self._state.pending_net_kwh + self._battery.soc_kwh) * scale
         open_net = self._open_orders_net()
         imbalance = abs(self._state.pending_net_kwh + open_net)
         soc = self._battery.soc_frac
-        soc_dev = max(0.0, SOC_LOW - soc) + max(0.0, soc - SOC_HIGH)
+        soc_dev = max(0.0, SOC_LOW - soc) + 0.25 * max(0.0, soc - SOC_HIGH)
         degrade = abs(self._battery.soc_kwh - soc_throughput_start)
         reward = (
             realized
@@ -233,9 +231,6 @@ class VPPPrimitiveEnv(gym.Env):
             )
         except ValueError:
             return 0.0
-        if not intent.dispatched:
-            signed = -float(intent.qty) if intent.side == "sell" else float(intent.qty)
-            self._state.pending_net_kwh += signed
         return self._apply_fills(result.trades)
 
     def _apply_fills(self, trades) -> float:
@@ -246,20 +241,37 @@ class VPPPrimitiveEnv(gym.Env):
             amount = float(tr.price) * qty_f
             if party_is_buyer:
                 cash -= amount
-                self._battery.charge(power_kw=qty_f / TICK_DURATION_H, duration_h=TICK_DURATION_H)
+                cover = min(qty_f, max(0.0, -self._state.pending_net_kwh))
+                self._state.pending_net_kwh += cover
+                self._battery.apply_kwh(qty_f - cover)
+                self._state.soc_kwh = self._battery.soc_kwh
             else:
                 cash += amount
-                self._battery.discharge(power_kw=qty_f / TICK_DURATION_H, duration_h=TICK_DURATION_H)
+                clear = min(qty_f, max(0.0, self._state.pending_net_kwh))
+                self._state.pending_net_kwh -= clear
+                self._battery.apply_kwh(-(qty_f - clear))
+                self._state.soc_kwh = self._battery.soc_kwh
         self._state.pnl += Decimal(str(cash))
         return cash
 
     def _expire_orders(self) -> None:
+        self._engine.expire(sim_ts=self._sim_ts, wall_ts=self._sim_ts)
+
+    def _apply_der_balance(self) -> None:
         cap = max(self._params.battery_kwh, 1.0)
-        for order in self._engine.expire(sim_ts=self._sim_ts, wall_ts=self._sim_ts):
-            if order.vpp_id != VPP_ID or order.dispatched:
-                continue
-            signed = float(order.remaining_qty) if order.side == "sell" else -float(order.remaining_qty)
-            self._state.pending_net_kwh = min(cap, max(-cap, self._state.pending_net_kwh + signed))
+        gen_kwh = self._state.net_kw * TICK_DURATION_H
+        max_rate_kwh = max(0.0, self._battery.max_power_kw * TICK_DURATION_H)
+        if gen_kwh >= 0.0:
+            absorbed = min(gen_kwh, max(0.0, self._battery.capacity_kwh - self._battery.soc_kwh), max_rate_kwh)
+            self._battery.apply_kwh(absorbed)
+            self._state.pending_net_kwh += gen_kwh - absorbed
+        else:
+            needed = -gen_kwh
+            supplied = min(needed, max(0.0, self._battery.soc_kwh), max_rate_kwh)
+            self._battery.apply_kwh(-supplied)
+            self._state.pending_net_kwh -= needed - supplied
+        self._state.soc_kwh = self._battery.soc_kwh
+        self._state.pending_net_kwh = min(cap, max(-cap, self._state.pending_net_kwh))
 
     def _open_order_count(self) -> int:
         return sum(

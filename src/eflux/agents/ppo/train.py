@@ -58,7 +58,7 @@ def run_training(
         train_bc,
     )
     from eflux.agents.ppo.primitive_encoding import price_ref_scale, set_price_ref_scale
-    from eflux.agents.strategy.policy import ScriptedStrategyPolicy
+    from eflux.agents.strategy.policy import BatteryAwareStrategyPolicy
 
     env_config: dict = {"market_mode": market_mode, "encoding_version": encoding_version}
     data_window = None
@@ -85,7 +85,7 @@ def run_training(
 
     log.info("Collecting demonstrations (%d episodes, seed=%d, real_data=%s)…", episodes, seed, real_data)
     obs, acts = collect_demonstrations(
-        ScriptedStrategyPolicy(),
+        BatteryAwareStrategyPolicy(),
         n_episodes=episodes,
         seed=seed,
         env_config=env_config,

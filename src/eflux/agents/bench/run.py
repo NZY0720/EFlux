@@ -54,7 +54,8 @@ def _measure(name: str, sim: Simulator, vpp, n_ticks: int) -> EpisodeMetrics:
     last = sim.engine.last_price
     pending = vpp.state.pending_net_kwh
     realized = float(vpp.state.pnl)
-    mtm = realized + pending * (float(last) if last is not None else 0.0)
+    price_ref = float(last) if last is not None else 0.0
+    mtm = realized + (pending + vpp.battery.soc_kwh) * price_ref
     open_net = sim._open_orders_net_by_vpp().get(vpp.vpp_id, 0.0)
     return EpisodeMetrics(
         candidate=name,

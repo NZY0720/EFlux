@@ -10,7 +10,11 @@ policies can share.
 from __future__ import annotations
 
 from eflux.agents.strategy.compiler import OrderProgramCompiler
-from eflux.agents.strategy.policy import ScriptedStrategyPolicy, StrategyPolicy
+from eflux.agents.strategy.policy import (
+    BatteryAwareStrategyPolicy,
+    ScriptedStrategyPolicy,
+    StrategyPolicy,
+)
 from eflux.agents.strategy.schema import (
     PRICE_MULT_MAX,
     PRICE_MULT_MIN,
@@ -25,6 +29,7 @@ from eflux.agents.strategy.schema import (
 __all__ = [
     "PRICE_MULT_MAX",
     "PRICE_MULT_MIN",
+    "BatteryAwareStrategyPolicy",
     "CancelPolicy",
     "CompiledProgram",
     "OrderProgram",

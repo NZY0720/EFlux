@@ -75,10 +75,12 @@ def test_cover_deficit_matches_truthful():
 
 def test_cover_deficit_scarcity_matches_truthful():
     ctx = _make_ctx(pv_kw=0.5, load_kw=3.0)
+    ctx.state.pending_net_kwh = -7.5
     ctx.open_orders_net_kwh = -5.0
     compiled = _compile(ctx, StrategyAction(mode=StrategyMode.COVER_DEFICIT), demand_beta=0.5)
     truthful = TruthfulAgent(price_ref=Decimal("50.0"), demand_beta=0.5).decide(ctx)
-    assert compiled.order_intents[0].price == truthful[0].price == Decimal("68.7500")
+    assert compiled.order_intents[0].price == truthful[0].price == Decimal("75.0000")
+    assert compiled.order_intents[0].qty == truthful[0].qty == Decimal("2.5000")
 
 
 # --- Primitive behaviour ----------------------------------------------------

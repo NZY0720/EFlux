@@ -2,8 +2,8 @@
 
 A gas plant has no ambient energy balance to trade: it simply offers its
 capacity at its fuel marginal cost (params.gas_cost_per_kwh) and generates
-whatever fills. Quotes carry dispatched=True so the runner doesn't debit
-pending_net_kwh. Economically this puts a soft price cap on the market:
+whatever fills. Quotes carry dispatched=True so the runner and book keep them
+out of ambient open-order exposure. Economically this puts a soft price cap on the market:
 whenever bids rise above gas marginal cost, gas supply gets dispatched
 (merit order: renewables ~floor < battery ~52.7 < gas 55-72).
 """

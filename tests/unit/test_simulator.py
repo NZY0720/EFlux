@@ -170,10 +170,9 @@ async def test_submit_external_rests_when_quote_not_live():
     assert sim.engine.book.best_bid() is not None
 
 
-def test_expired_order_refunds_pending_balance():
-    """An expired (TTL'd) order must hand its unfilled remainder back to the
-    accumulator — the submit-time debit 'spoke for' energy that was never
-    delivered, and without the refund the agent understates its position."""
+def test_expired_order_does_not_mutate_pending_balance():
+    """Resting orders do not debit pending at submit, so expiry only removes the
+    open order id; the forced balance remains in pending_net_kwh throughout."""
     from datetime import timedelta
 
     sim = Simulator(bus=InMemoryBus())
@@ -183,7 +182,7 @@ def test_expired_order_refunds_pending_balance():
     sim._submit_intent(
         vpp, OrderIntent(side="sell", price=Decimal("60"), qty=Decimal("2")), sim_ts
     )
-    assert vpp.state.pending_net_kwh == 0.0
+    assert vpp.state.pending_net_kwh == 2.0
     assert len(vpp.open_order_ids) == 1
 
     sim._expire_orders(sim_ts + timedelta(seconds=sim.order_ttl_sec + 1))
@@ -273,7 +272,6 @@ def test_realprice_market_settles_full_qty_against_grid_no_p2p_matching():
     buyer = sim.add_builtin_vpp("buyer", VPPParams(), TruthfulAgent())
     sim._external_market_quote = synthetic_quote(price=Decimal("40"), status="real", source="CAISO OASIS RTM")
     sim_ts = sim.clock.now_sim()
-    sim._current_tick_h = 1.0
 
     # A resting peer bid that WOULD cross the seller's ask in a P2P market.
     sim.engine.submit(
@@ -350,6 +348,11 @@ def test_truthful_vpp_trades_within_seconds_via_accumulator():
         VPPParams(pv_kw_peak=0.0, load_kw_base=5.0),
         TruthfulAgent(),
     )
+    # Pin PV/load so the deficit is deterministic regardless of sim-hour: the epoch is seeded
+    # from the wall clock and residential load varies by hour, which (with the battery now
+    # buffering part of the deficit) can otherwise starve the trade within 60 ticks.
+    deficit.pv.output_kw = lambda sim_ts, rng: 0.0
+    deficit.load.draw_kw = lambda sim_ts, rng: 5.0
     counter = sim.add_builtin_vpp("counter-seller", VPPParams(), TruthfulAgent())
     sim_ts = sim.clock.now_sim()
     # Resting ask the truthful buy (at price_ref=50) can cross.
@@ -366,6 +369,5 @@ def test_truthful_vpp_trades_within_seconds_via_accumulator():
 
     assert deficit.recent_trades, "deficit VPP should trade within 60 one-second ticks"
     assert deficit.recent_trades[0]["side"] == "buy"
-    # The accumulator was debited by the quoted qty — it must not keep growing
-    # unboundedly negative after the order went out.
+    # The fill covered the forced shortfall before any battery charge could occur.
     assert abs(deficit.state.pending_net_kwh) < 0.02

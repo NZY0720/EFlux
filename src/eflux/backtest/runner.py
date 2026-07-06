@@ -875,7 +875,7 @@ def _participant_metrics(sim: Simulator) -> list[dict]:
     open_net = sim._open_orders_net_by_vpp()
     for vpp in sim.vpps.values():
         pending = vpp.state.pending_net_kwh
-        mark_to_market = float(vpp.state.pnl) + pending * last
+        mark_to_market = float(vpp.state.pnl) + (pending + vpp.battery.soc_kwh) * last
         rows.append(
             {
                 "vpp_id": vpp.vpp_id,

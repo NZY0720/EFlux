@@ -217,12 +217,21 @@ def test_compute_step_reward_matches_formula():
     cur = _Snap(pnl=30.0, pending=0.0, open_net=0.0, soc_frac=0.9, soc_kwh=11.0, rejections=2.0)
     expected = (
         30.0                                  # realized
-        + 0.1 * ((0.0 - 1.0) * PRICE_REF)     # inventory delta
+        + 0.1 * (((0.0 + 11.0) - (1.0 + 10.0)) * PRICE_REF)  # pending + SOC inventory delta
         - 1.0 * abs(0.0 + 0.0)                # imbalance
-        - 15.0 * (0.9 - 0.8)                  # soc band (above high)
+        - 5.0 * 0.0                           # soc band: 0.9 is inside [0.1, 0.95]
         - 0.3 * abs(11.0 - 10.0)             # degrade
         - 10.0 * (2.0 - 0.0)                 # 2 rejections
     )
+    assert compute_step_reward(prev, cur, w) == expected
+
+
+def test_compute_step_reward_inventory_includes_soc_delta():
+    w = RewardWeights()
+    prev = _Snap(pnl=0.0, pending=0.0, open_net=0.0, soc_frac=0.5, soc_kwh=10.0, rejections=0.0)
+    cur = _Snap(pnl=0.0, pending=0.0, open_net=0.0, soc_frac=0.55, soc_kwh=11.0, rejections=0.0)
+
+    expected = 0.1 * PRICE_REF - 0.3
     assert compute_step_reward(prev, cur, w) == expected
 
 
@@ -231,7 +240,7 @@ def test_soc_target_shaping_opt_in():
     shaped = RewardWeights(soc_target_weight=2.0)
     prev = _Snap(0.0, 0.0, 0.0, 0.5, 10.0, 0.0, soc_target=0.5)
     cur = _Snap(0.0, 0.0, 0.0, 0.3, 10.0, 0.0, soc_target=0.5)  # drained below target
-    assert compute_step_reward(prev, cur, base) == 0.0  # band [0.2,0.8] not breached
+    assert compute_step_reward(prev, cur, base) == 0.0  # band [0.1,0.95] not breached
     assert compute_step_reward(prev, cur, shaped) < 0.0  # shaping penalizes the drift
 
 
