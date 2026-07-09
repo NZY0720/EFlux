@@ -20,8 +20,11 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+from collections import Counter
 from datetime import date
 from pathlib import Path
+
+from eflux.agents.ppo.primitive_encoding import OBS_V1, OBS_V3, action_profile_for_market, primitive_modes_for
 
 log = logging.getLogger("eflux.ppo.train")
 
@@ -38,6 +41,7 @@ def run_training(
     start_date: date | None = None,
     end_date: date | None = None,
     encoding_version: int = 1,
+    obs_version: int = OBS_V1,
 ) -> dict:
     """Train a BC warm-start checkpoint and save it to `out_path`. Returns a metrics dict.
     Importable so the renew endpoint can run it in a background thread.
@@ -60,7 +64,13 @@ def run_training(
     from eflux.agents.ppo.primitive_encoding import price_ref_scale, set_price_ref_scale
     from eflux.agents.strategy.policy import BatteryAwareStrategyPolicy
 
-    env_config: dict = {"market_mode": market_mode, "encoding_version": encoding_version}
+    action_profile = action_profile_for_market(market_mode)
+    env_config: dict = {
+        "market_mode": market_mode,
+        "encoding_version": encoding_version,
+        "obs_version": obs_version,
+        "action_profile": action_profile,
+    }
     data_window = None
     if real_data:
         from eflux.agents.ppo.training_data import load_real_market_data
@@ -70,7 +80,9 @@ def run_training(
         env_config["real_data"] = data
         # Fix the normalization scale to the trailing-month CAISO mean for this run; the env
         # oracle/encoding and the saved checkpoint all use it (synthetic runs keep 50).
-        if start_date is not None and end_date is not None:
+        from eflux.config import get_settings
+
+        if start_date is not None and end_date is not None and get_settings().price_ref_source != "static":
             set_price_ref_scale(float(data.price.mean()) if len(data.price) else 50.0)
         else:
             from eflux.data.caiso_reference import caiso_reference_price
@@ -84,16 +96,30 @@ def run_training(
     log.info("PPO training: market_mode=%s, price_ref_scale=%.2f", market_mode, price_ref_scale())
 
     log.info("Collecting demonstrations (%d episodes, seed=%d, real_data=%s)…", episodes, seed, real_data)
+    expert = BatteryAwareStrategyPolicy(use_forecast=True) if obs_version == OBS_V3 else BatteryAwareStrategyPolicy()
     obs, acts = collect_demonstrations(
-        BatteryAwareStrategyPolicy(),
+        expert,
         n_episodes=episodes,
         seed=seed,
         env_config=env_config,
         encoding_version=encoding_version,
+        obs_version=obs_version,
+        action_profile=action_profile,
     )
+    modes = primitive_modes_for(action_profile=action_profile)
+    mode_hist = Counter(modes[int(i)].value for i in acts[:, : len(modes)].argmax(axis=1))
+    log.info("Demonstrator mode histogram: %s", dict(sorted(mode_hist.items())))
 
     log.info("Behavior-cloning for %d epochs on %d samples…", epochs, len(obs))
-    net = train_bc(obs, acts, epochs=epochs, seed=seed, encoding_version=encoding_version)
+    net = train_bc(
+        obs,
+        acts,
+        epochs=epochs,
+        seed=seed,
+        encoding_version=encoding_version,
+        obs_version=obs_version,
+        action_profile=action_profile,
+    )
 
     metrics = {
         "samples": len(obs),
@@ -101,20 +127,39 @@ def run_training(
         "trade_mode_accuracy": round(trade_mode_accuracy(net, obs, acts), 4),
         "cloned_reward": round(
             mean_episode_reward(
-                BCPolicy(net, encoding_version=encoding_version),
+                BCPolicy(
+                    net,
+                    encoding_version=encoding_version,
+                    obs_version=obs_version,
+                    action_profile=action_profile,
+                ),
                 seed=seed,
                 env_config=env_config,
                 encoding_version=encoding_version,
+                obs_version=obs_version,
+                action_profile=action_profile,
             ),
             3,
         ),
-        "random_reward": round(mean_random_reward(seed=seed, env_config=env_config, encoding_version=encoding_version), 3),
+        "random_reward": round(
+            mean_random_reward(
+                seed=seed,
+                env_config=env_config,
+                encoding_version=encoding_version,
+                obs_version=obs_version,
+                action_profile=action_profile,
+            ),
+            3,
+        ),
         "real_data": real_data,
         "days": days if real_data else None,
         "data_window": data_window,
         "market_mode": market_mode,
+        "action_profile": action_profile,
+        "mode_histogram": dict(sorted(mode_hist.items())),
         "price_ref_scale": round(price_ref_scale(), 4),
         "encoding_version": encoding_version,
+        "obs_version": obs_version,
         "out": out_path,
     }
     log.info("BC mode accuracy: %.3f (trade-only %.3f)", metrics["mode_accuracy"], metrics["trade_mode_accuracy"])
@@ -122,7 +167,14 @@ def run_training(
 
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    save_bc(net, str(out), market_mode=market_mode, encoding_version=encoding_version)
+    save_bc(
+        net,
+        str(out),
+        market_mode=market_mode,
+        encoding_version=encoding_version,
+        obs_version=obs_version,
+        action_profile=action_profile,
+    )
     log.info("Saved checkpoint to %s", out)
     return metrics
 
@@ -131,10 +183,13 @@ def main() -> int:
     p = argparse.ArgumentParser(description="Train the live torch PPO policy (behavior-cloning warm-start).")
     p.add_argument("--real-data", action="store_true", help="clone over ~1 month of real CAISO price + weather")
     p.add_argument("--days", type=int, default=30, help="days of real data to fetch (with --real-data)")
+    p.add_argument("--start-date", type=date.fromisoformat, default=None, help="inclusive real-data start date (YYYY-MM-DD)")
+    p.add_argument("--end-date", type=date.fromisoformat, default=None, help="exclusive real-data end date (YYYY-MM-DD)")
     p.add_argument("--episodes", type=int, default=40, help="demonstration episodes")
     p.add_argument("--epochs", type=int, default=300, help="behavior-cloning epochs")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--encoding-version", type=int, choices=(1, 2), default=1)
+    p.add_argument("--obs-version", type=int, choices=(1, 3), default=OBS_V1)
     p.add_argument(
         "--market-mode",
         choices=("p2p", "realprice"),
@@ -156,7 +211,10 @@ def main() -> int:
             epochs=args.epochs,
             seed=args.seed,
             market_mode=args.market_mode,
+            start_date=args.start_date,
+            end_date=args.end_date,
             encoding_version=args.encoding_version,
+            obs_version=args.obs_version,
         )
     except ImportError as e:
         print(f"PPO training requires the 'ai' (+ 'data' for --real-data) extras: {e}", file=sys.stderr)

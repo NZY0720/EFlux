@@ -9,6 +9,7 @@ from eflux.agents.reflective.strategist import (
     LLMStrategist,
     MetaControl,
     StrategyGuidance,
+    allowed_modes_for_market,
     apply_guidance,
     build_strategist_system_prompt,
     build_strategist_user_message,
@@ -56,6 +57,9 @@ def test_realprice_prompt_uses_grid_price_taker_context():
     prompt = build_strategist_system_prompt(market_mode="realprice").lower()
     assert "no peer order book" in prompt
     assert "caiso" in prompt and "grid" in prompt
+    assert "grid_charge_on_dip" in prompt
+    assert "grid_discharge_on_peak" in prompt
+    assert "wait_for_better" in prompt
     assert "continuous double auction" not in prompt
     assert "order book depth" not in prompt
     assert "passive_market_make" not in prompt
@@ -66,11 +70,17 @@ def test_prompts_describe_binding_extreme_regime_levers():
     realprice = build_strategist_system_prompt(market_mode="realprice")
     for prompt in (p2p, realprice):
         assert '"halt":         <bool; BINDING: stop trading and hold' in prompt
-        assert '"passive_only": <bool; BINDING: maker-only, never cross the spread' in prompt
         assert "Read `regime_note` in the input and act on extremes" in prompt
-        assert "mode_pin, halt, passive_only, and avoid_modes are BINDING" in prompt
+    # passive_only is a book-market lever: BINDING maker-only in p2p, inert in realprice.
+    assert '"passive_only": <bool; BINDING: maker-only, never cross the spread' in p2p
+    assert "mode_pin, halt, passive_only, and avoid_modes are BINDING" in p2p
+    assert '"passive_only": <bool; no effect in this market' in realprice
+    assert "mode_pin, halt, and avoid_modes are BINDING" in realprice
     assert 'prefer "passive_market_make"' in p2p
     assert 'prefer "passive_market_make"' not in realprice
+    # Realprice persona must not surface order-book regime language.
+    for stale in ("Thin/illiquid book", "bids elevated, few/no asks", "Book-specific"):
+        assert stale not in realprice
 
 
 def test_realprice_user_message_carries_grid_fields():
@@ -124,6 +134,29 @@ def test_realprice_guidance_drops_book_specific_preferred_modes():
     assert g.mode_pin is None
     # Avoid modes are still useful as soft "do not lean this way" explanations.
     assert g.avoid_modes == (StrategyMode.LADDER_BUY,)
+
+
+def test_market_mode_allowed_sets_and_sanitization_block_wrong_primitives():
+    assert StrategyMode.GRID_CHARGE_ON_DIP in allowed_modes_for_market("realprice")
+    assert StrategyMode.PASSIVE_MARKET_MAKE not in allowed_modes_for_market("realprice")
+    assert StrategyMode.GRID_CHARGE_ON_DIP not in allowed_modes_for_market("p2p")
+    assert StrategyMode.PASSIVE_MARKET_MAKE in allowed_modes_for_market("p2p")
+
+    p2p = parse_guidance(
+        '{"preferred_modes": ["grid_charge_on_dip", "liquidate_surplus"],'
+        ' "mode_pin": "wait_for_better"}',
+        market_mode="p2p",
+    )
+    assert p2p.preferred_modes == (StrategyMode.LIQUIDATE_SURPLUS,)
+    assert p2p.mode_pin is None
+
+    realprice = parse_guidance(
+        '{"preferred_modes": ["grid_discharge_on_peak", "ladder_sell"],'
+        ' "mode_pin": "cancel_reprice"}',
+        market_mode="realprice",
+    )
+    assert realprice.preferred_modes == (StrategyMode.GRID_DISCHARGE_ON_PEAK,)
+    assert realprice.mode_pin is None
 
 
 def test_parse_guidance_raises_on_garbage():

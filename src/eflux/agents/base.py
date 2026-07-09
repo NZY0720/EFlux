@@ -12,10 +12,14 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
+from typing import TYPE_CHECKING
 
 from eflux.data.electricity_market import ExternalMarketQuote
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
+
+if TYPE_CHECKING:
+    from eflux.forecasting.schema import ForecastBundle
 
 
 @dataclass
@@ -135,6 +139,9 @@ class AgentContext:
     # this tick's gating runs). An online learner takes the tick-to-tick delta as
     # the invalid-order reward penalty; default 0.0 keeps existing agents/tests intact.
     risk_rejections_total: float = 0.0
+    # Latest platform forecast bundle. Phase-A only transports this signal; agents
+    # ignore it until later phases opt in.
+    forecast: "ForecastBundle | None" = None
 
 
 class BaseAgent(ABC):

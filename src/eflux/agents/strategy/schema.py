@@ -37,6 +37,9 @@ class StrategyMode(StrEnum):
     LADDER_BUY = "ladder_buy"
     CANCEL_REPRICE = "cancel_reprice"
     BATTERY_ARBITRAGE = "battery_arbitrage"
+    GRID_CHARGE_ON_DIP = "grid_charge_on_dip"
+    GRID_DISCHARGE_ON_PEAK = "grid_discharge_on_peak"
+    WAIT_FOR_BETTER = "wait_for_better"
 
 
 @dataclass(frozen=True)

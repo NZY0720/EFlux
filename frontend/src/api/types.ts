@@ -331,6 +331,33 @@ export interface TickEvent extends BaseEvent {
 
 export type MarketEvent = OrderEvent | TradeEvent | ExternalTradeEvent | TickEvent;
 
+// --- Forecasts ---
+
+export type ForecastTarget = "price_real" | "price_p2p" | "ghi" | "temp_air" | "wind_speed";
+export type ForecastHorizon = "5m" | "1h" | "12h";
+
+export interface ForecastEstimate {
+  value: number | null;
+  stderr: number | null;
+}
+
+export type LatestForecastTarget = Record<ForecastHorizon, ForecastEstimate>;
+
+export interface LatestForecastResponse extends Record<ForecastTarget, LatestForecastTarget> {
+  as_of: string;
+  model_version: string;
+  /** False while the price models have no observations — values are placeholders. */
+  warm?: boolean;
+}
+
+export type ForecastHistoryBundle = Partial<Record<ForecastHorizon, number | null>>;
+
+export interface ForecastHistoryRecord {
+  as_of: string;
+  forecasts: Partial<Record<ForecastTarget, ForecastHistoryBundle>>;
+  realized: Partial<Record<ForecastTarget, number | null>>;
+}
+
 // --- Leaderboard (durable results across backend restarts) ---
 
 export interface LeaderboardSession {

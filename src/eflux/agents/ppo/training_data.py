@@ -74,6 +74,63 @@ def _price_cache_path(cache_dir: Path, node: str, start: date, end: date) -> Pat
     return cache_dir / f"lmp_{safe}_{start.isoformat()}_{end.isoformat()}.parquet"
 
 
+def cached_price_windows(
+    node: str | None = None, cache_dir: Path | None = None
+) -> list[tuple[date, date]]:
+    """Price windows already in the parquet cache, newest end date first.
+
+    Warm-start fallback for days when the live CAISO fetch is 429-throttled:
+    filename scan only — no parquet reads, no network.
+    """
+    settings = get_settings()
+    node = node or settings.external_market_node
+    cache_dir = cache_dir or (PROJECT_ROOT / "data" / "cache" / "training")
+    prefix = f"lmp_{node.replace('/', '_')}_"
+    windows: list[tuple[date, date]] = []
+    for path in cache_dir.glob(f"{prefix}*.parquet"):
+        stem = path.name[len(prefix) : -len(".parquet")]
+        parts = stem.split("_")
+        if len(parts) != 2:
+            continue
+        try:
+            windows.append((date.fromisoformat(parts[0]), date.fromisoformat(parts[1])))
+        except ValueError:
+            continue
+    return sorted(windows, key=lambda window: (window[1], window[0]), reverse=True)
+
+
+def _cached_weather_path(cache_dir: Path, lat: float, lon: float, day: date) -> Path:
+    return cache_dir / f"weather_{lat:.2f}_{lon:.2f}_{day.isoformat()}.parquet"
+
+
+def _load_cached_weather_range(lat: float, lon: float, start: date, end: date):
+    import pandas as pd
+
+    cache_dir = PROJECT_ROOT / "data" / "cache" / "weather"
+    frames = []
+    missing: list[date] = []
+    day = start
+    while day <= end:
+        path = _cached_weather_path(cache_dir, lat, lon, day)
+        if path.exists():
+            frames.append(pd.read_parquet(path))
+        else:
+            missing.append(day)
+        day += timedelta(days=1)
+    if missing:
+        log.warning(
+            "Weather cache incomplete for lat=%.2f lon=%.2f %s..%s: %d missing days; using cached subset only",
+            lat,
+            lon,
+            start,
+            end,
+            len(missing),
+        )
+    if not frames:
+        return pd.DataFrame(columns=["ghi", "dni", "dhi", "temp_air", "wind_speed"])
+    return pd.concat(frames).sort_index()
+
+
 def load_real_market_data(
     *,
     days: int = 30,
@@ -138,10 +195,14 @@ def load_real_market_data(
     log.info("CAISO price points: %d", len(price))
 
     # --- Weather (per-day parquet cache lives in data.weather) ---
-    from eflux.data.weather import fetch_hourly_sync
+    if start_date is not None and end_date is not None:
+        weather = _load_cached_weather_range(lat, lon, start_d, end_d)
+        wind = _load_cached_weather_range(wind_lat, wind_lon, start_d, end_d)
+    else:
+        from eflux.data.weather import fetch_hourly_sync
 
-    weather = fetch_hourly_sync(lat, lon, start_d, end_d)
-    wind = fetch_hourly_sync(wind_lat, wind_lon, start_d, end_d)
+        weather = fetch_hourly_sync(lat, lon, start_d, end_d)
+        wind = fetch_hourly_sync(wind_lat, wind_lon, start_d, end_d)
     log.info("Weather rows: pv-site=%d wind-site=%d", len(weather), len(wind))
 
     return RealMarketData(price=price, weather=weather, wind=wind, start=start, end=end)

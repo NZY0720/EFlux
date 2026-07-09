@@ -5,6 +5,9 @@ import type {
   BenchmarkDetail,
   BenchmarkSummary,
   ChatMessage,
+  ForecastHistoryRecord,
+  ForecastTarget,
+  LatestForecastResponse,
   LeaderboardHistory,
   LeaderboardOut,
   LeaderboardSession,
@@ -303,6 +306,23 @@ export async function fetchChatter(limit = 40): Promise<ChatMessage[]> {
 
 export async function setMarketSpeed(speed: number): Promise<{ speed: number; is_realtime: boolean }> {
   const { data } = await api.post("/market/speed", { speed });
+  return data;
+}
+
+// --- Forecasts ---
+
+export async function fetchLatestForecast(): Promise<LatestForecastResponse> {
+  const { data } = await api.get<LatestForecastResponse>("/forecasts/latest");
+  return data;
+}
+
+export async function fetchForecastHistory(
+  target?: ForecastTarget,
+  limit = 720,
+): Promise<ForecastHistoryRecord[]> {
+  const { data } = await api.get<ForecastHistoryRecord[]>("/forecasts/history", {
+    params: { target, limit },
+  });
   return data;
 }
 

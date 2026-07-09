@@ -16,12 +16,21 @@ from eflux.agents.base import AgentContext, MarketSnapshot, OpenOrderView
 from eflux.agents.strategy import OrderProgramCompiler, StrategyAction, StrategyMode
 from eflux.agents.strategy.schema import PRICE_MULT_MAX, PRICE_MULT_MIN
 from eflux.agents.truthful import TruthfulAgent
-from eflux.agents.valuation import TruthfulValuationOracle
+from eflux.agents.valuation import TruthfulValuationOracle, ValuationSignal
+from eflux.data.electricity_market import synthetic_quote
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
 
 
-def _make_ctx(*, pv_kw: float, load_kw: float, soc_kwh: float = 5.0, markup_floor: float = 0.0) -> AgentContext:
+def _make_ctx(
+    *,
+    pv_kw: float,
+    load_kw: float,
+    soc_kwh: float = 5.0,
+    markup_floor: float = 0.0,
+    market_mode: str = "p2p",
+    external_price: Decimal | None = None,
+) -> AgentContext:
     params = VPPParams(markup_floor=markup_floor)
     state = VPPState(sim_ts=datetime.now(UTC), soc_kwh=soc_kwh, pv_kw=pv_kw, load_kw=load_kw)
     state.update_net()
@@ -32,6 +41,8 @@ def _make_ctx(*, pv_kw: float, load_kw: float, soc_kwh: float = 5.0, markup_floo
         best_ask=Decimal("52"),
         last_price=Decimal("50"),
         mid_price=Decimal("50"),
+        market_mode=market_mode,
+        external_market=None if external_price is None else synthetic_quote(price=external_price, now=state.sim_ts),
     )
     return AgentContext(
         vpp_id=1,
@@ -48,6 +59,32 @@ def _make_ctx(*, pv_kw: float, load_kw: float, soc_kwh: float = 5.0, markup_floo
 
 def _compile(ctx, action, *, price_ref="50.0", demand_beta=0.0):
     sig = TruthfulValuationOracle(price_ref=Decimal(price_ref), demand_beta=demand_beta).estimate(ctx)
+    return OrderProgramCompiler().compile(ctx, action, sig)
+
+
+def _grid_valuation(
+    *,
+    soc: float = 0.5,
+    expected_12h: float | None = 100.0,
+    expected_1h: float | None = None,
+) -> ValuationSignal:
+    return ValuationSignal(
+        fair_buy_price=100.0,
+        fair_sell_price=100.0,
+        marginal_battery_value=100.0,
+        battery_sell_price=100.0,
+        battery_buy_price=100.0,
+        surplus_kwh=0.0,
+        deficit_kwh=0.0,
+        soc_frac=soc,
+        soc_pressure=soc - 0.5,
+        expected_ref_1h=expected_1h,
+        expected_ref_12h=expected_12h,
+        price_trend=0.0,
+    )
+
+
+def _compile_with_signal(ctx: AgentContext, action: StrategyAction, sig: ValuationSignal):
     return OrderProgramCompiler().compile(ctx, action, sig)
 
 
@@ -89,6 +126,46 @@ def test_noop_and_hold_emit_nothing():
     ctx = _make_ctx(pv_kw=5.0, load_kw=1.0)
     assert _compile(ctx, StrategyAction(mode=StrategyMode.NOOP)).is_empty
     assert _compile(ctx, StrategyAction(mode=StrategyMode.HOLD_ENERGY)).is_empty
+
+
+def test_grid_charge_on_dip_buys_only_below_forecast_threshold():
+    ctx = _make_ctx(pv_kw=2.0, load_kw=2.0, market_mode="realprice", external_price=Decimal("96"))
+    action = StrategyAction(mode=StrategyMode.GRID_CHARGE_ON_DIP, soc_target=0.9)
+    compiled = _compile_with_signal(ctx, action, _grid_valuation(expected_12h=100.0))
+    assert compiled.is_empty
+
+    ctx = _make_ctx(pv_kw=2.0, load_kw=2.0, market_mode="realprice", external_price=Decimal("80"))
+    compiled = _compile_with_signal(ctx, action, _grid_valuation(expected_12h=100.0))
+    o = compiled.order_intents[0]
+    assert (o.side, o.dispatched) == ("buy", True)
+    assert o.price >= Decimal("80.0000")
+    assert o.qty == Decimal("3.0000")
+
+
+def test_grid_discharge_on_peak_sells_only_above_forecast_threshold():
+    ctx = _make_ctx(pv_kw=2.0, load_kw=2.0, market_mode="realprice", external_price=Decimal("104"))
+    action = StrategyAction(mode=StrategyMode.GRID_DISCHARGE_ON_PEAK, soc_target=0.2)
+    compiled = _compile_with_signal(ctx, action, _grid_valuation(expected_12h=100.0))
+    assert compiled.is_empty
+
+    ctx = _make_ctx(pv_kw=2.0, load_kw=2.0, market_mode="realprice", external_price=Decimal("120"))
+    compiled = _compile_with_signal(ctx, action, _grid_valuation(expected_12h=100.0))
+    o = compiled.order_intents[0]
+    assert (o.side, o.dispatched) == ("sell", True)
+    assert Decimal("0") < o.price <= Decimal("120.0000")
+    assert o.qty == Decimal("3.0000")
+
+
+def test_grid_modes_noop_without_realprice_or_threshold_data_and_wait_holds():
+    p2p_ctx = _make_ctx(pv_kw=2.0, load_kw=2.0, market_mode="p2p", external_price=Decimal("80"))
+    action = StrategyAction(mode=StrategyMode.GRID_CHARGE_ON_DIP, soc_target=0.9)
+    assert _compile_with_signal(p2p_ctx, action, _grid_valuation(expected_12h=100.0)).is_empty
+
+    real_ctx = _make_ctx(pv_kw=2.0, load_kw=2.0, market_mode="realprice", external_price=None)
+    assert _compile_with_signal(real_ctx, action, _grid_valuation(expected_12h=None, expected_1h=None)).is_empty
+    assert _compile_with_signal(
+        real_ctx, StrategyAction(mode=StrategyMode.WAIT_FOR_BETTER), _grid_valuation()
+    ).is_empty
 
 
 def test_qty_fraction_scales_quantity():

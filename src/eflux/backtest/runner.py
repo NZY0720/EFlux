@@ -31,6 +31,7 @@ from eflux.agents.reflective.pool import validate_llm_connection
 from eflux.bridge.bus import InMemoryBus
 from eflux.config import PROJECT_ROOT, get_settings
 from eflux.data.electricity_market import ExternalMarketQuote, synthetic_quote
+from eflux.forecasting.service import ForecastService
 from eflux.simulator.agent_spec import AgentSpec, validate_vpp_params
 from eflux.simulator.runner import Simulator
 from eflux.simulator.scenarios import load_default_scenario
@@ -232,8 +233,11 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
         quote_region = settings.market_region
         quote_node = settings.external_market_node
         quote_fee = Decimal(str(settings.external_market_transaction_fee))
-        if config.validate_llm:
+        llm_enabled = bool(settings.reflective_enabled)
+        if config.validate_llm and llm_enabled:
             _validate_live_strict_llm(settings)
+        elif not llm_enabled:
+            _log_progress("LLM strategist refresh disabled for backtest by EFLUX_REFLECTIVE_ENABLED=false")
         sim = Simulator(bus=InMemoryBus(), sim_epoch=start)
         sim.order_ttl_sec = max(config.tick_seconds * 180.0, config.tick_seconds)
         _log_progress(f"loading scenario for strict backtest: {scenario_for_run}")
@@ -242,7 +246,9 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
             "strict LLM startup/scenario validation",
         ):
             load_default_scenario(sim)
-        _require_strict_strategists(sim, expected=inspection.hybrid_count)
+        forecast_warmup_window = _init_backtest_forecast_service(sim, start, settings)
+        if llm_enabled:
+            _require_strict_strategists(sim, expected=inspection.hybrid_count)
         _log_progress(f"loaded scenario with {len(sim.vpps)} live participants")
 
     ticks = _tick_count(start, end, config.tick_seconds)
@@ -257,8 +263,8 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
     # included), and each refresh makes one strict call per hybrid agent. On a slow
     # reasoning endpoint this — not the tick loop — dominates wall-clock, so surface it
     # up front (and warn loudly) rather than letting an unbounded run wedge silently.
-    expected_refreshes = len(range(0, ticks, llm_every_ticks))
-    expected_llm_calls = expected_refreshes * inspection.hybrid_count
+    expected_refreshes = len(range(0, ticks, llm_every_ticks)) if llm_enabled else 0
+    expected_llm_calls = expected_refreshes * inspection.hybrid_count if llm_enabled else 0
     _log_progress(
         f"pre-flight estimate: {ticks} ticks, ~{expected_refreshes} LLM fleet refreshes, "
         f"~{expected_llm_calls} live LLM calls across {inspection.hybrid_count} agents"
@@ -273,15 +279,24 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
 
     timeseries_rows: list[dict] = []
     aggregate_rows: list[dict] = []
+    forecast_rows: list[dict] = []
     llm_calls = 0
     sim_ts = start
     tick_no = 0
+    forecast_every_ticks = max(1, round(60.0 / config.tick_seconds))
     _log_progress(
         f"starting backtest loop: ticks={ticks}, tick_seconds={config.tick_seconds}, "
         f"llm_every_ticks={llm_every_ticks}"
     )
     participant_metrics_path = run_dir / "participant_metrics.csv"
     timeseries_path = run_dir / "timeseries.csv"
+    forecast_timeseries_path = run_dir / "forecast_timeseries.csv"
+    manifest.update(
+        forecast_enabled=bool(settings.forecast_enabled),
+        forecast_warmup_window=forecast_warmup_window,
+        forecast_timeseries_path=str(forecast_timeseries_path),
+        forecast_timeseries_points=0,
+    )
     try:
         for tick_no in range(ticks):
             quote = _historical_quote(
@@ -298,7 +313,7 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
             )
             market.recent_trades = sim._recent_market_trades()
             market.peer_reflections = sim._peer_reflections()
-            if tick_no % llm_every_ticks == 0:
+            if llm_enabled and tick_no % llm_every_ticks == 0:
                 _log_progress(
                     f"refreshing strict LLM fleet at tick={tick_no} sim_ts={sim_ts.isoformat()}"
                 )
@@ -308,6 +323,9 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
                     max_attempts=config.llm_max_attempts,
                     retry_backoff_sec=config.llm_retry_backoff_sec,
                 )
+
+            if tick_no == 0 or tick_no % forecast_every_ticks == 0:
+                _refresh_backtest_forecast(sim, sim_ts, quote, real_data)
 
             open_net = sim._open_orders_net_by_vpp()
             open_counts = sim._open_order_counts_by_vpp()
@@ -323,6 +341,9 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
             if tick_no % sample_every_ticks == 0 or tick_no == ticks - 1:
                 timeseries_rows.extend(_sample_rows(sim, sim_ts, tick_no))
                 aggregate_rows.append(_sample_aggregate(sim, sim_ts, tick_no, quote.raw_lmp))
+                row = _sample_forecast(sim, sim_ts, tick_no, quote.raw_lmp)
+                if row is not None:
+                    forecast_rows.append(row)
             if tick_no > 0 and tick_no % max(1, round(86400.0 / config.tick_seconds)) == 0:
                 _log_progress(f"completed tick {tick_no} / {ticks}")
             sim_ts += step
@@ -335,7 +356,13 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
         )
         try:
             _write_artifacts(
-                run_dir, sim, timeseries_rows, aggregate_rows, participant_metrics_path, timeseries_path
+                run_dir,
+                sim,
+                timeseries_rows,
+                aggregate_rows,
+                forecast_rows,
+                participant_metrics_path,
+                timeseries_path,
             )
             manifest.update(
                 status="failed",
@@ -343,6 +370,7 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
                 ticks_run=tick_no,
                 llm_calls=llm_calls,
                 live_participants=len(sim.vpps),
+                forecast_timeseries_points=len(forecast_rows),
                 finished_at=datetime.now(UTC).isoformat(),
             )
             _write_json(manifest_path, manifest)
@@ -352,13 +380,20 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
 
     _log_progress("writing backtest artifacts")
     _write_artifacts(
-        run_dir, sim, timeseries_rows, aggregate_rows, participant_metrics_path, timeseries_path
+        run_dir,
+        sim,
+        timeseries_rows,
+        aggregate_rows,
+        forecast_rows,
+        participant_metrics_path,
+        timeseries_path,
     )
     manifest.update(
         status="ok",
         ticks_run=ticks,
         llm_calls=llm_calls,
         live_participants=len(sim.vpps),
+        forecast_timeseries_points=len(forecast_rows),
         finished_at=datetime.now(UTC).isoformat(),
     )
     _write_json(manifest_path, manifest)
@@ -379,6 +414,7 @@ def _write_artifacts(
     sim: Simulator,
     timeseries_rows: list[dict],
     aggregate_rows: list[dict],
+    forecast_rows: list[dict],
     participant_metrics_path: Path,
     timeseries_path: Path,
 ) -> None:
@@ -388,6 +424,7 @@ def _write_artifacts(
     _write_csv(timeseries_path, timeseries_rows)
     _write_csv(run_dir / "group_metrics.csv", group_metrics)
     _write_charts(run_dir, participant_metrics, timeseries_rows)
+    _write_csv(run_dir / "forecast_timeseries.csv", forecast_rows)
     # Market-level series: the LMP the sim replayed, and aggregate supply/demand. These are
     # computed per tick but not otherwise persisted, so emit raw CSV + standalone charts.
     if aggregate_rows:
@@ -417,6 +454,161 @@ def _write_artifacts(
                 ("CAISO LMP", "lmp", "#dc2626"),
             ],
         )
+
+
+class _CutoffRealMarketData:
+    """Prefix view over RealMarketData so forecast refresh never sees future realized weather."""
+
+    def __init__(self, data, cutoff: datetime) -> None:
+        self.data = data
+        self.cutoff = cutoff
+
+    def set_cutoff(self, cutoff: datetime) -> None:
+        self.cutoff = cutoff
+
+    def _allowed(self, ts: datetime) -> bool:
+        return ts.astimezone(UTC).replace(minute=0, second=0, microsecond=0) <= self.cutoff
+
+    def ghi_at(self, ts: datetime, default: float = 0.0) -> float:
+        if self.data is None or not self._allowed(ts):
+            return default
+        return self.data.ghi_at(ts, default)
+
+    def wind_speed_at(self, ts: datetime, default: float = 0.0) -> float:
+        if self.data is None or not self._allowed(ts):
+            return default
+        return self.data.wind_speed_at(ts, default)
+
+    def _weather_field(self, df, col: str, ts: datetime, default: float) -> float:
+        if self.data is None or not self._allowed(ts):
+            return default
+        return self.data._weather_field(df, col, ts, default)
+
+    @property
+    def weather(self):
+        return None if self.data is None else self.data.weather
+
+    @property
+    def wind(self):
+        return None if self.data is None else self.data.wind
+
+
+def _init_backtest_forecast_service(sim: Simulator, start: datetime, settings) -> dict:
+    """Create the shared forecast service for synchronous backtests.
+
+    Warmup is intentionally bounded to samples strictly before the eval start. The raw
+    loader may return an inclusive weather day, so filter the series before handing it to
+    the reusable service.
+    """
+    if not settings.forecast_enabled:
+        sim.forecast_service = None
+        return {"enabled": False, "status": "disabled"}
+
+    warmup_days = max(1, int(settings.forecast_warmup_days))
+    warmup_start = (start - timedelta(days=warmup_days)).date()
+    warmup_end = start.date()
+    warmup_cutoff = start - timedelta(microseconds=1)
+    try:
+        warmup_data = _load_real_data(warmup_start, warmup_end)
+        sim._forecast_real_data = _CutoffRealMarketData(warmup_data, warmup_cutoff)
+        nwp = sim._forecast_nwp_lookups()
+        service = ForecastService(nwp=nwp)
+        series = _forecast_series_before(sim._forecast_warmup_series(warmup_data), start)
+        service.warm_start(series=series, nwp=nwp)
+        sim.forecast_service = service
+        counts = {name: len(samples) for name, samples in series.items()}
+        _log_progress(
+            "forecast service warm-started leakage-free from "
+            f"{warmup_start.isoformat()} to {warmup_end.isoformat()} exclusive"
+        )
+        return {
+            "enabled": True,
+            "status": "warm_started",
+            "start": warmup_start.isoformat(),
+            "end_exclusive": warmup_end.isoformat(),
+            "sample_counts": counts,
+        }
+    except Exception as e:
+        _log_progress(
+            "WARNING: forecast warm-start skipped; continuing with empty online models: "
+            f"{type(e).__name__}: {e}"
+        )
+        try:
+            sim.forecast_service = ForecastService(nwp=sim._forecast_nwp_lookups())
+        except Exception:
+            sim.forecast_service = ForecastService()
+        return {
+            "enabled": True,
+            "status": "empty_after_warmup_failure",
+            "start": warmup_start.isoformat(),
+            "end_exclusive": warmup_end.isoformat(),
+            "error": f"{type(e).__name__}: {e}",
+        }
+
+
+def _forecast_series_before(
+    series: dict[str, list[tuple[datetime, float]]],
+    cutoff: datetime,
+) -> dict[str, list[tuple[datetime, float]]]:
+    return {
+        name: [(ts, value) for ts, value in samples if ts < cutoff]
+        for name, samples in series.items()
+    }
+
+
+def _refresh_backtest_forecast(
+    sim: Simulator,
+    sim_ts: datetime,
+    quote: ExternalMarketQuote,
+    real_data,
+) -> None:
+    service = getattr(sim, "forecast_service", None)
+    if service is None:
+        return
+    data_view = getattr(sim, "_forecast_real_data", None)
+    if isinstance(data_view, _CutoffRealMarketData):
+        if data_view.data is not real_data:
+            data_view.data = real_data
+        data_view.set_cutoff(sim_ts)
+    elif real_data is not None:
+        sim._forecast_real_data = _CutoffRealMarketData(real_data, sim_ts)
+    try:
+        service.observe(
+            sim_ts,
+            price_real=quote.raw_lmp if quote.is_real_price else None,
+            price_p2p=getattr(sim.engine, "last_price", None),
+            ghi=sim._forecast_weather_value("ghi", sim_ts, 0.0),
+            temp_air=sim._forecast_weather_value("temp_air", sim_ts, 20.0),
+            wind_speed=sim._forecast_weather_value("wind_speed", sim_ts, 0.0),
+        )
+        service.refresh(sim_ts)
+    except Exception as e:
+        _log_progress(
+            "WARNING: forecast observe/refresh failed; continuing with previous bundle: "
+            f"{type(e).__name__}: {e}"
+        )
+
+
+def _sample_forecast(sim: Simulator, sim_ts: datetime, tick_no: int, lmp) -> dict | None:
+    service = getattr(sim, "forecast_service", None)
+    if service is None:
+        return None
+    forecast = service.latest
+    last_price, _, _ = _engine_prices(sim)
+    row = {
+        "tick": tick_no,
+        "sim_ts": sim_ts.isoformat(),
+        "forecast_as_of": forecast.as_of.isoformat(),
+        "realized_lmp": float(lmp),
+        "realized_p2p": last_price,
+    }
+    for target_name in ("price_real", "price_p2p", "ghi"):
+        target = getattr(forecast, target_name)
+        for horizon in ("5m", "1h", "12h"):
+            row[f"forecast_{target_name}_{horizon}"] = round(
+                float(target.by_horizon(horizon).value), 6
+            )
+    return row
 
 
 def _sample_aggregate(sim: Simulator, sim_ts: datetime, tick_no: int, lmp) -> dict:
@@ -626,10 +818,11 @@ def _write_scenario_with_checkpoint(source: Path, checkpoint: Path, run_dir: Pat
 
 @contextmanager
 def _backtest_env(config: BacktestConfig, scenario: Path) -> Iterator[None]:
+    reflective_enabled = os.environ.get("EFLUX_REFLECTIVE_ENABLED", "true")
     updates = {
         "EFLUX_MARKET_MODE": config.market_mode,
         "EFLUX_SCENARIO_FILE": str(scenario),
-        "EFLUX_REFLECTIVE_ENABLED": "true",
+        "EFLUX_REFLECTIVE_ENABLED": reflective_enabled,
         "EFLUX_MARKET_TICK_SEC": str(config.tick_seconds),
         # Backtest owns strict LLM cadence explicitly via _refresh_llm_fleet().
         # Keep HybridPolicyAgent's live async cadence inert so hourly means hourly.

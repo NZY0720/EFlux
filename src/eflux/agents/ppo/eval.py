@@ -14,19 +14,37 @@ from __future__ import annotations
 import argparse
 from decimal import Decimal
 
+import torch
+
 from eflux.agents.bench.metrics import format_leaderboard
 from eflux.agents.bench.run import score
 from eflux.agents.bench.scenarios import candidates
 from eflux.agents.hybrid import StrategyAgent
 from eflux.agents.ppo.bc import checkpoint_meta
 from eflux.agents.ppo.online_ppo import build_online_policy
-from eflux.agents.ppo.primitive_encoding import price_ref_scale, set_price_ref_scale
+from eflux.agents.ppo.primitive_encoding import (
+    infer_obs_dim,
+    obs_version_for_obs_dim,
+    price_ref_scale,
+    set_price_ref_scale,
+)
 
 # Match the training/serving valuation config so the obs channels line up.
 EVAL_DEMAND_BETA = 0.5
 
 
-def _make_online_agent(checkpoint: str) -> StrategyAgent:
+def _checkpoint_obs_version(checkpoint: str) -> int:
+    meta = checkpoint_meta(checkpoint)
+    if meta.get("obs_version") is not None:
+        return int(meta["obs_version"])
+    if meta.get("obs_dim") is not None:
+        return obs_version_for_obs_dim(int(meta["obs_dim"]))
+    raw = torch.load(checkpoint, map_location="cpu")
+    state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
+    return obs_version_for_obs_dim(infer_obs_dim(state))
+
+
+def _make_online_agent(checkpoint: str, *, obs_version: int) -> StrategyAgent:
     """A StrategyAgent driven by the trained torch policy, frozen (no live updates)
     so the evaluation is deterministic — the same machinery the live agent runs.
 
@@ -34,6 +52,8 @@ def _make_online_agent(checkpoint: str) -> StrategyAgent:
     valuation to it) so the obs channels line up exactly with training."""
     set_price_ref_scale(checkpoint_meta(checkpoint).get("price_ref"))
     policy = build_online_policy(checkpoint, learning=False, auto_update=False)
+    policy.obs_version = obs_version
+    policy.learner.net.obs_version = obs_version
     return StrategyAgent(price_ref=Decimal(str(price_ref_scale())), demand_beta=EVAL_DEMAND_BETA, policy=policy)
 
 
@@ -44,12 +64,13 @@ def main() -> None:
     ap.add_argument("--tick-minutes", type=float, default=10.0)
     args = ap.parse_args()
     tick_h = args.tick_minutes / 60.0
+    obs_version = _checkpoint_obs_version(args.checkpoint)
 
     rows = [score(name, make, n_ticks=args.ticks, tick_h=tick_h) for name, make in candidates().items()]
     rows.append(
         score(
             "ppo-online",
-            lambda: _make_online_agent(args.checkpoint),
+            lambda: _make_online_agent(args.checkpoint, obs_version=obs_version),
             n_ticks=args.ticks,
             tick_h=tick_h,
         )

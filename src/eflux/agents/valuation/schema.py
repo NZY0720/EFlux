@@ -41,3 +41,8 @@ class ValuationSignal:
     # fair_sell_price channels (so the PPO obs is unchanged); this flag only routes the
     # resulting orders. Default False keeps every non-gas path identical.
     supply_dispatched: bool = False
+    expected_ref_1h: float | None = None
+    expected_ref_12h: float | None = None
+    # Normalized forward price direction in roughly [-1, 1]; positive means the
+    # selected market reference is expected to rise.
+    price_trend: float = 0.0

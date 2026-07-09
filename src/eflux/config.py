@@ -56,6 +56,17 @@ class Settings(BaseSettings):
     external_market_node: str = "TH_SP15_GEN-APND"
     external_market_fallback_price: float = 50.0
     external_market_transaction_fee: float = 2.0
+    forecast_enabled: bool = True
+    forecast_refresh_sec: float = 60.0
+    forecast_warmup_days: int = 30
+    forecast_state_dir: str = "checkpoints/forecast"
+    # CAISO 429 throttling can degrade the warm-up fetch to partial/empty price
+    # data (and the thin result is cached for the rest of the day); below this
+    # many price points the bootstrap falls back to the newest cached window.
+    forecast_warmup_min_price_points: int = 168
+    forecast_bootstrap_timeout_sec: float = 120.0
+    # Derive an endowment-driven Character for live strategy/hybrid/managed agents.
+    agent_character_enabled: bool = True
     site_default_lat: float = 34.05
     site_default_lon: float = -118.25
     site_wind_lat: float = 33.90
@@ -123,7 +134,7 @@ class Settings(BaseSettings):
     ppo_encoding_version: int = 2
     # Warm-start checkpoint used for API-provisioned managed hybrid/PPO agents. Missing
     # files already fall back to a fresh online policy with a warning in the executor builder.
-    managed_ppo_checkpoint: str = "checkpoints/bc_primitive_p2p.pt"
+    managed_ppo_checkpoint: str = "checkpoints/bc_primitive_p2p_v3.pt"
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

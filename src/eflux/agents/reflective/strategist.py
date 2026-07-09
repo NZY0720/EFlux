@@ -31,6 +31,8 @@ GUIDANCE_LESSON_MAX = 200
 RISK_BUDGET_MAX = 1.5
 PRICE_BIAS_BPS_MAX = 200.0
 _VALID_MODES = {m.value for m in StrategyMode}
+_FORECAST_TARGETS = ("price_real", "price_p2p", "ghi")
+_FORECAST_HORIZONS = ("5m", "1h", "12h")
 
 
 def _first_json_object(text: str) -> dict | None:
@@ -90,6 +92,41 @@ def _clamp(x: float, lo: float, hi: float, default: float) -> float:
         return max(lo, min(hi, float(x)))
     except (TypeError, ValueError):
         return default
+
+
+def _rounded_or_none(value: object) -> float | None:
+    if value is None:
+        return None
+    try:
+        return round(float(value), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def compact_forecast_for_strategist(forecast: object | None) -> dict | None:
+    """Reduce a ForecastBundle-like object or forecast dict to strategist input values."""
+    if forecast is None:
+        return None
+    out: dict[str, dict[str, float | None]] = {}
+    for target in _FORECAST_TARGETS:
+        series = forecast.get(target) if isinstance(forecast, dict) else getattr(forecast, target, None)
+        if series is None:
+            continue
+        horizons: dict[str, float | None] = {}
+        for horizon in _FORECAST_HORIZONS:
+            point = None
+            if isinstance(series, dict):
+                point = series.get(horizon)
+                if isinstance(point, dict):
+                    point = point.get("value")
+            else:
+                try:
+                    point = series.by_horizon(horizon).value
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    point = None
+            horizons[horizon] = _rounded_or_none(point)
+        out[target] = horizons
+    return out or None
 
 
 @dataclass(frozen=True)
@@ -188,6 +225,10 @@ Read `regime_note` in the input and act on extremes with the BINDING levers, not
 - Thin/illiquid book: set "passive_only": true (p2p: prefer "passive_market_make").
 - Scarcity (bids elevated, few/no asks): press with "risk_budget" > 1 and prefer "aggressive_taker" / "cover_deficit".
 
+A `forecast` block may be present with 5m/1h/12h grid price, peer price, and irradiance.
+Act on it: charge or hold_energy ahead of forecast price spikes, be patient selling into a
+rising forecast, and press or de-risk ahead of a forecast collapse.
+
 If the policy is learning well, omit "meta_control" or leave it at the defaults.
 mode_pin, halt, passive_only, and avoid_modes are BINDING; the other fields are soft, clamped priors — the tactical policy may override those, and out-of-range knobs are clipped. Stay within bounds."""
 
@@ -200,16 +241,26 @@ learning meta-control over the current grid-price regime — never to place orde
 yourself.
 
 Primitives the policy can use: noop, hold_energy, liquidate_surplus, cover_deficit,
-aggressive_taker, battery_arbitrage. Book-specific primitives may exist in the shared
-action vocabulary, but they are not useful here and should not be preferred.
+aggressive_taker, battery_arbitrage, grid_charge_on_dip, grid_discharge_on_peak,
+wait_for_better. That list is exhaustive here: order-book quoting primitives from the
+shared action vocabulary are invalid in this market and are removed before execution,
+so never prefer or pin anything outside the list above.
+
+Grid timing primitives:
+- grid_charge_on_dip: buy from the grid to charge the battery when current import price
+  is materially below the forecast reference.
+- grid_discharge_on_peak: sell battery energy to the grid when current export price is
+  materially above the forecast reference.
+- wait_for_better: place no orders when the battery can bridge a near-term imbalance
+  and the forecast says a better grid price is imminent.
 
 Return ONLY a JSON object (no markdown, no commentary):
   {
     "preferred_modes": [<primitive names to favour>],
     "avoid_modes":     [<primitive names to discourage>],
     "mode_pin":        <primitive name or null; BINDING next-window override; use sparingly>,
-    "halt":         <bool; BINDING: stop trading and hold — surplus buffers into the battery. Use in oversupply/illiquidity>,
-    "passive_only": <bool; BINDING: maker-only, never cross the spread. Use when liquidity is thin>,
+    "halt":         <bool; BINDING: stop trading and hold — surplus buffers into the battery. Use when the grid price collapses>,
+    "passive_only": <bool; no effect in this market (there is no book to quote into); leave false>,
     "risk_budget":     <float in [0,1.5]; 1 = full size, >1 = press harder, <1 = cautious>,
     "price_bias_bps":  <float in [-200,200]; shifts quotes off fair value; positive = quote higher>,
     "soc_target":      <float in [0,1]; desired battery state of charge>,
@@ -226,12 +277,23 @@ Return ONLY a JSON object (no markdown, no commentary):
     }
   }
 Read `regime_note` in the input and act on extremes with the BINDING levers, not just soft advice:
-- Heavy oversupply / price collapsed near zero: do NOT keep dumping surplus. Set "halt": true (or "mode_pin": "hold_energy") to store it in the battery, add "liquidate_surplus" to "avoid_modes", lower "risk_budget", and set "meta_control".w_soc_mult below 1 so charging is not penalized.
-- Thin/illiquid book: set "passive_only": true.
-- Scarcity (bids elevated, few/no asks): press with "risk_budget" > 1 and prefer "aggressive_taker" / "cover_deficit".
+- Grid price collapsed near zero / heavy solar oversupply: do NOT keep dumping surplus. Set "halt": true (or "mode_pin": "hold_energy") to store it in the battery, add "liquidate_surplus" to "avoid_modes", lower "risk_budget", and set "meta_control".w_soc_mult below 1 so charging is not penalized.
+- Grid price spike / scarcity hours: press with "risk_budget" > 1, prefer "grid_discharge_on_peak" / "cover_deficit", and avoid charging into the spike.
+- Whipsawing grid price: favour "wait_for_better" and battery buffering over chasing every move.
 
-If the policy is learning well, omit "meta_control" or leave it at the defaults. Treat
-null best_bid/best_ask as normal in this market. mode_pin, halt, passive_only, and avoid_modes are BINDING; the other fields are soft, clamped priors — the tactical policy may override those, and out-of-range knobs are clipped. Stay within bounds."""
+A `forecast` block may be present with 5m/1h/12h grid price, peer price, and irradiance.
+Act on it: charge or hold_energy ahead of forecast price spikes, be patient selling into a
+rising forecast, and press or de-risk ahead of a forecast collapse.
+
+If the policy is learning well, omit "meta_control" or leave it at the defaults. The market
+input's best_bid/best_ask are null here (no order book) — that is normal, not an error.
+mode_pin, halt, and avoid_modes are BINDING; the other fields are soft, clamped priors — the tactical policy may override those, and out-of-range knobs are clipped. Stay within bounds."""
+
+_GRID_NATIVE_MODES = {
+    StrategyMode.GRID_CHARGE_ON_DIP,
+    StrategyMode.GRID_DISCHARGE_ON_PEAK,
+    StrategyMode.WAIT_FOR_BETTER,
+}
 
 _REALPRICE_DISALLOWED_PREFERRED = {
     StrategyMode.PASSIVE_MARKET_MAKE,
@@ -240,11 +302,34 @@ _REALPRICE_DISALLOWED_PREFERRED = {
     StrategyMode.CANCEL_REPRICE,
 }
 
+_REALPRICE_ALLOWED_MODES = {
+    StrategyMode.NOOP,
+    StrategyMode.HOLD_ENERGY,
+    StrategyMode.LIQUIDATE_SURPLUS,
+    StrategyMode.COVER_DEFICIT,
+    StrategyMode.AGGRESSIVE_TAKER,
+    StrategyMode.BATTERY_ARBITRAGE,
+    StrategyMode.GRID_CHARGE_ON_DIP,
+    StrategyMode.GRID_DISCHARGE_ON_PEAK,
+    StrategyMode.WAIT_FOR_BETTER,
+}
+_P2P_ALLOWED_MODES = set(StrategyMode) - _GRID_NATIVE_MODES
+
+
+def allowed_modes_for_market(market_mode: str) -> set[StrategyMode]:
+    return set(_REALPRICE_ALLOWED_MODES if market_mode == "realprice" else _P2P_ALLOWED_MODES)
+
 
 def build_strategist_system_prompt(
     persona_prompt: str | None = None, *, market_mode: str = "p2p"
 ) -> str:
     base = REALPRICE_STRATEGIST_SYSTEM_PROMPT if market_mode == "realprice" else STRATEGIST_SYSTEM_PROMPT
+    base = (
+        f"{base}\nThe input includes an `endowment` block (your VPP's own battery/PV/load/gas "
+        "sizes) and a `character` block (archetype, risk_appetite, SOC band). Tailor guidance to "
+        "them: a large-battery arbitrageur presses spreads and swings SOC wide; a load-heavy "
+        "consumer minimizes cost and keeps charge in reserve; a producer time-shifts and sells its surplus."
+    )
     if not persona_prompt:
         return base
     return f"{base}\nPersona / standing brief:\n{persona_prompt.strip()}\n"
@@ -255,7 +340,8 @@ def build_strategist_user_message(
     best_ask: float | None, last_price: float | None, regime_note: str = "",
     market_mode: str = "p2p", grid_raw_lmp: float | None = None,
     grid_import_price: float | None = None, grid_export_price: float | None = None,
-    grid_status: str | None = None,
+    grid_status: str | None = None, forecast: dict | None = None,
+    endowment: dict | None = None, character: dict | None = None,
 ) -> str:
     payload = {
         "market_mode": market_mode,
@@ -275,6 +361,13 @@ def build_strategist_user_message(
                 "grid_status": grid_status,
             }
         )
+    compact_forecast = compact_forecast_for_strategist(forecast)
+    if compact_forecast is not None:
+        payload["forecast"] = compact_forecast
+    if endowment:
+        payload["endowment"] = endowment
+    if character:
+        payload["character"] = character
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -320,10 +413,9 @@ def modes_from_names(names: list[str] | tuple[str, ...]) -> tuple[StrategyMode, 
 
 
 def _sanitize_guidance_for_market(guidance: StrategyGuidance, market_mode: str) -> StrategyGuidance:
-    if market_mode != "realprice":
-        return guidance
-    preferred = tuple(m for m in guidance.preferred_modes if m not in _REALPRICE_DISALLOWED_PREFERRED)
-    mode_pin = None if guidance.mode_pin in _REALPRICE_DISALLOWED_PREFERRED else guidance.mode_pin
+    allowed = allowed_modes_for_market(market_mode)
+    preferred = tuple(m for m in guidance.preferred_modes if m in allowed)
+    mode_pin = guidance.mode_pin if guidance.mode_pin in allowed else None
     return replace(guidance, preferred_modes=preferred, mode_pin=mode_pin)
 
 
@@ -572,7 +664,8 @@ class LLMStrategist:
         best_ask: float | None, last_price: float | None, regime_note: str = "",
         market_mode: str = "p2p", grid_raw_lmp: float | None = None,
         grid_import_price: float | None = None, grid_export_price: float | None = None,
-        grid_status: str | None = None,
+        grid_status: str | None = None, forecast: dict | None = None,
+        endowment: dict | None = None, character: dict | None = None,
     ) -> StrategyGuidance | None:
         if self.llm_gate is not None:
             if self.llm_gate.locked():
@@ -591,6 +684,9 @@ class LLMStrategist:
                     grid_import_price=grid_import_price,
                     grid_export_price=grid_export_price,
                     grid_status=grid_status,
+                    forecast=forecast,
+                    endowment=endowment,
+                    character=character,
                 )
         return await self._refresh_once(
             recent_pnl=recent_pnl,
@@ -604,6 +700,9 @@ class LLMStrategist:
             grid_import_price=grid_import_price,
             grid_export_price=grid_export_price,
             grid_status=grid_status,
+            forecast=forecast,
+            endowment=endowment,
+            character=character,
         )
 
     async def _refresh_once(
@@ -611,7 +710,8 @@ class LLMStrategist:
         best_ask: float | None, last_price: float | None, regime_note: str = "",
         market_mode: str = "p2p", grid_raw_lmp: float | None = None,
         grid_import_price: float | None = None, grid_export_price: float | None = None,
-        grid_status: str | None = None,
+        grid_status: str | None = None, forecast: dict | None = None,
+        endowment: dict | None = None, character: dict | None = None,
     ) -> StrategyGuidance | None:
         messages = [
             {
@@ -625,7 +725,8 @@ class LLMStrategist:
                 best_ask=best_ask, last_price=last_price, regime_note=regime_note,
                 market_mode=market_mode, grid_raw_lmp=grid_raw_lmp,
                 grid_import_price=grid_import_price, grid_export_price=grid_export_price,
-                grid_status=grid_status,
+                grid_status=grid_status, forecast=forecast,
+                endowment=endowment, character=character,
             )},
         ]
         try:

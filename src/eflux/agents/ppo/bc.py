@@ -23,14 +23,23 @@ from torch import nn
 from eflux.agents.base import AgentContext
 from eflux.agents.hybrid import StrategyAgent
 from eflux.agents.ppo.primitive_encoding import (
+    ACTION_PROFILE_P2P,
     ENCODING_V1,
-    N_MODES,
-    OBS_DIM,
+    OBS_DIM_V1,
+    OBS_V1,
+    action_profile_for_action_dim,
+    action_profile_for_market,
     decode_action,
     encode_action,
     encode_obs,
     encoding_version_for_action_dim,
+    infer_action_dim,
+    infer_action_profile,
     infer_encoding_version,
+    infer_obs_dim,
+    primitive_modes_for,
+    obs_dim_for,
+    obs_version_for_obs_dim,
     price_ref_scale,
 )
 from eflux.agents.ppo.primitive_encoding import (
@@ -53,17 +62,26 @@ class BCNet(nn.Module):
 
     def __init__(
         self,
-        obs_dim: int = OBS_DIM,
+        obs_dim: int = OBS_DIM_V1,
         action_dim: int | None = None,
         hidden: int = 64,
         *,
         encoding_version: int = ENCODING_V1,
+        obs_version: int | None = None,
+        action_profile: str | None = None,
     ) -> None:
         super().__init__()
-        self.action_dim = int(action_dim) if action_dim is not None else encoding_action_dim(encoding_version)
+        if action_dim is not None:
+            self.action_dim = int(action_dim)
+            self.action_profile = action_profile or action_profile_for_action_dim(self.action_dim)
+        else:
+            self.action_profile = action_profile or ACTION_PROFILE_P2P
+            self.action_dim = encoding_action_dim(encoding_version, action_profile=self.action_profile)
         self.encoding_version = encoding_version_for_action_dim(self.action_dim)
+        self.obs_dim = int(obs_dim)
+        self.obs_version = obs_version if obs_version is not None else obs_version_for_obs_dim(self.obs_dim)
         self.net = nn.Sequential(
-            nn.Linear(obs_dim, hidden),
+            nn.Linear(self.obs_dim, hidden),
             nn.Tanh(),
             nn.Linear(hidden, hidden),
             nn.Tanh(),
@@ -82,6 +100,8 @@ def collect_demonstrations(
     demand_beta: float = _DEMO_DEMAND_BETA,
     env_config: dict | None = None,
     encoding_version: int = ENCODING_V1,
+    obs_version: int = OBS_V1,
+    action_profile: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Roll the expert through VPPPrimitiveEnv, recording (obs, encoded-action) pairs.
 
@@ -94,7 +114,10 @@ def collect_demonstrations(
     from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 
     cfg = dict(env_config or {})
+    action_profile = action_profile or cfg.get("action_profile") or action_profile_for_market(str(cfg.get("market_mode", "p2p")))
     cfg.setdefault("encoding_version", encoding_version)
+    cfg.setdefault("obs_version", obs_version)
+    cfg.setdefault("action_profile", action_profile)
     env = VPPPrimitiveEnv(cfg)
     oracle = TruthfulValuationOracle(price_ref=Decimal(str(price_ref_scale())), demand_beta=demand_beta)
     obs_rows: list[np.ndarray] = []
@@ -105,8 +128,8 @@ def collect_demonstrations(
             ctx = env._make_ctx()
             valuation = oracle.estimate(ctx)
             action = expert.select_action(ctx, valuation)
-            obs_rows.append(encode_obs(ctx, valuation))
-            encoded = encode_action(action, version=encoding_version)
+            obs_rows.append(encode_obs(ctx, valuation, obs_version=obs_version))
+            encoded = encode_action(action, version=encoding_version, action_profile=action_profile)
             act_rows.append(encoded)
             env.step(encoded)
     return np.asarray(obs_rows, dtype=np.float32), np.asarray(act_rows, dtype=np.float32)
@@ -121,23 +144,38 @@ def train_bc(
     seed: int = 0,
     hidden: int = 64,
     encoding_version: int = ENCODING_V1,
+    obs_version: int = OBS_V1,
+    action_profile: str | None = None,
 ) -> BCNet:
     """Clone the expert: cross-entropy on the primitive choice (the mode logits) plus
     MSE on the squashed parameters. A single MSE over the whole vector would let the
     large parameter targets swamp the small mode logits and underfit the mode."""
     torch.manual_seed(seed)
-    net = BCNet(action_dim=acts.shape[1], hidden=hidden, encoding_version=encoding_version)
+    obs_dim = int(obs.shape[1])
+    action_profile = action_profile or action_profile_for_action_dim(int(acts.shape[1]))
+    n_modes = len(primitive_modes_for(action_profile=action_profile))
+    net = BCNet(
+        obs_dim=obs_dim,
+        action_dim=acts.shape[1],
+        hidden=hidden,
+        encoding_version=encoding_version,
+        obs_version=obs_version_for_obs_dim(obs_dim),
+        action_profile=action_profile,
+    )
     opt = torch.optim.Adam(net.parameters(), lr=lr)
     ce = nn.CrossEntropyLoss()
     mse = nn.MSELoss()
     x = torch.as_tensor(obs)
-    mode_idx = torch.as_tensor(np.argmax(acts[:, :N_MODES], axis=1)).long()
-    params = torch.as_tensor(acts[:, N_MODES:])
+    expected_obs_dim = obs_dim_for(obs_version)
+    if obs.shape[1] != expected_obs_dim:
+        raise ValueError(f"expected obs width {expected_obs_dim} for observation V{obs_version}, got {obs.shape[1]}")
+    mode_idx = torch.as_tensor(np.argmax(acts[:, :n_modes], axis=1)).long()
+    params = torch.as_tensor(acts[:, n_modes:])
     net.train()
     for _ in range(epochs):
         opt.zero_grad()
         out = net(x)
-        loss = ce(out[:, :N_MODES], mode_idx) + mse(out[:, N_MODES:], params)
+        loss = ce(out[:, :n_modes], mode_idx) + mse(out[:, n_modes:], params)
         loss.backward()
         opt.step()
     net.eval()
@@ -146,21 +184,23 @@ def train_bc(
 
 def mode_accuracy(net: BCNet, obs: np.ndarray, acts: np.ndarray) -> float:
     """Fraction of samples where the cloned net picks the expert's primitive."""
+    n_modes = len(primitive_modes_for(action_profile=getattr(net, "action_profile", None) or action_profile_for_action_dim(acts.shape[1])))
     with torch.no_grad():
         pred = net(torch.as_tensor(obs)).numpy()
-    return float((pred[:, :N_MODES].argmax(1) == acts[:, :N_MODES].argmax(1)).mean())
+    return float((pred[:, :n_modes].argmax(1) == acts[:, :n_modes].argmax(1)).mean())
 
 
 def trade_mode_accuracy(net: BCNet, obs: np.ndarray, acts: np.ndarray) -> float:
     """Mode accuracy on samples where the expert actually trades (non-NOOP). The
     razor-thin NOOP boundary (surplus/deficit just under min_qty) is dust-filtered by
     the compiler downstream, so the trade decisions are what matter for behaviour."""
-    true = np.argmax(acts[:, :N_MODES], axis=1)
+    n_modes = len(primitive_modes_for(action_profile=getattr(net, "action_profile", None) or action_profile_for_action_dim(acts.shape[1])))
+    true = np.argmax(acts[:, :n_modes], axis=1)
     mask = true != 0
     if not mask.any():
         return 1.0
     with torch.no_grad():
-        pred = net(torch.as_tensor(obs)).numpy()[:, :N_MODES].argmax(1)
+        pred = net(torch.as_tensor(obs)).numpy()[:, :n_modes].argmax(1)
     return float((pred[mask] == true[mask]).mean())
 
 
@@ -171,13 +211,18 @@ def mean_episode_reward(
     seed: int = 0,
     env_config: dict | None = None,
     encoding_version: int = ENCODING_V1,
+    obs_version: int = OBS_V1,
+    action_profile: str | None = None,
 ) -> float:
     """Mean total VPPPrimitiveEnv reward when `policy` drives it — the warm-start
     metric (how competent a starting point the policy gives PPO, in PPO's own env)."""
     from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 
     cfg = dict(env_config or {})
+    action_profile = action_profile or cfg.get("action_profile") or action_profile_for_market(str(cfg.get("market_mode", "p2p")))
     cfg.setdefault("encoding_version", encoding_version)
+    cfg.setdefault("obs_version", obs_version)
+    cfg.setdefault("action_profile", action_profile)
     env = VPPPrimitiveEnv(cfg)
     totals: list[float] = []
     for ep in range(n_episodes):
@@ -186,7 +231,9 @@ def mean_episode_reward(
         for _ in range(env._episode_ticks):
             ctx = env._make_ctx()
             valuation = env._oracle.estimate(ctx)
-            _o, r, _t, _tr, _ = env.step(encode_action(policy.select_action(ctx, valuation), version=encoding_version))
+            _o, r, _t, _tr, _ = env.step(
+                encode_action(policy.select_action(ctx, valuation), version=encoding_version, action_profile=action_profile)
+            )
             total += r
         totals.append(total)
     return float(np.mean(totals))
@@ -198,12 +245,17 @@ def mean_random_reward(
     seed: int = 0,
     env_config: dict | None = None,
     encoding_version: int = ENCODING_V1,
+    obs_version: int = OBS_V1,
+    action_profile: str | None = None,
 ) -> float:
     """Mean total reward of a uniformly-random policy — the warm-start floor."""
     from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 
     cfg = dict(env_config or {})
+    action_profile = action_profile or cfg.get("action_profile") or action_profile_for_market(str(cfg.get("market_mode", "p2p")))
     cfg.setdefault("encoding_version", encoding_version)
+    cfg.setdefault("obs_version", obs_version)
+    cfg.setdefault("action_profile", action_profile)
     env = VPPPrimitiveEnv(cfg)
     rng = np.random.default_rng(seed)
     totals: list[float] = []
@@ -223,18 +275,26 @@ class BCPolicy:
 
     net: BCNet
     encoding_version: int | None = None
+    obs_version: int | None = None
+    action_profile: str | None = None
 
     def __post_init__(self) -> None:
         if self.encoding_version is None:
             self.encoding_version = encoding_version_for_action_dim(self.net.net[-1].out_features)
+        if self.action_profile is None:
+            self.action_profile = getattr(self.net, "action_profile", None) or action_profile_for_action_dim(
+                self.net.net[-1].out_features
+            )
+        if self.obs_version is None:
+            self.obs_version = obs_version_for_obs_dim(self.net.net[0].in_features)
 
     def select_action(
         self, ctx: AgentContext, valuation: ValuationSignal, guidance: object | None = None
     ) -> StrategyAction:
-        obs = encode_obs(ctx, valuation)
+        obs = encode_obs(ctx, valuation, obs_version=self.obs_version)
         with torch.no_grad():
             vec = self.net(torch.as_tensor(obs).unsqueeze(0)).squeeze(0).numpy()
-        return decode_action(vec, version=self.encoding_version)
+        return decode_action(vec, version=self.encoding_version, action_profile=self.action_profile)
 
 
 def train_bc_policy(
@@ -244,11 +304,29 @@ def train_bc_policy(
     epochs: int = 300,
     seed: int = 0,
     encoding_version: int = ENCODING_V1,
+    obs_version: int = OBS_V1,
+    action_profile: str | None = None,
 ) -> BCPolicy:
     obs, acts = collect_demonstrations(
-        expert or BatteryAwareStrategyPolicy(), n_episodes=n_episodes, seed=seed, encoding_version=encoding_version
+        expert or BatteryAwareStrategyPolicy(),
+        n_episodes=n_episodes,
+        seed=seed,
+        encoding_version=encoding_version,
+        obs_version=obs_version,
+        action_profile=action_profile,
     )
-    return BCPolicy(train_bc(obs, acts, epochs=epochs, seed=seed, encoding_version=encoding_version))
+    return BCPolicy(
+        train_bc(
+            obs,
+            acts,
+            epochs=epochs,
+            seed=seed,
+            encoding_version=encoding_version,
+            obs_version=obs_version,
+            action_profile=action_profile,
+        ),
+        action_profile=action_profile,
+    )
 
 
 def build_bc_agent(policy: BCPolicy, *, price_ref: Decimal = Decimal("50.0")) -> StrategyAgent:
@@ -264,6 +342,8 @@ def save_bc(
     price_ref: float | None = None,
     market_mode: str | None = None,
     encoding_version: int | None = None,
+    obs_version: int | None = None,
+    action_profile: str | None = None,
 ) -> None:
     """Save a BC checkpoint wrapping the state-dict with metadata: the fixed price scale the
     net was trained under (so serve/eval can restore train/serve parity) and the market mode
@@ -274,9 +354,14 @@ def save_bc(
             "state_dict": net.state_dict(),
             "price_ref": float(price_ref) if price_ref is not None else price_ref_scale(),
             "market_mode": market_mode,
+            "action_profile": action_profile
+            or getattr(net, "action_profile", None)
+            or action_profile_for_action_dim(net.net[-1].out_features),
             "encoding_version": encoding_version
             if encoding_version is not None
             else encoding_version_for_action_dim(net.net[-1].out_features),
+            "obs_dim": int(net.net[0].in_features),
+            "obs_version": obs_version if obs_version is not None else obs_version_for_obs_dim(net.net[0].in_features),
         },
         path,
     )
@@ -300,9 +385,18 @@ def checkpoint_meta(path: str) -> dict:
 
 
 def load_bc(path: str, *, hidden: int = 64) -> BCNet:
-    state = _unwrap_state(torch.load(path))
+    raw = torch.load(path)
+    state = _unwrap_state(raw)
     version = infer_encoding_version(state)
-    net = BCNet(hidden=hidden, encoding_version=version)
+    obs_dim = infer_obs_dim(state)
+    action_profile = infer_action_profile(raw if isinstance(raw, dict) else state)
+    net = BCNet(
+        obs_dim=obs_dim,
+        action_dim=infer_action_dim(state),
+        hidden=hidden,
+        encoding_version=version,
+        action_profile=action_profile,
+    )
     net.load_state_dict(state)
     net.eval()
     return net

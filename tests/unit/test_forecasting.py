@@ -1,0 +1,240 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime, timedelta
+
+import numpy as np
+
+from eflux.forecasting.models import HorizonModel, SeasonalPersistence, WeatherForecaster
+from eflux.forecasting.schema import HORIZONS, HORIZON_TIMEDELTAS, ForecastBundle
+from eflux.forecasting.service import ForecastService
+
+
+def _hours(start: datetime, count: int) -> list[datetime]:
+    return [start + timedelta(hours=i) for i in range(count)]
+
+
+def _seasonal_series(times: list[datetime]) -> list[float]:
+    rng = np.random.default_rng(123)
+    values: list[float] = []
+    for i, ts in enumerate(times):
+        hour = ts.hour + ts.minute / 60.0
+        daily = 22.0 * np.sin(2.0 * np.pi * hour / 24.0)
+        harmonic = 7.0 * np.cos(4.0 * np.pi * hour / 24.0)
+        trend = 0.025 * i
+        noise = rng.normal(0.0, 0.15)
+        values.append(float(55.0 + daily + harmonic + trend + noise))
+    return values
+
+
+def test_warm_started_online_forecaster_beats_naive_persistence_on_tail():
+    times = _hours(datetime(2026, 1, 1, 0, 0), 12 * 24)
+    values = _seasonal_series(times)
+    split = 8 * 24
+
+    service = ForecastService()
+    service.warm_start(series={"price_real": zip(times[:split], values[:split])})
+
+    forecast_errors: list[float] = []
+    naive_errors: list[float] = []
+    for i in range(split, len(times) - 1):
+        bundle = service.refresh(times[i])
+        forecast = bundle.price_real.by_horizon("1h").value
+        actual = values[i + 1]
+        forecast_errors.append(abs(forecast - actual))
+        naive_errors.append(abs(values[i] - actual))
+        service.observe(times[i], price_real=values[i])
+
+    assert np.mean(forecast_errors) < np.mean(naive_errors)
+
+
+def test_observe_refresh_returns_finite_populated_bundle():
+    service = ForecastService()
+    start = datetime(2026, 3, 1, 0, 0)
+    for i, ts in enumerate(_hours(start, 36)):
+        service.observe(
+            ts,
+            price_real=50.0 + i,
+            price_p2p=45.0 + 0.5 * i,
+            ghi=max(0.0, 700.0 * np.sin(np.pi * ts.hour / 24.0)),
+            temp_air=20.0 + np.sin(i),
+            wind_speed=4.0 + 0.1 * i,
+        )
+
+    bundle = service.refresh(start + timedelta(hours=36))
+    for target_name in ("price_real", "price_p2p", "ghi", "temp_air", "wind_speed"):
+        target = getattr(bundle, target_name)
+        for horizon in HORIZONS:
+            point = target.by_horizon(horizon)
+            assert np.isfinite(point.value)
+            assert point.stderr is None or np.isfinite(point.stderr)
+
+
+def test_refresh_history_records_forecasts_and_latest_realized_values():
+    service = ForecastService()
+    ts = datetime(2026, 3, 1, 0, 0)
+    service.observe(ts, price_real=51.0, ghi=300.0)
+
+    service.refresh(ts + timedelta(minutes=1))
+    history = service.history()
+
+    assert len(history) == 1
+    record = history[0]
+    assert record["as_of"] == (ts + timedelta(minutes=1)).isoformat()
+    assert set(record["forecasts"]) == {"price_real", "price_p2p", "ghi", "temp_air", "wind_speed"}
+    assert set(record["forecasts"]["price_real"]) == {"5m", "1h", "12h"}
+    assert record["realized"]["price_real"] == 51.0
+    assert record["realized"]["ghi"] == 300.0
+    assert record["realized"]["price_p2p"] is None
+
+    filtered = service.history(limit=1, target="price_real")
+    assert filtered == [
+        {
+            "as_of": record["as_of"],
+            "forecasts": {"price_real": record["forecasts"]["price_real"]},
+            "realized": {"price_real": 51.0},
+        }
+    ]
+
+
+def test_observation_count_and_is_warm_track_price_observations():
+    service = ForecastService()
+
+    assert service.observation_count() == 0
+    assert service.observation_count("price_real", "price_p2p") == 0
+    assert service.is_warm is False
+
+    start = datetime(2026, 3, 1, 0, 0)
+    samples = _hours(start, 3)
+    service.warm_start(
+        series={
+            "price_real": ((ts, 50.0 + i) for i, ts in enumerate(samples)),
+            "price_p2p": ((ts, 45.0 + i) for i, ts in enumerate(samples)),
+        }
+    )
+
+    assert service.observation_count("price_real", "price_p2p") == 6
+    assert service.is_warm is True
+
+
+def test_weather_only_observations_do_not_make_service_warm():
+    service = ForecastService()
+    start = datetime(2026, 3, 1, 0, 0)
+
+    service.warm_start(series={"ghi": ((ts, 100.0) for ts in _hours(start, 3))})
+
+    assert service.observation_count() == 3
+    assert service.observation_count("price_real", "price_p2p") == 0
+    assert service.is_warm is False
+
+
+def test_seasonal_persistence_cold_start_is_sane():
+    model = SeasonalPersistence()
+    ts = datetime(2026, 4, 1, 3, 0)
+
+    assert model.predict(ts) == 0.0
+    model.observe(ts, 12.5)
+    model.observe(ts + timedelta(hours=1), 13.5)
+
+    assert model.predict(ts + timedelta(days=1)) == 12.5
+    assert model.predict(ts + timedelta(hours=10)) == 13.5
+
+
+def test_weather_forecaster_uses_nwp_base_plus_learned_bias():
+    def nwp_lookup(ts: datetime) -> float:
+        return 100.0 + ts.hour
+
+    model = WeatherForecaster(nwp_lookup=nwp_lookup)
+    start = datetime(2026, 5, 1, 0, 0)
+    before = model.predict(start)["1h"].value
+
+    for ts in _hours(start, 8):
+        model.observe(ts, nwp_lookup(ts) + 7.0)
+
+    after = model.predict(start + timedelta(hours=8))["1h"].value
+    expected = nwp_lookup(start + timedelta(hours=9)) + 7.0
+
+    assert abs(after - expected) < abs(before - expected)
+    assert abs(after - expected) < 0.5
+
+
+def test_feature_lag_lookback_is_older_for_12h_than_5m():
+    model = HorizonModel()
+    start = datetime(2026, 5, 1, 0, 0)
+    for minute in range(2 * 24 * 60 + 1):
+        model.observe(start + timedelta(minutes=minute), float(minute))
+
+    origin = start + timedelta(days=2)
+    five_minute_features = model._features(origin, HORIZON_TIMEDELTAS["5m"])
+    twelve_hour_features = model._features(origin, HORIZON_TIMEDELTAS["12h"])
+
+    assert five_minute_features.shape == (8,)
+    assert twelve_hour_features.shape == (8,)
+    assert five_minute_features[6] == float(2 * 24 * 60 - 5)
+    assert twelve_hour_features[6] == float(24 * 60)
+    assert twelve_hour_features[6] < five_minute_features[6]
+
+
+def test_forecast_bundle_empty_is_neutral_and_json_serializable():
+    bundle = ForecastBundle.empty(as_of=datetime(2026, 1, 1, 0, 0))
+
+    assert bundle.solar_factor("1h") == 0.0
+    for target_name in ("price_real", "price_p2p", "ghi", "temp_air", "wind_speed"):
+        target = getattr(bundle, target_name)
+        for horizon in HORIZONS:
+            point = target.by_horizon(horizon)
+            assert point.value == 0.0
+            assert point.stderr == 0.0
+
+    json.dumps(bundle.to_dict())
+
+
+def test_save_load_round_trip_reproduces_predictions(tmp_path):
+    service = ForecastService()
+    start = datetime(2026, 6, 1, 0, 0)
+    samples = _hours(start, 72)
+    values = _seasonal_series(samples)
+    service.warm_start(
+        series={
+            "price_real": zip(samples, values),
+            "price_p2p": ((ts, value * 0.9) for ts, value in zip(samples, values)),
+            "ghi": ((ts, max(0.0, value * 10.0)) for ts, value in zip(samples, values)),
+            "temp_air": ((ts, 15.0 + value * 0.02) for ts, value in zip(samples, values)),
+            "wind_speed": ((ts, 2.0 + value * 0.01) for ts, value in zip(samples, values)),
+        }
+    )
+    sim_ts = start + timedelta(hours=72)
+    before = service.refresh(sim_ts).to_dict()
+    before_history = service.history()
+
+    path = tmp_path / "forecast_state.json"
+    service.save(path)
+    loaded = ForecastService.load(path)
+    assert loaded.history() == before_history
+    after = loaded.refresh(sim_ts).to_dict()
+
+    assert after == before
+
+
+def test_cached_price_windows_parses_sanitized_names_and_sorts(tmp_path):
+    from datetime import date
+
+    from eflux.agents.ppo.training_data import cached_price_windows
+
+    node = "TH_SP15/GEN-APND"  # "/" is sanitized to "_" in cache filenames
+    for name in (
+        "lmp_TH_SP15_GEN-APND_2026-06-05_2026-07-05.parquet",
+        "lmp_TH_SP15_GEN-APND_2026-06-08_2026-07-08.parquet",
+        "lmp_TH_SP15_GEN-APND_not-a-window.parquet",
+        "refmean_TH_SP15_GEN-APND_2026-06-05_2026-07-05.txt",
+    ):
+        (tmp_path / name).touch()
+
+    windows = cached_price_windows(node=node, cache_dir=tmp_path)
+
+    assert windows == [
+        (date(2026, 6, 8), date(2026, 7, 8)),
+        (date(2026, 6, 5), date(2026, 7, 5)),
+    ]
+    assert cached_price_windows(node="OTHER_NODE", cache_dir=tmp_path) == []
+    assert cached_price_windows(node=node, cache_dir=tmp_path / "missing") == []

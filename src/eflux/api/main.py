@@ -13,7 +13,7 @@ import eflux.db.models  # noqa: F401
 from eflux import __version__
 from eflux.agents.reflective.pool import CURATED_MODELS
 from eflux.agents.reflective.strategist import external_guidance_from_dict
-from eflux.api.routers import auth, benchmarks, health, leaderboard, market, orders, vpps
+from eflux.api.routers import auth, benchmarks, forecasts, health, leaderboard, market, orders, vpps
 from eflux.api.ws import market as market_ws
 from eflux.bridge import InMemoryBus, set_bus
 from eflux.bridge.bus import EventBus
@@ -188,6 +188,7 @@ async def lifespan(app: FastAPI):
     sim.session_id = await open_market_session(sim)
     await sim.start()
     app.state.simulator = sim
+    app.state.forecast_service = sim.forecast_service
     log.info("Simulator started with %d built-in VPPs", len(sim.vpps))
 
     try:
@@ -222,6 +223,7 @@ def create_app() -> FastAPI:
     app.include_router(vpps.router)
     app.include_router(orders.router)
     app.include_router(market.router)
+    app.include_router(forecasts.router)
     app.include_router(leaderboard.router)
     app.include_router(benchmarks.router)
     app.include_router(market_ws.router)

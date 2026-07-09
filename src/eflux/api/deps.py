@@ -12,6 +12,7 @@ from eflux.auth.api_key import verify_api_key
 from eflux.auth.session import get_user_for_session_token
 from eflux.db.models import User
 from eflux.db.session import get_db
+from eflux.forecasting.service import ForecastService
 from eflux.simulator.runner import Simulator
 
 
@@ -62,3 +63,22 @@ def get_simulator(request: Request) -> Simulator:
 
 
 SimulatorDep = Annotated[Simulator, Depends(get_simulator)]
+
+
+def get_forecast_service(request: Request) -> ForecastService:
+    # Resolve through the simulator first: the forecast bootstrap task may replace
+    # sim.forecast_service (e.g. checkpoint restore) after app.state captured the
+    # original object, which would otherwise pin the API to a stale empty service.
+    sim: Simulator | None = getattr(request.app.state, "simulator", None)
+    service: ForecastService | None = getattr(sim, "forecast_service", None) if sim is not None else None
+    if service is None:
+        service = getattr(request.app.state, "forecast_service", None)
+    if service is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="forecast service not running",
+        )
+    return service
+
+
+ForecastServiceDep = Annotated[ForecastService, Depends(get_forecast_service)]

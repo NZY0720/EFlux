@@ -47,3 +47,19 @@ def test_leaderboard_formats_all_candidates():
     ]
     out = format_leaderboard(rows)
     assert "strategy" in out and "aa" in out and "rejects" in out
+
+
+def test_bench_episode_warms_forecast_service_and_can_opt_out():
+    from eflux.agents.bench.run import run_episode
+    from eflux.agents.bench.scenarios import candidates
+
+    make = candidates()["truthful"]
+    sim, _ = run_episode(make, n_ticks=48, tick_h=1.0 / 6.0)
+    assert sim.forecast_service is not None
+    # Engine trades feed the price models, so the service warms and the same
+    # context gate the live loop uses starts exposing the bundle to agents.
+    assert sim.forecast_service.is_warm
+    assert sim._context_forecast() is not None
+
+    off_sim, _ = run_episode(make, n_ticks=8, tick_h=1.0 / 6.0, forecasts_enabled=False)
+    assert off_sim.forecast_service is None

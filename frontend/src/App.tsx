@@ -4,6 +4,7 @@ import ConnectionBanner from "./components/ConnectionBanner";
 import NavBar from "./components/NavBar";
 import Arena from "./pages/Arena";
 import Benchmarks from "./pages/Benchmarks";
+import ForecastHub from "./pages/ForecastHub";
 import Leaderboard from "./pages/Leaderboard";
 import Login from "./pages/Login";
 import MarketOverview from "./pages/MarketOverview";
@@ -40,6 +41,7 @@ function Shell() {
           <Route path="/arena" element={<Arena />} />
           <Route path="/benchmarks" element={<Benchmarks />} />
           <Route path="/benchmarks/:runId" element={<Benchmarks />} />
+          <Route path="/forecasts" element={<ForecastHub />} />
           <Route
             path="/vpps"
             element={

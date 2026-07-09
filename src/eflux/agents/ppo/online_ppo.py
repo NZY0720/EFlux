@@ -24,12 +24,16 @@ import torch
 from eflux.agents.base import AgentContext
 from eflux.agents.ppo.online_net import ActorCriticNet
 from eflux.agents.ppo.primitive_encoding import (
-    N_MODES,
-    PRIMITIVE_MODES,
+    action_profile_for_action_dim,
     decode_action,
     encode_obs,
     encoding_version_for_action_dim,
+    infer_action_dim,
+    infer_action_profile,
     infer_encoding_version,
+    infer_obs_dim,
+    primitive_modes_for,
+    obs_version_for_obs_dim,
     price_ref_scale,
 )
 from eflux.agents.ppo.primitive_encoding import (
@@ -142,6 +146,11 @@ class OnlineLearner:
         self.buffer = RolloutBuffer()
         self._rng = np.random.default_rng(self.seed)
         self._mode_target: torch.Tensor | None = None
+        self.action_profile = getattr(self.net, "action_profile", None) or action_profile_for_action_dim(
+            self.net.actor_mean.out_features
+        )
+        self.primitive_modes = primitive_modes_for(action_profile=self.action_profile)
+        self.n_modes = len(self.primitive_modes)
         self.update_count = 0
 
     # -- meta-control (LLM) --------------------------------------------------------------
@@ -164,14 +173,14 @@ class OnlineLearner:
         boost: float = 3.0,
         damp: float = 0.25,
     ) -> None:
-        """Build the target mode distribution `q` over the 4 PPO primitives from the LLM's
+        """Build the target mode distribution `q` over this checkpoint's PPO primitives from the LLM's
         preferred/avoid sets (modes outside the PPO set are ignored). Cleared when both are
         empty so the reg term goes inert."""
         if not preferred and not avoid:
             self._mode_target = None
             return
-        weights = np.ones(N_MODES, dtype=np.float32)
-        for i, mode in enumerate(PRIMITIVE_MODES):
+        weights = np.ones(self.n_modes, dtype=np.float32)
+        for i, mode in enumerate(self.primitive_modes):
             if mode in preferred:
                 weights[i] *= boost
             if mode in avoid:
@@ -180,11 +189,11 @@ class OnlineLearner:
         self._mode_target = torch.as_tensor(weights / weights.sum())
 
     def _mode_reg_loss(self, means: torch.Tensor) -> torch.Tensor:
-        """mode_reg_coef · mean KL(q ‖ softmax(actor_mean[:N_MODES])). Distinct from the
+        """mode_reg_coef · mean KL(q ‖ softmax(actor_mean[:n_modes])). Distinct from the
         execution-time `apply_guidance` — this shapes what the policy *learns*."""
         if self.mode_reg_coef <= 0.0 or self._mode_target is None:
             return means.new_zeros(())
-        logp = torch.log_softmax(means[:, :N_MODES], dim=-1)
+        logp = torch.log_softmax(means[:, :self.n_modes], dim=-1)
         q = self._mode_target
         kl = (q * (q.clamp_min(1e-8).log() - logp)).sum(-1).mean()
         return self.mode_reg_coef * kl
@@ -286,6 +295,10 @@ class OnlinePPOPolicy:
         self._prev: _Pending | None = None
         self._base_weights = self.weights
         self.encoding_version = encoding_version_for_action_dim(self.learner.net.actor_mean.out_features)
+        self.action_profile = getattr(self.learner.net, "action_profile", None) or action_profile_for_action_dim(
+            self.learner.net.actor_mean.out_features
+        )
+        self.obs_version = obs_version_for_obs_dim(self.learner.net.trunk[0].in_features)
 
     # -- meta-control push (off-tick, from the hybrid agent) -----------------------------
     def apply_meta(self, meta: object | None) -> None:
@@ -320,10 +333,14 @@ class OnlinePPOPolicy:
         if guidance is not None:
             self.soc_target = float(getattr(guidance, "soc_target", self.soc_target))
 
-        obs = encode_obs(ctx, valuation)
+        obs = encode_obs(ctx, valuation, obs_version=self.obs_version)
 
         if not self.learning:
-            return decode_action(self.learner.net.act_mean(obs), version=self.encoding_version)
+            return decode_action(
+                self.learner.net.act_mean(obs),
+                version=self.encoding_version,
+                action_profile=self.action_profile,
+            )
 
         # Finalize the previous step's reward now that we can see its outcome (one-tick
         # delay), then buffer that complete transition.
@@ -341,7 +358,7 @@ class OnlinePPOPolicy:
             # Bootstrap off the value of the just-observed (still-pending) state.
             self.learner.update(last_value=value)
 
-        return decode_action(action_vec, version=self.encoding_version)
+        return decode_action(action_vec, version=self.encoding_version, action_profile=self.action_profile)
 
     def take_update_batch(self) -> dict | None:
         """Tick-thread hook for an external (off-tick) scheduler: when a segment has filled,
@@ -377,23 +394,37 @@ class OnlinePPOPolicy:
             raw = torch.load(checkpoint_path, map_location="cpu")
             state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
             incoming_version = infer_encoding_version(state)
-            incoming_dim = encoding_action_dim(incoming_version)
+            incoming_dim = infer_action_dim(state)
+            incoming_profile = infer_action_profile(raw if isinstance(raw, dict) else state)
+            incoming_obs_dim = infer_obs_dim(state)
         except Exception:
             log.warning("online PPO hot-reload skipped: cannot inspect %s", checkpoint_path, exc_info=True)
             return
         live_dim = self.learner.net.actor_mean.out_features
-        if incoming_version != self.encoding_version or incoming_dim != live_dim:
+        live_obs_dim = self.learner.net.trunk[0].in_features
+        if (
+            incoming_version != self.encoding_version
+            or incoming_dim != live_dim
+            or incoming_obs_dim != live_obs_dim
+            or incoming_profile != self.action_profile
+        ):
             log.warning(
                 "online PPO hot-reload skipped: checkpoint encoding V%s/action_dim=%s "
-                "does not match live encoding V%s/action_dim=%s",
+                "profile=%s obs_dim=%s does not match live encoding V%s/action_dim=%s profile=%s obs_dim=%s",
                 incoming_version,
                 incoming_dim,
+                incoming_profile,
+                incoming_obs_dim,
                 self.encoding_version,
                 live_dim,
+                self.action_profile,
+                live_obs_dim,
             )
             return
         net = load_warm_start(checkpoint_path)
         self.learner.net.load_state_dict(net.state_dict())
+        self.obs_version = net.obs_version
+        self.action_profile = net.action_profile
 
 
 def build_online_policy(

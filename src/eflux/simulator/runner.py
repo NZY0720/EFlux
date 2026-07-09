@@ -11,9 +11,11 @@ import logging
 import random
 import time
 from collections import deque
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 from zoneinfo import ZoneInfo
 
@@ -28,6 +30,7 @@ from eflux.data.electricity_market import (
     disabled_quote,
     synthetic_quote,
 )
+from eflux.forecasting.service import ForecastService
 from eflux.market.clock import RollingClock
 from eflux.market.events import EventKind, ExternalTradeEvent, TickEvent, TradeEvent
 from eflux.market.matching_engine import MatchingEngine
@@ -35,7 +38,9 @@ from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad, WindTurbine
 
 if TYPE_CHECKING:
+    from eflux.agents.ppo.training_data import RealMarketData
     from eflux.agents.reflective.pool import SharedLLM
+    from eflux.forecasting.schema import ForecastBundle
 
 log = logging.getLogger(__name__)
 
@@ -183,6 +188,15 @@ class Simulator:
         self._lock = asyncio.Lock()
         self._task: asyncio.Task | None = None
         self._external_market_task: asyncio.Task | None = None
+        self.forecast_service: ForecastService | None = None
+        self._forecast_task: asyncio.Task | None = None
+        self._forecast_bootstrap_task: asyncio.Task | None = None
+        self._forecast_real_data: RealMarketData | None = None
+        # Live hourly weather frames covering ~now±2d. The warmup archive above ends
+        # yesterday by design, so realized/NWP lookups at live timestamps need this
+        # forecast-endpoint source or they would silently fall back to constants.
+        self._forecast_live_weather: object | None = None  # pv site: ghi / temp_air
+        self._forecast_live_wind: object | None = None  # wind site: wind_speed
         # Background "renew PPOs" (retrain on latest real data + hot-reload) state.
         self._ppo_renew_task: asyncio.Task | None = None
         self._ppo_renew: PpoRenewStatus = {
@@ -729,6 +743,17 @@ class Simulator:
         if self._task is not None:
             return
         settings = get_settings()
+        if settings.forecast_enabled and self.forecast_service is None:
+            self.forecast_service = ForecastService(nwp=self._forecast_nwp_lookups())
+            self._forecast_bootstrap_task = asyncio.create_task(
+                self._bootstrap_forecast_service(), name="forecast-bootstrap"
+            )
+            self._forecast_bootstrap_task.add_done_callback(_log_unexpected_loop_exit)
+        if settings.forecast_enabled and self._forecast_task is None:
+            self._forecast_task = asyncio.create_task(
+                self._run_forecast_refresh(), name="forecast-refresh-loop"
+            )
+            self._forecast_task.add_done_callback(_log_unexpected_loop_exit)
         # CAISO only matters in the real-price market (it is the clearing price). The
         # pure-P2P market neither trades against the grid nor displays it, so skip the
         # poll there to avoid needless external calls.
@@ -756,6 +781,15 @@ class Simulator:
             self._external_market_task.cancel()
             await asyncio.gather(self._external_market_task, return_exceptions=True)
             self._external_market_task = None
+        if self._forecast_task is not None:
+            self._forecast_task.cancel()
+            await asyncio.gather(self._forecast_task, return_exceptions=True)
+            self._forecast_task = None
+        if self._forecast_bootstrap_task is not None:
+            self._forecast_bootstrap_task.cancel()
+            await asyncio.gather(self._forecast_bootstrap_task, return_exceptions=True)
+            self._forecast_bootstrap_task = None
+        self._save_forecast_state()
         if self._ppo_renew_task is not None:
             self._ppo_renew_task.cancel()
             await asyncio.gather(self._ppo_renew_task, return_exceptions=True)
@@ -793,6 +827,299 @@ class Simulator:
         )
         self._external_market_quote = quote
         self._data_source_status = None
+
+    async def _bootstrap_forecast_service(self) -> None:
+        settings = get_settings()
+        state_path = self._forecast_state_path()
+        data: RealMarketData | None = None
+        # wait_for cannot kill a to_thread worker; a timed-out fetch keeps running
+        # detached and its result is discarded.
+        timeout = max(1.0, settings.forecast_bootstrap_timeout_sec)
+        try:
+            await asyncio.wait_for(asyncio.to_thread(self._load_forecast_live_frames), timeout)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception(
+                "Live weather frames unavailable; forecast weather lookups fall back to archive"
+            )
+        try:
+            if state_path.exists():
+                try:
+                    data = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._load_forecast_warmup_data,
+                            settings.forecast_warmup_days,
+                        ),
+                        timeout,
+                    )
+                    self._forecast_real_data = data
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("Forecast weather lookups unavailable during state restore")
+                self.forecast_service = await asyncio.to_thread(
+                    ForecastService.load,
+                    state_path,
+                    nwp=self._forecast_nwp_lookups(),
+                )
+                if self.forecast_service.is_warm:
+                    log.info("Forecast service restored from %s", state_path)
+                    return
+                log.warning(
+                    "Forecast state at %s has no price observations (e.g. saved after a "
+                    "throttled CAISO warm-up); keeping its weather models and re-running "
+                    "the price warm-start on top",
+                    state_path,
+                )
+            if data is None:
+                try:
+                    data = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self._load_forecast_warmup_data, settings.forecast_warmup_days
+                        ),
+                        timeout,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    log.exception("Fresh CAISO warm-up window unavailable; trying cached windows")
+            data = await self._select_forecast_warmup_data(data, timeout)
+            if data is None:
+                raise RuntimeError("no forecast warm-up data available (fresh or cached)")
+            self._forecast_real_data = data
+            nwp = self._forecast_nwp_lookups()
+            service = self.forecast_service or ForecastService(nwp=nwp)
+            service.warm_start(series=self._forecast_warmup_series(data), nwp=nwp)
+            self.forecast_service = service
+            log.info(
+                "Forecast service warm-started from CAISO/weather history %s..%s "
+                "(%d price points); price_p2p uses CAISO as a proxy prior",
+                data.start.date(),
+                data.end.date(),
+                0 if data.price is None else len(data.price),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("Forecast warm-start skipped; continuing with empty online models")
+
+    async def _select_forecast_warmup_data(
+        self, fresh: RealMarketData | None, timeout: float
+    ) -> RealMarketData | None:
+        """Fresh warm-up window, unless its price series is too thin — then the best
+        recent cached window wins. CAISO 429 throttling degrades the fresh fetch to
+        partial/empty price data, and the thin result is parquet-cached for the rest
+        of the day, so without this fallback one bad fetch poisons every later boot.
+        """
+        from eflux.agents.ppo.training_data import cached_price_windows
+
+        settings = get_settings()
+        min_points = max(0, settings.forecast_warmup_min_price_points)
+        best = fresh
+        best_points = 0 if fresh is None or fresh.price is None else len(fresh.price)
+        if best_points >= min_points:
+            return best
+        fresh_points = best_points
+        for start_d, end_d in cached_price_windows()[:4]:
+            if best_points >= min_points:
+                break
+            try:
+                candidate = await asyncio.wait_for(
+                    asyncio.to_thread(self._load_forecast_warmup_window, start_d, end_d),
+                    timeout,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("Cached warm-up window %s..%s unusable", start_d, end_d)
+                continue
+            points = 0 if candidate.price is None else len(candidate.price)
+            if points > best_points:
+                best, best_points = candidate, points
+        if best is not None and best is not fresh:
+            log.warning(
+                "CAISO warm-up fetch too thin (%d price points, need %d); "
+                "warm-starting from cached window %s..%s (%d points) instead",
+                fresh_points,
+                min_points,
+                best.start.date(),
+                best.end.date(),
+                best_points,
+            )
+        return best
+
+    def _load_forecast_warmup_window(self, start_d: date, end_d: date) -> RealMarketData:
+        from eflux.agents.ppo.training_data import load_real_market_data
+
+        return load_real_market_data(start_date=start_d, end_date=end_d)
+
+    def _load_forecast_warmup_data(self, days: int) -> RealMarketData:
+        from eflux.agents.ppo.training_data import load_real_market_data
+
+        return load_real_market_data(days=days)
+
+    def _forecast_warmup_series(
+        self, data: RealMarketData
+    ) -> dict[str, Iterable[tuple[datetime, float]]]:
+        weather = data.weather
+        wind = data.wind
+        series: dict[str, Iterable[tuple[datetime, float]]] = {
+            "price_real": list(data.price.items()),
+            # Proxy prior for Phase A: seed P2P from CAISO until live P2P prints
+            # accumulate enough online history of their own.
+            "price_p2p": list(data.price.items()),
+        }
+        if weather is not None and not getattr(weather, "empty", True):
+            for col in ("ghi", "temp_air"):
+                if col in getattr(weather, "columns", []):
+                    series[col] = list(weather[col].items())
+        if wind is not None and not getattr(wind, "empty", True):
+            if "wind_speed" in getattr(wind, "columns", []):
+                series["wind_speed"] = list(wind["wind_speed"].items())
+        return series
+
+    async def _run_forecast_refresh(self) -> None:
+        settings = get_settings()
+        refresh_sec = max(1.0, settings.forecast_refresh_sec)
+        while True:
+            try:
+                self._refresh_forecast_once()
+            except Exception:
+                log.exception("Forecast refresh failed; continuing with previous bundle")
+            await asyncio.sleep(refresh_sec)
+
+    def _refresh_forecast_once(self) -> None:
+        # Don't refresh (and above all don't SAVE) until the bootstrap task has
+        # restored/warm-started the service: a save against the placeholder service
+        # writes an empty state.json which bootstrap would then "restore", silently
+        # replacing the warm start with poisoned zero models on every boot.
+        bootstrap = self._forecast_bootstrap_task
+        if bootstrap is not None and not bootstrap.done():
+            return
+        service = self.forecast_service
+        if service is None:
+            return
+        sim_ts = self.clock.now_sim()
+        quote = self._external_market_quote
+        last_price = self.engine.last_price
+        service.observe(
+            sim_ts,
+            price_real=float(quote.raw_lmp) if quote.is_real_price else None,
+            price_p2p=None if last_price is None else float(last_price),
+            # None (not a 0.0 default) when no data source covers sim_ts, so a data
+            # gap is skipped instead of being learned as a realized zero.
+            ghi=self._forecast_weather_lookup("ghi", sim_ts),
+            temp_air=self._forecast_weather_lookup("temp_air", sim_ts),
+            wind_speed=self._forecast_weather_lookup("wind_speed", sim_ts),
+        )
+        service.refresh(sim_ts)
+        self._save_forecast_state()
+
+    def _context_forecast(self) -> ForecastBundle | None:
+        """Latest bundle for agent contexts, or None while it is still a placeholder.
+
+        The pre-bootstrap bundle (model_version "empty") and refreshed-but-never-warmed
+        services are all zeros; agents that read them numerically (PPO forecast channels,
+        price-trend oracles) would treat those zeros as strong bearish signals and stop
+        quoting. Exposing "no forecast" instead lets every consumer fall back to its
+        neutral path.
+        """
+        service = self.forecast_service
+        if service is None:
+            return None
+        if not service.is_warm:
+            return None
+        bundle = service.latest
+        if bundle.model_version == "empty":
+            return None
+        return bundle
+
+    def _forecast_nwp_lookups(self) -> dict[str, Callable[[datetime], float]]:
+        return {
+            "ghi": lambda ts: self._forecast_weather_value("ghi", ts, 0.0),
+            "temp_air": lambda ts: self._forecast_weather_value("temp_air", ts, 20.0),
+            "wind_speed": lambda ts: self._forecast_weather_value("wind_speed", ts, 0.0),
+        }
+
+    def _load_forecast_live_frames(self) -> None:
+        """Fetch pv/wind-site hourly weather covering ~now±2d for live lookups.
+
+        load_real_market_data() ends yesterday by design (fully archived), so on its
+        own every live-timestamp lookup would miss. Recording those misses as 0.0
+        observations is what poisoned the online models (temp_air locked to 0 with a
+        -20 5m residual, wind_speed/ghi flat 0) — this frame closes the gap.
+        """
+        from datetime import date, timedelta
+
+        from eflux.data.weather import fetch_hourly_sync
+
+        settings = get_settings()
+        start = date.today() - timedelta(days=2)
+        end = date.today() + timedelta(days=2)
+        self._forecast_live_weather = fetch_hourly_sync(
+            settings.site_default_lat, settings.site_default_lon, start, end
+        )
+        self._forecast_live_wind = fetch_hourly_sync(
+            settings.site_wind_lat, settings.site_wind_lon, start, end
+        )
+
+    @staticmethod
+    def _hourly_frame_value(frame: object, col: str, ts: datetime) -> float | None:
+        """Exact-hour lookup in an Open-Meteo hourly DataFrame; None when absent."""
+        if frame is None or getattr(frame, "empty", True) or col not in getattr(frame, "columns", []):
+            return None
+        target = ts.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+        try:
+            if target in frame.index:  # type: ignore[attr-defined]
+                value = float(frame.loc[target, col])  # type: ignore[attr-defined]
+                return value if value == value else None
+        except Exception:
+            return None
+        return None
+
+    def _forecast_weather_lookup(self, name: str, ts: datetime) -> float | None:
+        """Realized/NWP weather at `ts`, or None when no data source covers it."""
+        frame = self._forecast_live_wind if name == "wind_speed" else self._forecast_live_weather
+        value = self._hourly_frame_value(frame, name, ts)
+        if value is not None:
+            return value
+        data = self._forecast_real_data
+        if data is None:
+            return None
+        nan = float("nan")
+        if name == "ghi":
+            value = data.ghi_at(ts, nan)
+        elif name == "wind_speed":
+            value = data.wind_speed_at(ts, nan)
+        elif name == "temp_air":
+            value = data._weather_field(data.weather, "temp_air", ts, nan)
+        else:
+            return None
+        return value if value == value else None
+
+    def _forecast_weather_value(self, name: str, ts: datetime, default: float) -> float:
+        value = self._forecast_weather_lookup(name, ts)
+        return default if value is None else value
+
+    def _forecast_state_path(self) -> Path:
+        from eflux.config import PROJECT_ROOT
+
+        path = Path(get_settings().forecast_state_dir)
+        if not path.is_absolute():
+            path = PROJECT_ROOT / path
+        return path / "state.json"
+
+    def _save_forecast_state(self) -> None:
+        service = self.forecast_service
+        if service is None or service.observation_count() == 0:
+            return
+        try:
+            state_path = self._forecast_state_path()
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            service.save(state_path)
+        except Exception:
+            log.exception("Forecast state save failed")
 
     async def _shutdown_reflections(self) -> None:
         """Cancel in-flight LLM guidance/reflection tasks and close the shared client.
@@ -1218,6 +1545,7 @@ class Simulator:
             tick_duration_h=tick_h,
             open_orders_net_kwh=open_orders_net_kwh,
             risk_rejections_total=float(self.risk_rejections_by_vpp.get(vpp.vpp_id, 0)),
+            forecast=self._context_forecast(),
         )
         self.decide_ticks_by_vpp[vpp.vpp_id] = self.decide_ticks_by_vpp.get(vpp.vpp_id, 0) + 1
         intents = vpp.agent.decide(ctx)

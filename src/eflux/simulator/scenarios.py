@@ -24,6 +24,7 @@ from eflux.agents.gd_agent import GDAgent
 from eflux.agents.hybrid import HybridPolicyAgent, StrategyAgent
 from eflux.agents.reflective.pool import SharedLLM
 from eflux.agents.reflective.strategist import LLMStrategist
+from eflux.agents.character import derive_character
 from eflux.agents.strategy.policy import BaselinePolicy, StrategyPolicy
 from eflux.agents.truthful import TruthfulAgent
 from eflux.agents.zip_agent import ZIPAgent
@@ -252,14 +253,20 @@ def load_default_scenario(sim: Simulator) -> None:
             if spec.agent == "strategy" and spec.executor is not None:
                 agent_params = dict(spec.agent_params)
                 agent_params.setdefault("price_ref", _ppo_price_ref())
+                agent_params.setdefault("use_forecast", True)
                 agent_params["policy"] = _build_executor(
                     spec.name, spec.executor, seed=seed, auto_update=True
                 )
             else:
                 agent_params = _diversify_cost(spec, seed, settings.price_ref_jitter_frac, factory)
+                if "use_forecast" in factory.__dataclass_fields__:
+                    agent_params.setdefault("use_forecast", True)
+            params = _build_params(spec, use_real_weather)
+            if settings.agent_character_enabled and "character" in factory.__dataclass_fields__:
+                agent_params.setdefault("character", derive_character(params))
             sim.add_builtin_vpp(
                 name=spec.name,
-                params=_build_params(spec, use_real_weather),
+                params=params,
                 agent=factory(**agent_params),
                 seed=seed,
             )
@@ -381,6 +388,10 @@ def _add_hybrid_vpp(
     seed = spec.seed if spec.seed is not None else default_seed
     agent_params = dict(spec.agent_params)
     agent_params.setdefault("price_ref", _ppo_price_ref())  # match the PPO normalization scale
+    agent_params.setdefault("use_forecast", True)
+    hybrid_params = _build_params(spec, use_real_weather)
+    if settings.agent_character_enabled:
+        agent_params.setdefault("character", derive_character(hybrid_params))
     executor = (
         executor_override
         if executor_override is not None
@@ -398,7 +409,7 @@ def _add_hybrid_vpp(
     )
     vpp = sim.add_builtin_vpp(
         name=spec.name,
-        params=_build_params(spec, use_real_weather),
+        params=hybrid_params,
         agent=agent,
         seed=seed,
         strategy=strategy_label
@@ -519,7 +530,7 @@ def provision_managed_vpp(
                 n_managed=existing + 1,
                 owner_id=owner_id,
                 model=model,
-                executor_override=BaselinePolicy(baseline),
+                executor_override=BaselinePolicy(baseline, use_forecast=True),
                 algorithm=algorithm,
                 strategy_label=f"LLM + {algorithm.upper()} (managed)",
             )
@@ -541,6 +552,11 @@ def provision_managed_vpp(
     agent_seed = spec.seed if spec.seed is not None else 42
     if algorithm == "ppo":
         params_for_agent = _managed_agent_params(name, agent_params, "ppo")
+        params_for_agent.setdefault("use_forecast", True)
+        if get_settings().agent_character_enabled:
+            params_for_agent.setdefault(
+                "character", derive_character(_build_params(spec, _real_pv_available()))
+            )
         params_for_agent["policy"] = _build_executor(
             name, spec.executor, seed=agent_seed, auto_update=True
         )
@@ -662,6 +678,9 @@ def _add_mirror_vpp(
     # the PPO normalization scale so the twin's obs match its checkpoint.
     agent_params = dict(spec.agent_params)
     agent_params.setdefault("price_ref", _ppo_price_ref())
+    agent_params.setdefault("use_forecast", True)
+    if get_settings().agent_character_enabled:
+        agent_params.setdefault("character", derive_character(_build_params(spec, use_real_weather)))
     agent = StrategyAgent(**agent_params, policy=policy)
     sim.add_builtin_vpp(
         name=name,

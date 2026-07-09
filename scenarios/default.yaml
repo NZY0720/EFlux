@@ -169,7 +169,7 @@ vpps:
     params: { pv_kw_peak: 5.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 2.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v3.pt }
     mirror: true
 
   - name: llm-arb-aggressive
@@ -178,7 +178,7 @@ vpps:
     params: { pv_kw_peak: 2.0, battery_kwh: 30.0, battery_kw_max: 8.0, load_kw_base: 0.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v3.pt }
     mirror: true
     persona:
       name: aggressive-arbitrageur
@@ -195,7 +195,7 @@ vpps:
     seed: 79
     params: { pv_kw_peak: 0.0, wind_kw_rated: 10.0, wind_mean_speed: 9.0,
               battery_kwh: 8.0, battery_kw_max: 3.0, load_kw_base: 0.4, markup_floor: 0.4 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v3.pt }
     mirror: true
     persona:
       name: conservative-wind-farmer
@@ -212,7 +212,7 @@ vpps:
     params: { pv_kw_peak: 0.0, battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 6.0,
               load_profile: commercial, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v3.pt }
     mirror: true
     persona:
       name: cost-minimizing-buyer
@@ -229,7 +229,7 @@ vpps:
     params: { pv_kw_peak: 9.0, battery_kwh: 18.0, battery_kw_max: 5.0, load_kw_base: 1.5,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v3.pt }
     mirror: true
     persona:
       name: solar-prosumer
@@ -245,7 +245,7 @@ vpps:
     params: { pv_kw_peak: 3.0, battery_kwh: 22.0, battery_kw_max: 6.0, load_kw_base: 3.0,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v3.pt }
     mirror: true
     persona:
       name: balanced-market-maker
@@ -266,25 +266,25 @@ vpps:
     params: { pv_kw_peak: 8.0, battery_kwh: 15.0, battery_kw_max: 4.0, load_kw_base: 4.0,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v3.pt }
   - name: ppo-primitive-31
     agent: strategy
     seed: 89
     params: { pv_kw_peak: 4.0, battery_kwh: 20.0, battery_kw_max: 6.0, load_kw_base: 6.0,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v3.pt }
   - name: ppo-primitive-32
     agent: strategy
     seed: 90
     params: { pv_kw_peak: 2.0, battery_kwh: 10.0, battery_kw_max: 3.0, load_kw_base: 3.0,
               markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v3.pt }
   - name: ppo-primitive-33
     agent: strategy
     seed: 91
     params: { pv_kw_peak: 0.0, wind_kw_rated: 8.0, wind_mean_speed: 8.5,
               battery_kwh: 16.0, battery_kw_max: 5.0, load_kw_base: 1.0, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v3.pt }

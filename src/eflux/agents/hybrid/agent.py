@@ -14,11 +14,17 @@ dataclass with a `price_ref` field, so the scenario loader's cost diversificatio
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal
 
 from eflux.agents.base import AgentContext, BaseAgent, OrderIntent
-from eflux.agents.reflective.strategist import Strategist, StrategyGuidance, apply_guidance
+from eflux.agents.character import Character, endowment_summary
+from eflux.agents.reflective.strategist import (
+    Strategist,
+    StrategyGuidance,
+    apply_guidance,
+    compact_forecast_for_strategist,
+)
 from eflux.agents.strategy import OrderProgramCompiler
 from eflux.agents.strategy.policy import ScriptedStrategyPolicy, StrategyPolicy
 from eflux.agents.truthful import TruthfulAgent
@@ -31,8 +37,11 @@ class StrategyAgent(BaseAgent):
     min_qty: Decimal = Decimal("0.01")
     demand_beta: float = 0.0
     price_cap_mult: float = 1.5
+    use_forecast: bool = False
     # Pluggable tactical policy (the PPO/LLM seam). None → scripted baseline.
     policy: StrategyPolicy | None = None
+    # Endowment-driven personality; NEUTRAL default is a strict identity.
+    character: Character = field(default_factory=Character)
 
     def __post_init__(self) -> None:
         self._oracle = TruthfulValuationOracle(
@@ -40,12 +49,15 @@ class StrategyAgent(BaseAgent):
             demand_beta=self.demand_beta,
             price_cap_mult=self.price_cap_mult,
         )
-        self._policy: StrategyPolicy = self.policy or ScriptedStrategyPolicy(min_qty=float(self.min_qty))
+        self._policy: StrategyPolicy = self.policy or ScriptedStrategyPolicy(
+            min_qty=float(self.min_qty), use_forecast=self.use_forecast
+        )
         self._compiler = OrderProgramCompiler(min_qty=self.min_qty)
 
     def decide(self, ctx: AgentContext) -> list[OrderIntent]:
         valuation = self._oracle.estimate(ctx)
         action = self._policy.select_action(ctx, valuation)
+        action = self.character.apply(action)
         compiled = self._compiler.compile(ctx, action, valuation)
         # The scripted policy emits no cancel/replace intents; those flow once a
         # repricing policy (CANCEL_REPRICE) is wired through the runner.
@@ -68,6 +80,7 @@ class HybridPolicyAgent(BaseAgent):
     min_qty: Decimal = Decimal("0.01")
     demand_beta: float = 0.0
     price_cap_mult: float = 1.5
+    use_forecast: bool = False
     executor: StrategyPolicy | None = None  # PPO / BC / scripted (default)
     strategist: Strategist | None = None  # slow LLM guidance (off the tick path)
     fallback: BaseAgent | None = None  # safe action when the executor is fully vetoed
@@ -75,6 +88,8 @@ class HybridPolicyAgent(BaseAgent):
     refresh_every_n_ticks: int = 60  # strategist re-query cadence
     refresh_offset_ticks: int = 0  # stagger LLM calls across a managed fleet
     persona_prompt: str | None = None  # audit metadata copied from AgentSpec.persona
+    # Endowment-driven personality; NEUTRAL default is a strict identity.
+    character: Character = field(default_factory=Character)
 
     def __post_init__(self) -> None:
         allowed_fallback_policies = {"truthful", "hold", "noop"}
@@ -84,7 +99,9 @@ class HybridPolicyAgent(BaseAgent):
         self._oracle = TruthfulValuationOracle(
             price_ref=self.price_ref, demand_beta=self.demand_beta, price_cap_mult=self.price_cap_mult
         )
-        self._executor: StrategyPolicy = self.executor or ScriptedStrategyPolicy(min_qty=float(self.min_qty))
+        self._executor: StrategyPolicy = self.executor or ScriptedStrategyPolicy(
+            min_qty=float(self.min_qty), use_forecast=self.use_forecast
+        )
         self._compiler = OrderProgramCompiler(min_qty=self.min_qty)
         # The runner's gate-fallback hook (M2) reads .risk_fallback.
         self.risk_fallback: BaseAgent | None = self.fallback
@@ -121,6 +138,7 @@ class HybridPolicyAgent(BaseAgent):
                 self._guidance_changed += 1
             if action.mode != pre.mode:
                 self._mode_overrides += 1
+        action = self.character.apply(action)
         compiled = self._compiler.compile(ctx, action, valuation)
         self._maybe_online_update(ctx)
         return compiled.order_intents
@@ -214,6 +232,9 @@ class HybridPolicyAgent(BaseAgent):
                 grid_import_price=float(grid.import_price) if grid is not None else None,
                 grid_export_price=float(grid.export_price) if grid is not None else None,
                 grid_status=grid.status if grid is not None else None,
+                forecast=compact_forecast_for_strategist(ctx.forecast),
+                endowment=endowment_summary(ctx.params),
+                character=self.character.to_public(),
             )
         )
 

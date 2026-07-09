@@ -27,6 +27,22 @@ from eflux.agents.base import AgentContext
 from eflux.agents.valuation.schema import ValuationSignal
 
 
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
+
+
+def _forecast_price_series(ctx: AgentContext):
+    forecast = ctx.forecast
+    # A never-refreshed bundle (model_version "empty") is all zeros; reading it as a
+    # real price signal turns the trend hard negative and stalls trading. Treat it
+    # as "no forecast" so agents fall back to neutral-trend behaviour.
+    if forecast is None or getattr(forecast, "model_version", "") == "empty":
+        return None
+    if ctx.market.market_mode == "realprice":
+        return getattr(forecast, "price_real", None)
+    return getattr(forecast, "price_p2p", None) or getattr(forecast, "price_real", None)
+
+
 @dataclass
 class TruthfulValuationOracle:
     price_ref: Decimal = Decimal("50.0")
@@ -123,6 +139,25 @@ class TruthfulValuationOracle:
                 surplus_kwh = 0.0  # metered capacity already on the book between windows
 
         soc_frac = ctx.battery.soc_frac
+        expected_ref_1h: float | None = None
+        expected_ref_12h: float | None = None
+        price_trend = 0.0
+        series = _forecast_price_series(ctx)
+        if series is not None:
+            try:
+                expected_ref_1h = float(series.by_horizon("1h").value)
+                expected_ref_12h = float(series.by_horizon("12h").value)
+            except (AttributeError, KeyError, TypeError, ValueError):
+                expected_ref_1h = None
+                expected_ref_12h = None
+            if expected_ref_1h is not None:
+                current_ref = 0.5 * (battery_sell_price + battery_buy_price)
+                eps = 1.0e-9
+                price_trend = _clamp(
+                    (expected_ref_1h - current_ref) / max(current_ref, eps),
+                    -1.0,
+                    1.0,
+                )
         return ValuationSignal(
             fair_buy_price=fair_buy_price,
             fair_sell_price=fair_sell_price,
@@ -134,4 +169,7 @@ class TruthfulValuationOracle:
             soc_frac=soc_frac,
             soc_pressure=soc_frac - self.soc_neutral,
             supply_dispatched=supply_dispatched,
+            expected_ref_1h=expected_ref_1h,
+            expected_ref_12h=expected_ref_12h,
+            price_trend=price_trend,
         )

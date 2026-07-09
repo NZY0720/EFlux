@@ -14,6 +14,7 @@ battery degradation, invalid-action, excessive-order, and SOC-target penalties.
 from __future__ import annotations
 
 import random
+import math
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import ClassVar
@@ -25,11 +26,16 @@ from gymnasium import spaces
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.hybrid import RiskGate
 from eflux.agents.ppo.primitive_encoding import (
+    ACTION_PROFILE_P2P,
     ENCODING_V1,
-    OBS_DIM,
+    OBS_V1,
+    OBS_V3,
+    action_profile_for_action_dim,
+    action_profile_for_market,
     decode_action,
     encode_obs,
     encoding_version_for_action_dim,
+    obs_dim_for,
     price_ref_scale,
 )
 from eflux.agents.ppo.primitive_encoding import (
@@ -37,6 +43,7 @@ from eflux.agents.ppo.primitive_encoding import (
 )
 from eflux.agents.strategy import OrderProgramCompiler
 from eflux.agents.valuation import TruthfulValuationOracle
+from eflux.forecasting.schema import ForecastBundle, ForecastPoint, TargetForecast
 from eflux.market.matching_engine import MatchingEngine
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
@@ -72,17 +79,32 @@ class VPPPrimitiveEnv(gym.Env):
         config: dict | None = None,
         *,
         encoding_version: int = ENCODING_V1,
+        obs_version: int = OBS_V1,
         action_dim: int | None = None,
+        action_profile: str | None = None,
     ) -> None:
         super().__init__()
         cfg = config or {}
+        self._market_mode = str(cfg.get("market_mode", "p2p"))
         if "encoding_version" in cfg:
             encoding_version = int(cfg["encoding_version"])
+        if "obs_version" in cfg:
+            obs_version = int(cfg["obs_version"])
         if "action_dim" in cfg:
             action_dim = int(cfg["action_dim"])
-        self.action_dim = int(action_dim) if action_dim is not None else encoding_action_dim(encoding_version)
+        if "action_profile" in cfg:
+            action_profile = str(cfg["action_profile"])
+        if action_dim is not None:
+            self.action_dim = int(action_dim)
+            self.action_profile = action_profile or action_profile_for_action_dim(self.action_dim)
+        else:
+            self.action_profile = action_profile or action_profile_for_market(self._market_mode) or ACTION_PROFILE_P2P
+            self.action_dim = encoding_action_dim(encoding_version, action_profile=self.action_profile)
         self.encoding_version = encoding_version_for_action_dim(self.action_dim)
-        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(OBS_DIM,), dtype=np.float32)
+        self.obs_version = int(obs_version)
+        self.observation_space = spaces.Box(
+            low=-np.inf, high=np.inf, shape=(obs_dim_for(self.obs_version),), dtype=np.float32
+        )
         # Loosely-bounded continuous action; decode_action() squashes/argmaxes it.
         self.action_space = spaces.Box(low=-5.0, high=5.0, shape=(self.action_dim,), dtype=np.float32)
         self._episode_ticks = int(cfg.get("episode_ticks", EPISODE_TICKS))
@@ -99,14 +121,15 @@ class VPPPrimitiveEnv(gym.Env):
         # "realprice" = a deep grid book at lmp ± fee (the agent is a pure price-taker, exactly
         # as in the live realprice market) → distinct obs/reward distribution → a per-market
         # checkpoint. Defaults to p2p for back-compat.
-        self._market_mode = str(cfg.get("market_mode", "p2p"))
         self._txn_fee = float(cfg.get("transaction_fee", 2.0))
+        self._forecast_noise_frac = float(cfg.get("forecast_noise_frac", 0.1))
         self._oracle = TruthfulValuationOracle(price_ref=Decimal(str(price_ref_scale())), demand_beta=0.5)
         self._compiler = OrderProgramCompiler()
         self._risk_gate = RiskGate()
         # Late-initialized in reset().
         self._rng: random.Random
         self._np_rng: np.random.Generator
+        self._forecast_rng: np.random.Generator
         self._engine: MatchingEngine
         self._params: VPPParams
         self._state: VPPState
@@ -122,6 +145,7 @@ class VPPPrimitiveEnv(gym.Env):
         rseed = seed if seed is not None else (self._seed if self._seed is not None else random.randint(0, 1 << 30))
         self._rng = random.Random(rseed)
         self._np_rng = np.random.default_rng(rseed)
+        self._forecast_rng = np.random.default_rng(rseed + 0xF03ECA57)
         self._rseed = rseed
 
         self._params = self._rng.choice(self._params_pool)
@@ -152,7 +176,7 @@ class VPPPrimitiveEnv(gym.Env):
 
         ctx = self._make_ctx()
         valuation = self._oracle.estimate(ctx)
-        strategy_action = decode_action(action, version=self.encoding_version)
+        strategy_action = decode_action(action, version=self.encoding_version, action_profile=self.action_profile)
         compiled = self._compiler.compile(ctx, strategy_action, valuation)
         decision = self._risk_gate.validate(
             compiled.order_intents,
@@ -200,7 +224,12 @@ class VPPPrimitiveEnv(gym.Env):
     # -- internals -----------------------------------------------------------
 
     def _make_ctx(self) -> AgentContext:
-        market = MarketSnapshot.from_engine(self._sim_ts, self._engine.snapshot(depth_levels=1))
+        market = MarketSnapshot.from_engine(
+            self._sim_ts,
+            self._engine.snapshot(depth_levels=1),
+            market_mode=self._market_mode,
+            anchor_to_external=False,
+        )
         return AgentContext(
             vpp_id=VPP_ID,
             params=self._params,
@@ -212,6 +241,7 @@ class VPPPrimitiveEnv(gym.Env):
             rng=self._rng,
             tick_duration_h=TICK_DURATION_H,
             open_orders_net_kwh=self._open_orders_net(),
+            forecast=self._make_forecast() if self.obs_version == OBS_V3 else None,
         )
 
     def _submit(self, intent) -> float:
@@ -367,8 +397,68 @@ class VPPPrimitiveEnv(gym.Env):
             except ValueError:
                 continue
 
+    def _future_price_ref(self, ts: datetime) -> float:
+        """Forecast future price from data the env already owns.
+
+        Real-data episodes use the indexed historical LMP at the future hour. Synthetic
+        episodes use the same mean-reverting process as `_seed_counterparty`, but take its
+        conditional expectation from the current reference price instead of consuming random
+        shocks, so V3 does not alter the episode RNG stream.
+        """
+        if self._real_data is not None:
+            return max(5.0, self._real_data.price_at(ts, default=self._last_price_ref))
+        hours = max(0, int(round((ts - self._sim_ts).total_seconds() / 3600.0)))
+        ref = self._last_price_ref
+        target = price_ref_scale()
+        for _ in range(hours):
+            ref = max(5.0, ref + 0.05 * (target - ref))
+        return ref
+
+    def _future_ghi(self, ts: datetime) -> float:
+        """Forecast future irradiance from real weather when available, else the synthetic
+        clear-sky diurnal curve without the PV noise term."""
+        if self._real_data is not None:
+            return max(0.0, self._real_data.ghi_at(ts, default=0.0))
+        hour = ts.hour + ts.minute / 60.0
+        sun = math.sin(math.pi * (hour - 6) / 12) if 6 <= hour <= 18 else 0.0
+        return max(0.0, 1000.0 * sun)
+
+    def _forecast_noise(self, value: float) -> float:
+        frac = max(0.0, self._forecast_noise_frac)
+        if frac <= 0.0:
+            return value
+        return value * (1.0 + float(self._forecast_rng.normal(0.0, frac)))
+
+    def _target_forecast(self, h1h: float, h12h: float) -> TargetForecast:
+        return TargetForecast(
+            h5m=ForecastPoint(float(h1h), 0.0),
+            h1h=ForecastPoint(float(h1h), 0.0),
+            h12h=ForecastPoint(float(h12h), 0.0),
+        )
+
+    def _make_forecast(self) -> ForecastBundle:
+        ts_1h = self._sim_ts + timedelta(hours=1)
+        ts_12h = self._sim_ts + timedelta(hours=12)
+        real_1h = max(0.0, self._forecast_noise(self._future_price_ref(ts_1h)))
+        real_12h = max(0.0, self._forecast_noise(self._future_price_ref(ts_12h)))
+        p2p_1h = max(0.0, self._forecast_noise(self._future_price_ref(ts_1h)))
+        p2p_12h = max(0.0, self._forecast_noise(self._future_price_ref(ts_12h)))
+        ghi_1h = max(0.0, self._forecast_noise(self._future_ghi(ts_1h)))
+        ghi_12h = max(0.0, self._forecast_noise(self._future_ghi(ts_12h)))
+        zeros = self._target_forecast(0.0, 0.0)
+        return ForecastBundle(
+            as_of=self._sim_ts,
+            model_version="primitive_env_known_future_v1",
+            price_real=self._target_forecast(real_1h, real_12h),
+            price_p2p=self._target_forecast(p2p_1h, p2p_12h),
+            ghi=self._target_forecast(ghi_1h, ghi_12h),
+            temp_air=zeros,
+            wind_speed=zeros,
+        )
+
     def _obs(self) -> np.ndarray:
-        return encode_obs(self._make_ctx(), self._oracle.estimate(self._make_ctx()))
+        ctx = self._make_ctx()
+        return encode_obs(ctx, self._oracle.estimate(ctx), obs_version=self.obs_version)
 
     def render(self):
         return None

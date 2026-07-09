@@ -28,6 +28,7 @@ from eflux.agents.strategy.schema import (
 from eflux.agents.valuation import ValuationSignal
 
 QUANT = Decimal("0.0001")
+GRID_PRICE_MARGIN = 0.05
 
 
 def _q(x: float | Decimal) -> Decimal:
@@ -78,12 +79,80 @@ def _imbalance_qty_fraction(action: StrategyAction) -> float:
     return min(1.0, max(0.0, action.qty_fraction))
 
 
+def _positive(value: object) -> float | None:
+    try:
+        out = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    return out if out > 0.0 else None
+
+
+def _market_mid(ctx: AgentContext) -> float | None:
+    return _positive(ctx.market.mid_price) or _positive(ctx.market.last_price)
+
+
+def _current_grid_buy_price(ctx: AgentContext, valuation: ValuationSignal) -> float | None:
+    quote = ctx.market.external_market
+    return (
+        _positive(getattr(quote, "import_price", None))
+        or _positive(valuation.fair_buy_price)
+        or _market_mid(ctx)
+    )
+
+
+def _current_grid_sell_price(ctx: AgentContext, valuation: ValuationSignal) -> float | None:
+    quote = ctx.market.external_market
+    return (
+        _positive(getattr(quote, "export_price", None))
+        or _positive(valuation.fair_sell_price)
+        or _market_mid(ctx)
+    )
+
+
+def _forecast_reference(ctx: AgentContext, valuation: ValuationSignal) -> float | None:
+    return (
+        _positive(valuation.expected_ref_12h)
+        or _positive(valuation.expected_ref_1h)
+        or _positive(valuation.marginal_battery_value)
+        or _market_mid(ctx)
+        or _positive(
+            0.5
+            * (
+                float(valuation.fair_buy_price or 0.0)
+                + float(valuation.fair_sell_price or 0.0)
+            )
+        )
+    )
+
+
 def build_program(action: StrategyAction, ctx: AgentContext, valuation: ValuationSignal) -> OrderProgram:
     mode = action.mode
     market = ctx.market
 
-    if mode in (StrategyMode.NOOP, StrategyMode.HOLD_ENERGY):
+    if mode in (StrategyMode.NOOP, StrategyMode.HOLD_ENERGY, StrategyMode.WAIT_FOR_BETTER):
         return OrderProgram(mode=mode, orders=[])
+
+    if mode == StrategyMode.GRID_CHARGE_ON_DIP:
+        if market.market_mode != "realprice":
+            return OrderProgram(mode=mode, orders=[])
+        current = _current_grid_buy_price(ctx, valuation)
+        reference = _forecast_reference(ctx, valuation)
+        if current is None or reference is None or current >= reference * (1.0 - GRID_PRICE_MARGIN):
+            return OrderProgram(mode=mode, orders=[])
+        qty = _battery_qty_kwh(ctx, valuation, action, "buy")
+        price = max(_anchor(current, action), _q(current))
+        return OrderProgram(mode, orders=_one("buy", price, qty, action, dispatched=True))
+
+    if mode == StrategyMode.GRID_DISCHARGE_ON_PEAK:
+        if market.market_mode != "realprice":
+            return OrderProgram(mode=mode, orders=[])
+        current = _current_grid_sell_price(ctx, valuation)
+        reference = _forecast_reference(ctx, valuation)
+        if current is None or reference is None or current <= reference * (1.0 + GRID_PRICE_MARGIN):
+            return OrderProgram(mode=mode, orders=[])
+        qty = _battery_qty_kwh(ctx, valuation, action, "sell")
+        price = min(_anchor(current, action), _q(current))
+        return OrderProgram(mode, orders=_one("sell", price, qty, action, dispatched=True))
 
     if mode == StrategyMode.LIQUIDATE_SURPLUS:
         qty = valuation.surplus_kwh * _imbalance_qty_fraction(action)

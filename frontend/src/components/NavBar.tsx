@@ -1,6 +1,7 @@
 import { Link, useLocation } from "react-router-dom";
 import {
   Activity,
+  ChartNoAxesCombined,
   FlaskConical,
   Layers3,
   LoaderCircle,
@@ -76,6 +77,7 @@ export default function NavBar() {
             {link("/leaderboard", "Leaderboard", Trophy)}
             {link("/arena", "Arena", Swords)}
             {link("/benchmarks", "Benchmarks", FlaskConical)}
+            {link("/forecasts", "Forecasts", ChartNoAxesCombined)}
             {link("/vpps", "My VPPs", Layers3)}
           </div>
         </div>
