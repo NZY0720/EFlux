@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta
 
 import numpy as np
+import pytest
 
 from eflux.forecasting.models import HorizonModel, SeasonalPersistence, WeatherForecaster
 from eflux.forecasting.schema import HORIZONS, HORIZON_TIMEDELTAS, ForecastBundle
@@ -168,11 +169,12 @@ def test_feature_lag_lookback_is_older_for_12h_than_5m():
     five_minute_features = model._features(origin, HORIZON_TIMEDELTAS["5m"])
     twelve_hour_features = model._features(origin, HORIZON_TIMEDELTAS["12h"])
 
-    assert five_minute_features.shape == (8,)
-    assert twelve_hour_features.shape == (8,)
-    assert five_minute_features[6] == float(2 * 24 * 60 - 5)
-    assert twelve_hour_features[6] == float(24 * 60)
-    assert twelve_hour_features[6] < five_minute_features[6]
+    # v2 layout: [1, hour×4, dow×2, last, lag, trend, ramp] — lag sits at index 8.
+    assert five_minute_features.shape == (11,)
+    assert twelve_hour_features.shape == (11,)
+    assert five_minute_features[8] == float(2 * 24 * 60 - 5)
+    assert twelve_hour_features[8] == float(24 * 60)
+    assert twelve_hour_features[8] < five_minute_features[8]
 
 
 def test_forecast_bundle_empty_is_neutral_and_json_serializable():
@@ -238,3 +240,73 @@ def test_cached_price_windows_parses_sanitized_names_and_sorts(tmp_path):
     ]
     assert cached_price_windows(node="OTHER_NODE", cache_dir=tmp_path) == []
     assert cached_price_windows(node=node, cache_dir=tmp_path / "missing") == []
+
+
+def test_state_upgrade_replays_legacy_feature_dim():
+    from eflux.forecasting.models import FEATURE_DIM
+
+    model = HorizonModel()
+    start = datetime(2026, 5, 1, 0, 0)
+    for hour in range(72):
+        model.observe(start + timedelta(hours=hour), 40.0 + (hour % 24))
+    state = model.to_state()
+    # Rewrite the linear states as legacy 8-dim: from_state must replay instead.
+    for lin in state["linear"].values():
+        lin["n_features"] = 8
+        lin["coef"] = [0.0] * 8
+        lin["P"] = [[float(i == j) for j in range(8)] for i in range(8)]
+
+    upgraded = HorizonModel.from_state(state)
+
+    assert all(m.n_features == FEATURE_DIM for m in upgraded.linear.values())
+    assert all(m.n_updates > 0 for m in upgraded.linear.values())
+    points = upgraded.predict(start + timedelta(hours=72))
+    for horizon in HORIZONS:
+        assert np.isfinite(points[horizon].value)
+
+
+def test_price_anchor_blends_dam_base_with_online_residual():
+    service = ForecastService(
+        nwp={"price_real": lambda ts: 42.0, "price_p2p": lambda ts: 42.0}
+    )
+    assert isinstance(service.models["price_real"], WeatherForecaster)
+    assert isinstance(service.models["price_p2p"], WeatherForecaster)
+
+    start = datetime(2026, 6, 1, 0, 0)
+    for i in range(12):
+        service.observe(start + timedelta(minutes=i), price_real=45.0, price_p2p=45.0)
+    bundle = service.refresh(start + timedelta(minutes=12))
+
+    # 1h/12h = DAM anchor (42) + converged realized-vs-anchor residual (+3).
+    assert bundle.price_real.h1h.value == pytest.approx(45.0, abs=0.5)
+    assert bundle.price_real.h12h.value == pytest.approx(45.0, abs=0.5)
+    assert bundle.price_p2p.h1h.value == pytest.approx(45.0, abs=0.5)
+
+
+def test_load_upgrades_legacy_price_state_when_anchor_available(tmp_path):
+    service = ForecastService()  # no anchor: plain HorizonModel price models
+    start = datetime(2026, 6, 1, 0, 0)
+    samples = [(start + timedelta(hours=i), 50.0 + (i % 5)) for i in range(48)]
+    service.warm_start(series={"price_real": samples, "price_p2p": samples})
+    path = tmp_path / "state.json"
+    service.save(path)
+
+    plain = ForecastService.load(path)
+    assert not isinstance(plain.models["price_real"], WeatherForecaster)
+
+    anchored = ForecastService.load(path, nwp={"price_real": lambda ts: 48.0})
+    model = anchored.models["price_real"]
+    assert isinstance(model, WeatherForecaster)
+    assert anchored.observation_count("price_real") == 48
+    assert anchored.is_warm
+    bundle = anchored.refresh(start + timedelta(hours=48))
+    assert np.isfinite(bundle.price_real.h1h.value)
+    # price_p2p had no lookup, so it stays un-anchored.
+    assert not isinstance(anchored.models["price_p2p"], WeatherForecaster)
+
+    # An anchored save round-trips through the anchored loader.
+    path2 = tmp_path / "state2.json"
+    anchored.save(path2)
+    again = ForecastService.load(path2, nwp={"price_real": lambda ts: 48.0})
+    assert isinstance(again.models["price_real"], WeatherForecaster)
+    assert again.observation_count("price_real") == 48

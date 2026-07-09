@@ -90,6 +90,7 @@ async def test_simulator_forecast_service_starts_and_refreshes(monkeypatch, tmp_
         raise RuntimeError("offline test")
 
     monkeypatch.setattr(Simulator, "_load_forecast_warmup_data", fail_warmup)
+    monkeypatch.setattr(Simulator, "_load_forecast_dam_prices", lambda self: None)
     sim = Simulator(bus=InMemoryBus())
     try:
         await sim.start()
@@ -165,6 +166,7 @@ async def test_bootstrap_falls_back_to_cached_window_when_fresh_fetch_thin(monke
         return RealMarketData(price=rich_price, weather=None, wind=None, start=start, end=start + timedelta(hours=200))
 
     monkeypatch.setattr(Simulator, "_load_forecast_live_frames", lambda self: None)
+    monkeypatch.setattr(Simulator, "_load_forecast_dam_prices", lambda self: None)
     monkeypatch.setattr(Simulator, "_load_forecast_warmup_data", thin_warmup)
     monkeypatch.setattr(Simulator, "_load_forecast_warmup_window", cached_window)
     monkeypatch.setattr(
@@ -203,6 +205,7 @@ async def test_bootstrap_rewarms_price_cold_restored_state(monkeypatch, tmp_path
         return RealMarketData(price=fresh_price, weather=None, wind=None, start=ts, end=ts + timedelta(hours=200))
 
     monkeypatch.setattr(Simulator, "_load_forecast_live_frames", lambda self: None)
+    monkeypatch.setattr(Simulator, "_load_forecast_dam_prices", lambda self: None)
     monkeypatch.setattr(Simulator, "_load_forecast_warmup_data", fresh_warmup)
 
     sim = Simulator(bus=InMemoryBus())
@@ -232,3 +235,15 @@ def test_latest_forecast_endpoint_reports_warm_flag():
     service.warm_start(series={"price_real": [(start, 50.0)], "price_p2p": [(start, 49.0)]})
 
     assert client.get("/forecasts/latest").json()["warm"] is True
+
+
+def test_context_forecast_hides_stale_restored_bundle():
+    sim = Simulator(bus=InMemoryBus())
+    service = ForecastService()
+    start = datetime(2026, 2, 1, 12, 0, tzinfo=UTC)
+    service.warm_start(series={"price_real": [(start, 50.0)], "price_p2p": [(start, 49.0)]})
+    service.refresh(start)  # months older than the live clock ⇒ stale
+    sim.forecast_service = service
+
+    assert service.is_warm
+    assert sim._context_forecast() is None

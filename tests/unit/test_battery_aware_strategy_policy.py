@@ -10,6 +10,7 @@ import pytest
 
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.strategy.policy import BatteryAwareStrategyPolicy
+from eflux.agents.strategy.primitives import build_program
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.agents.valuation import ValuationSignal
 from eflux.data.electricity_market import synthetic_quote
@@ -116,6 +117,57 @@ def test_balanced_fair_price_noops():
         _ctx(last=50.0), _valuation(soc=0.5, battery_buy=40.0, battery_sell=60.0)
     )
     assert action.mode is StrategyMode.NOOP
+
+
+def test_forecast_spread_charges_battery_only_vpp():
+    ctx = _ctx(last=50.0)
+    # battery_buy=41/sell=55 keeps the legacy band silent (50 > 41*1.2, 50 < 55);
+    # expected 70 clears both the 5% margin and the round-trip guard (70*41 > 50*55).
+    valuation = _valuation(soc=0.4, battery_buy=41.0, battery_sell=55.0, expected_1h=70.0)
+    action = BatteryAwareStrategyPolicy(use_forecast=True).select_action(ctx, valuation)
+    program = build_program(action, ctx, valuation)
+
+    assert action.mode is StrategyMode.BATTERY_ARBITRAGE
+    # The forecast tilt may push the bullish target above the 0.9 base.
+    assert action.soc_target >= 0.9
+    assert len(program.orders) == 1
+    assert program.orders[0].side == "buy"
+    assert program.orders[0].qty > 0
+
+
+def test_forecast_spread_discharges_high_soc_battery_only_vpp():
+    ctx = _ctx(last=50.0)
+    valuation = _valuation(soc=0.8, battery_buy=41.0, battery_sell=55.0, expected_1h=35.0)
+    action = BatteryAwareStrategyPolicy(use_forecast=True).select_action(ctx, valuation)
+    program = build_program(action, ctx, valuation)
+
+    assert action.mode is StrategyMode.BATTERY_ARBITRAGE
+    # The forecast tilt may push the bearish target below the 0.2 base.
+    assert action.soc_target <= 0.2
+    assert len(program.orders) == 1
+    assert program.orders[0].side == "sell"
+    assert program.orders[0].qty > 0
+
+
+def test_forecast_spread_inside_margin_falls_through_to_legacy_band():
+    action = BatteryAwareStrategyPolicy(use_forecast=True).select_action(
+        _ctx(last=50.0),
+        _valuation(soc=0.5, battery_buy=41.0, battery_sell=55.0, expected_1h=52.0),
+    )
+    assert action.mode is StrategyMode.NOOP
+
+
+def test_forecast_spread_disabled_or_missing_preserves_legacy_band_behavior():
+    ctx = _ctx(last=50.0)
+    valuation = _valuation(soc=0.5, battery_buy=41.0, battery_sell=55.0, expected_1h=70.0)
+
+    assert BatteryAwareStrategyPolicy(use_forecast=False).select_action(ctx, valuation).mode is StrategyMode.NOOP
+    assert (
+        BatteryAwareStrategyPolicy(use_forecast=True)
+        .select_action(ctx, _valuation(soc=0.5, battery_buy=41.0, battery_sell=55.0))
+        .mode
+        is StrategyMode.NOOP
+    )
 
 
 def test_realprice_low_grid_price_with_rising_forecast_charges_on_dip():

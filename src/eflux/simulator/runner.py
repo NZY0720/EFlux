@@ -13,7 +13,7 @@ import time
 from collections import deque
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
@@ -163,6 +163,11 @@ class Simulator:
         # vs the grid, no peer matching). Selected per launch via EFLUX_MARKET_MODE.
         self.market_mode: str = settings.market_mode
         self.order_ttl_sec: float = settings.order_ttl_sec
+        self.imbalance_settlement_enabled = settings.imbalance_settlement_enabled
+        self.imbalance_penalty_mult = settings.imbalance_penalty_mult
+        self.curtailment_price_per_kwh = settings.curtailment_price_per_kwh
+        self.physical_backstop_enabled = settings.physical_backstop_enabled
+        self.imbalance_totals_by_vpp: dict[int, dict[str, float]] = {}
         # Single hard-constraint authority every order (built-in, learned, fallback,
         # external) passes through before the engine — see agents/hybrid/risk.py.
         # The max-open-orders cap is derived from the order TTL: a VPP requotes its
@@ -197,6 +202,10 @@ class Simulator:
         # forecast-endpoint source or they would silently fall back to constants.
         self._forecast_live_weather: object | None = None  # pv site: ghi / temp_air
         self._forecast_live_wind: object | None = None  # wind site: wind_speed
+        # Published CAISO DAM hourly curve (pd.Series) anchoring the price forecasts,
+        # and the last realized prices as the anchor's persistence fallback.
+        self._forecast_dam_prices: object | None = None
+        self._forecast_last_price: dict[str, float] = {}
         # Background "renew PPOs" (retrain on latest real data + hot-reload) state.
         self._ppo_renew_task: asyncio.Task | None = None
         self._ppo_renew: PpoRenewStatus = {
@@ -843,6 +852,15 @@ class Simulator:
             log.exception(
                 "Live weather frames unavailable; forecast weather lookups fall back to archive"
             )
+        if settings.forecast_dam_anchor_enabled:
+            try:
+                await asyncio.wait_for(asyncio.to_thread(self._load_forecast_dam_prices), timeout)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception(
+                    "DAM anchor fetch failed; price anchors fall back to persistence"
+                )
         try:
             if state_path.exists():
                 try:
@@ -1003,10 +1021,16 @@ class Simulator:
         sim_ts = self.clock.now_sim()
         quote = self._external_market_quote
         last_price = self.engine.last_price
+        real_obs = float(quote.raw_lmp) if quote.is_real_price else None
+        p2p_obs = None if last_price is None else float(last_price)
+        if real_obs is not None:
+            self._forecast_last_price["price_real"] = real_obs
+        if p2p_obs is not None:
+            self._forecast_last_price["price_p2p"] = p2p_obs
         service.observe(
             sim_ts,
-            price_real=float(quote.raw_lmp) if quote.is_real_price else None,
-            price_p2p=None if last_price is None else float(last_price),
+            price_real=real_obs,
+            price_p2p=p2p_obs,
             # None (not a 0.0 default) when no data source covers sim_ts, so a data
             # gap is skipped instead of being learned as a realized zero.
             ghi=self._forecast_weather_lookup("ghi", sim_ts),
@@ -1033,14 +1057,97 @@ class Simulator:
         bundle = service.latest
         if bundle.model_version == "empty":
             return None
+        # A restored checkpoint carries the previous session's last bundle; hide
+        # it until the live refresh loop produces a current one.
+        if (self.clock.now_sim() - bundle.as_of).total_seconds() > 900.0:
+            return None
         return bundle
 
     def _forecast_nwp_lookups(self) -> dict[str, Callable[[datetime], float]]:
-        return {
+        lookups: dict[str, Callable[[datetime], float]] = {
             "ghi": lambda ts: self._forecast_weather_value("ghi", ts, 0.0),
             "temp_air": lambda ts: self._forecast_weather_value("temp_air", ts, 20.0),
             "wind_speed": lambda ts: self._forecast_weather_value("wind_speed", ts, 0.0),
         }
+        if get_settings().forecast_dam_anchor_enabled:
+            lookups["price_real"] = lambda ts: self._forecast_price_anchor(ts, "price_real")
+            lookups["price_p2p"] = lambda ts: self._forecast_price_anchor(ts, "price_p2p")
+        return lookups
+
+    def _load_forecast_dam_prices(self) -> None:
+        """Fetch the published CAISO DAM hourly curve covering ~now±2d.
+
+        Tomorrow's DAM publishes ~13:00 PT, so once fetched the anchor covers at
+        least now..+24h. Cached per (node, window) parquet under the training cache
+        with a `dam_` prefix (the warm-up fallback scanner only globs `lmp_`)."""
+        import pandas as pd
+
+        from eflux.config import PROJECT_ROOT
+
+        settings = get_settings()
+        node = settings.external_market_node
+        start_d = date.today() - timedelta(days=1)
+        end_d = date.today() + timedelta(days=2)
+        cache_dir = PROJECT_ROOT / "data" / "cache" / "training"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        safe = node.replace("/", "_")
+        cache = cache_dir / f"dam_{safe}_{start_d.isoformat()}_{end_d.isoformat()}.parquet"
+        if cache.exists():
+            series = pd.read_parquet(cache)["lmp"]
+        else:
+            start = datetime(start_d.year, start_d.month, start_d.day, tzinfo=UTC)
+            end = datetime(end_d.year, end_d.month, end_d.day, tzinfo=UTC)
+            rows = CaisoOasisClient().fetch_lmp_history_sync(node=node, start=start, end=end)
+            series = pd.Series(
+                {
+                    r.interval_start.astimezone(UTC).replace(minute=0, second=0, microsecond=0): float(r.price)
+                    for r in rows
+                }
+            ).sort_index()
+            # Normalize to a tz-aware DatetimeIndex so hour lookups behave the same
+            # as the parquet round-trip path.
+            series.index = pd.to_datetime(series.index, utc=True)
+            if len(series):
+                try:
+                    series.rename("lmp").to_frame().to_parquet(cache)
+                except Exception:
+                    log.exception("DAM anchor cache write failed: %s", cache)
+        if len(series):
+            self._forecast_dam_prices = series
+            log.info(
+                "Forecast DAM anchor loaded: %d hourly points %s..%s",
+                len(series),
+                series.index.min(),
+                series.index.max(),
+            )
+        else:
+            log.warning(
+                "Forecast DAM anchor unavailable (empty fetch); price anchors fall back to persistence"
+            )
+
+    def _forecast_price_anchor(self, ts: datetime, target: str) -> float:
+        """DAM price at ts's hour; stale-bounded asof; else last realized; else ref."""
+        series = self._forecast_dam_prices
+        if series is not None and len(series):  # type: ignore[arg-type]
+            hour = ts.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+            try:
+                if hour in series.index:  # type: ignore[attr-defined]
+                    return float(series.loc[hour])  # type: ignore[attr-defined]
+                past = series.loc[:hour]  # type: ignore[attr-defined]
+                if len(past) and (hour - past.index[-1]) <= timedelta(hours=26):
+                    return float(past.iloc[-1])
+            except Exception:
+                pass
+        last = self._forecast_last_price.get(target)
+        if last is not None:
+            return last
+        # The market's own last print beats a static constant as a persistence
+        # anchor (e.g. price_real in p2p mode, where the CAISO quote may be
+        # throttled and real prices are never observed).
+        engine_last = self.engine.last_price
+        if engine_last is not None:
+            return float(engine_last)
+        return float(get_settings().external_market_fallback_price)
 
     def _load_forecast_live_frames(self) -> None:
         """Fetch pv/wind-site hourly weather covering ~now±2d for live lookups.
@@ -1531,7 +1638,12 @@ class Simulator:
             vpp.battery.apply_kwh(-supplied)
             vpp.state.pending_net_kwh -= needed - supplied
         vpp.state.soc_kwh = vpp.battery.soc_kwh
-        vpp.state.pending_net_kwh = min(cap, max(-cap, vpp.state.pending_net_kwh))
+        unclamped_pending = vpp.state.pending_net_kwh
+        clamped_pending = min(cap, max(-cap, unclamped_pending))
+        overflow_kwh = unclamped_pending - clamped_pending
+        vpp.state.pending_net_kwh = clamped_pending
+        self._settle_imbalance_overflow(vpp, overflow_kwh)
+        self._submit_physical_backstop(vpp, sim_ts)
 
         ctx = AgentContext(
             vpp_id=vpp.vpp_id,
@@ -1550,6 +1662,92 @@ class Simulator:
         self.decide_ticks_by_vpp[vpp.vpp_id] = self.decide_ticks_by_vpp.get(vpp.vpp_id, 0) + 1
         intents = vpp.agent.decide(ctx)
         self._gate_and_submit(vpp, ctx, intents, sim_ts, open_order_count)
+
+    def _settle_imbalance_overflow(self, vpp: SimulatorVPP, overflow_kwh: float) -> None:
+        if not self.imbalance_settlement_enabled or abs(overflow_kwh) <= 1e-12:
+            return
+        totals = self.imbalance_totals_by_vpp.setdefault(
+            vpp.vpp_id,
+            {
+                "unserved_load_kwh": 0.0,
+                "spilled_generation_kwh": 0.0,
+                "settlement_cash": 0.0,
+            },
+        )
+        if overflow_kwh < 0.0:
+            unserved_kwh = -overflow_kwh
+            import_price = float(
+                getattr(self._external_market_quote, "import_price", self._external_fallback_price())
+            )
+            penalty_price = self.imbalance_penalty_mult * import_price
+            cash = unserved_kwh * penalty_price
+            vpp.state.pnl -= Decimal(str(cash))
+            totals["unserved_load_kwh"] += unserved_kwh
+            totals["settlement_cash"] -= cash
+            log.debug(
+                "VPP %s imbalance unserved %.6f kWh settled at %.6f",
+                vpp.vpp_id,
+                unserved_kwh,
+                penalty_price,
+            )
+        else:
+            spilled_kwh = overflow_kwh
+            cash = spilled_kwh * self.curtailment_price_per_kwh
+            vpp.state.pnl += Decimal(str(cash))
+            totals["spilled_generation_kwh"] += spilled_kwh
+            totals["settlement_cash"] += cash
+            log.debug(
+                "VPP %s imbalance spill %.6f kWh settled at %.6f",
+                vpp.vpp_id,
+                spilled_kwh,
+                self.curtailment_price_per_kwh,
+            )
+
+    def _external_fallback_price(self) -> float:
+        return float(get_settings().external_market_fallback_price)
+
+    def _submit_physical_backstop(self, vpp: SimulatorVPP, sim_ts: datetime) -> None:
+        if (
+            self.market_mode != "realprice"
+            or not self.physical_backstop_enabled
+            or not self._external_market_quote.external_trading_enabled
+        ):
+            return
+        pending = vpp.state.pending_net_kwh
+        if vpp.battery.soc_frac >= 0.995 and pending > 0.0:
+            qty = pending
+            side = "sell"
+            price = self._external_market_quote.export_price
+        elif vpp.battery.soc_frac <= 0.005 and pending < 0.0:
+            qty = -pending
+            side = "buy"
+            price = self._external_market_quote.import_price
+        else:
+            return
+        if qty < 0.01:
+            return
+        log.info(
+            "VPP %s physical backstop %s %.6f kWh at %s",
+            vpp.vpp_id,
+            side,
+            qty,
+            price,
+        )
+        self._submit_intent(
+            vpp,
+            OrderIntent(side=side, price=price, qty=Decimal(str(qty))),
+            sim_ts,
+        )
+
+    def imbalance_totals(self, vpp_id: int) -> dict[str, float]:
+        totals = self.imbalance_totals_by_vpp.get(vpp_id)
+        if totals is None:
+            return {
+                "unserved_load_kwh": 0.0,
+                "spilled_generation_kwh": 0.0,
+                "settlement_cash": 0.0,
+            }
+        return dict(totals)
 
     def _gate_and_submit(
         self,

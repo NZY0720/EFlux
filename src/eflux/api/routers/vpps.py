@@ -133,6 +133,9 @@ class ManagedVPPPerformanceOut(BaseModel):
     pnl: str  # USD (converted from internal $/MWh x kWh units; see market.units)
     cumulative_energy_bought_kwh: float
     cumulative_energy_sold_kwh: float
+    imbalance_unserved_load_kwh: float = 0.0
+    imbalance_spilled_generation_kwh: float = 0.0
+    imbalance_settlement_cash: str = "0"
     soc_kwh: float
     soc_frac: float
     recent_trades: list[ManagedTradeOut]
@@ -252,12 +255,18 @@ async def get_my_managed_vpp_performance(
         ReflectionEntryOut(**entry)
         for entry in reversed(list(getattr(vpp.agent, "reflection_log", [])))
     ]
+    imbalance_totals = sim.imbalance_totals(vpp.vpp_id)
     return ManagedVPPPerformanceOut(
         id=vpp.vpp_id,
         name=vpp.name,
         pnl=str(internal_cash_to_usd(vpp.state.pnl)),
         cumulative_energy_bought_kwh=vpp.state.cumulative_energy_bought_kwh,
         cumulative_energy_sold_kwh=vpp.state.cumulative_energy_sold_kwh,
+        imbalance_unserved_load_kwh=imbalance_totals["unserved_load_kwh"],
+        imbalance_spilled_generation_kwh=imbalance_totals["spilled_generation_kwh"],
+        imbalance_settlement_cash=str(
+            internal_cash_to_usd(Decimal(str(imbalance_totals["settlement_cash"])))
+        ),
         soc_kwh=vpp.battery.soc_kwh,
         soc_frac=vpp.battery.soc_frac,
         recent_trades=[_managed_trade_out(t) for t in vpp.recent_trades[:25]],

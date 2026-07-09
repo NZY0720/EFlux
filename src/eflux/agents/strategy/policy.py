@@ -283,6 +283,9 @@ class BatteryAwareStrategyPolicy:
     battery_sell_price_mult: float = 1.0
     battery_aggressiveness: float = 1.0
     use_forecast: bool = False
+    spread_margin: float = 0.05
+    arb_soc_high: float = 0.9
+    arb_soc_low: float = 0.2
 
     def select_action(
         self, ctx: AgentContext, valuation: ValuationSignal, guidance: object | None = None
@@ -323,6 +326,47 @@ class BatteryAwareStrategyPolicy:
             )
 
         if last is not None:
+            expected_1h = getattr(valuation, "expected_ref_1h", None)
+            if self.use_forecast and expected_1h is not None:
+                expected_1h = float(expected_1h)
+                spread_margin = max(0.0, float(self.spread_margin))
+                arb_soc_high = max(0.0, min(1.0, float(self.arb_soc_high)))
+                arb_soc_low = max(0.0, min(1.0, float(self.arb_soc_low)))
+                battery_buy = float(valuation.battery_buy_price or 0.0)
+                battery_sell = float(valuation.battery_sell_price or float("inf"))
+                # battery_buy/battery_sell = pr·√η ÷ pr/√η = η, so the cross-terms
+                # below require the spread to clear the round-trip efficiency loss.
+                if (
+                    expected_1h >= last * (1.0 + spread_margin)
+                    and expected_1h * battery_buy > last * battery_sell
+                    and soc < arb_soc_high
+                ):
+                    return _tilt_soc_target(
+                        StrategyAction(
+                            mode=StrategyMode.BATTERY_ARBITRAGE,
+                            aggressiveness=self.battery_aggressiveness,
+                            soc_target=arb_soc_high,
+                        ),
+                        ctx,
+                        valuation,
+                        enabled=self.use_forecast,
+                    )
+                if (
+                    expected_1h <= last * (1.0 - spread_margin)
+                    and last * battery_buy > expected_1h * battery_sell
+                    and soc > arb_soc_low
+                ):
+                    return _tilt_soc_target(
+                        StrategyAction(
+                            mode=StrategyMode.BATTERY_ARBITRAGE,
+                            aggressiveness=self.battery_aggressiveness,
+                            soc_target=arb_soc_low,
+                        ),
+                        ctx,
+                        valuation,
+                        enabled=self.use_forecast,
+                    )
+
             battery_buy = float(valuation.battery_buy_price or 0.0)
             battery_sell = float(valuation.battery_sell_price or 0.0)
             if battery_buy > 0.0 and last <= battery_buy * self.battery_buy_price_mult and soc < 0.9:

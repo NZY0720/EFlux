@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     external_market_node: str = "TH_SP15_GEN-APND"
     external_market_fallback_price: float = 50.0
     external_market_transaction_fee: float = 2.0
+    imbalance_settlement_enabled: bool = True
+    imbalance_penalty_mult: float = 2.0
+    curtailment_price_per_kwh: float = 0.0
+    physical_backstop_enabled: bool = True
     forecast_enabled: bool = True
     forecast_refresh_sec: float = 60.0
     forecast_warmup_days: int = 30
@@ -65,6 +69,9 @@ class Settings(BaseSettings):
     # many price points the bootstrap falls back to the newest cached window.
     forecast_warmup_min_price_points: int = 168
     forecast_bootstrap_timeout_sec: float = 120.0
+    # Anchor price forecasts to the published CAISO DAM day-ahead hourly curve
+    # (same hybrid design as weather NWP). Off ⇒ plain autoregressive models.
+    forecast_dam_anchor_enabled: bool = True
     # Derive an endowment-driven Character for live strategy/hybrid/managed agents.
     agent_character_enabled: bool = True
     site_default_lat: float = 34.05

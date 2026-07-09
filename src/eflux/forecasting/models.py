@@ -12,7 +12,10 @@ import numpy as np
 
 from eflux.forecasting.schema import ForecastPoint, HORIZONS, HORIZON_TIMEDELTAS
 
-FEATURE_DIM = 8
+# v2 feature set: [bias, 4 hour-of-day harmonics, 2 day-of-week harmonics,
+# last, daily/horizon lag, trend, 15-min ramp]. Persisted states with the old
+# 8-dim linear models are upgraded on load by replaying their observations.
+FEATURE_DIM = 11
 DEFAULT_MAX_OBSERVATIONS = 3 * 24 * 60
 
 
@@ -35,6 +38,12 @@ def _hour_features(ts: datetime) -> list[float]:
     hour = ts.hour + ts.minute / 60.0 + ts.second / 3600.0
     phase = 2.0 * pi * hour / 24.0
     return [sin(phase), cos(phase), sin(2.0 * phase), cos(2.0 * phase)]
+
+
+def _dow_features(ts: datetime) -> list[float]:
+    day = ts.weekday() + (ts.hour + ts.minute / 60.0) / 24.0
+    phase = 2.0 * pi * day / 7.0
+    return [sin(phase), cos(phase)]
 
 
 def _iso(ts: datetime) -> str:
@@ -229,7 +238,20 @@ class HorizonModel:
         recent = self._value_at_or_before(origin_ts - trend_delta)
         recent_value = lag_value if recent is None else recent[1]
         trend = last_value - recent_value
-        return np.asarray([1.0, *_hour_features(target_ts), last_value, lag_value, trend], dtype=float)
+        ramp_ref = self._value_at_or_before(origin_ts - timedelta(minutes=15))
+        ramp = 0.0 if ramp_ref is None else last_value - ramp_ref[1]
+        return np.asarray(
+            [
+                1.0,
+                *_hour_features(target_ts),
+                *_dow_features(target_ts),
+                last_value,
+                lag_value,
+                trend,
+                ramp,
+            ],
+            dtype=float,
+        )
 
     def _lookback_windows(self, horizon_delta: timedelta) -> tuple[timedelta, timedelta]:
         if horizon_delta <= timedelta(minutes=15):
@@ -243,6 +265,20 @@ class HorizonModel:
             if obs_ts <= ts:
                 return obs_ts, value
         return None
+
+    @staticmethod
+    def _linear_state_matches(state: dict[str, Any]) -> bool:
+        return all(
+            int(model_state.get("n_features", -1)) == FEATURE_DIM
+            for model_state in state["linear"].values()
+        )
+
+    def _replay_observations(self, observations: list[tuple[datetime, float]]) -> None:
+        """Refit the linear models by replaying observations through the base
+        observe path — used when a persisted state predates the current feature
+        set (its RLS weights are dimensioned for old features and cannot load)."""
+        for ts, value in observations:
+            HorizonModel.observe(self, ts, value)
 
     def to_state(self) -> dict[str, Any]:
         return {
@@ -259,12 +295,16 @@ class HorizonModel:
             output_bounds=tuple(state["output_bounds"]) if state["output_bounds"] is not None else None,
             max_observations=int(state["max_observations"]),
         )
-        model.linear = {
-            horizon: OnlineLinearForecaster.from_state(model_state)
-            for horizon, model_state in state["linear"].items()
-        }
+        observations = [(_parse_ts(ts), float(value)) for ts, value in state["observations"]]
+        if cls._linear_state_matches(state):
+            model.linear = {
+                horizon: OnlineLinearForecaster.from_state(model_state)
+                for horizon, model_state in state["linear"].items()
+            }
+            model.observations = observations
+        else:
+            model._replay_observations(observations)
         model.seasonal = SeasonalPersistence.from_state(state["seasonal"])
-        model.observations = [(_parse_ts(ts), float(value)) for ts, value in state["observations"]]
         return model
 
 
@@ -347,12 +387,20 @@ class WeatherForecaster(HorizonModel):
             max_observations=int(state["max_observations"]),
             residual_alpha=float(state["residual_alpha"]),
         )
-        model.linear = {
-            horizon: OnlineLinearForecaster.from_state(model_state)
-            for horizon, model_state in state["linear"].items()
-        }
+        observations = [(_parse_ts(ts), float(value)) for ts, value in state["observations"]]
+        if cls._linear_state_matches(state):
+            model.linear = {
+                horizon: OnlineLinearForecaster.from_state(model_state)
+                for horizon, model_state in state["linear"].items()
+            }
+            model.observations = observations
+        else:
+            # Replay via the base path (nwp_lookup detached) so the residual
+            # tracker is not double-updated; its state is restored below.
+            model.nwp_lookup = None
+            model._replay_observations(observations)
+            model.nwp_lookup = nwp_lookup
         model.seasonal = SeasonalPersistence.from_state(state["seasonal"])
-        model.observations = [(_parse_ts(ts), float(value)) for ts, value in state["observations"]]
         model.residual_ewma = float(state["residual_ewma"])
         model.residual_var = float(state["residual_var"])
         model.n_residuals = int(state["n_residuals"])

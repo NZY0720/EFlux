@@ -9,13 +9,43 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from eflux.forecasting.models import HorizonModel, WeatherForecaster
+from eflux.forecasting.models import HorizonModel, SeasonalPersistence, WeatherForecaster
 from eflux.forecasting.schema import HORIZONS, ForecastBundle, ForecastPoint, TargetForecast
 
 MODEL_VERSION = "online-rls-v1"
 TARGETS = ("price_real", "price_p2p", "ghi", "temp_air", "wind_speed")
 WEATHER_TARGETS = ("ghi", "temp_air", "wind_speed")
+PRICE_BOUNDS = (-10000.0, 10000.0)
 HISTORY_MAXLEN = 1500
+
+
+def _price_model(lookup: Callable[[datetime], float] | None) -> HorizonModel:
+    """Anchored online model when a published forward curve (CAISO DAM) is
+    available — the same hybrid used for weather NWP — else plain online RLS."""
+    if lookup is None:
+        return HorizonModel(output_bounds=PRICE_BOUNDS)
+    return WeatherForecaster(nwp_lookup=lookup, output_bounds=PRICE_BOUNDS)
+
+
+def _upgrade_to_anchored(
+    state: dict[str, Any], lookup: Callable[[datetime], float]
+) -> WeatherForecaster:
+    """Rebuild a legacy un-anchored price state as an anchored model.
+
+    The persisted RLS weights belong to the un-anchored architecture, so the
+    observations are replayed instead; the residual tracker starts fresh and
+    re-converges within a handful of observations."""
+    model = WeatherForecaster(
+        nwp_lookup=None,
+        output_bounds=tuple(state["output_bounds"]) if state["output_bounds"] is not None else None,
+        max_observations=int(state["max_observations"]),
+    )
+    model._replay_observations(
+        [(datetime.fromisoformat(ts), float(value)) for ts, value in state["observations"]]
+    )
+    model.seasonal = SeasonalPersistence.from_state(state["seasonal"])
+    model.nwp_lookup = lookup
+    return model
 
 
 def _target_from_points(points: dict[str, ForecastPoint]) -> TargetForecast:
@@ -64,8 +94,8 @@ class ForecastService:
     ) -> None:
         nwp = nwp or {}
         self.models: dict[str, HorizonModel] = {
-            "price_real": HorizonModel(output_bounds=(-10000.0, 10000.0)),
-            "price_p2p": HorizonModel(output_bounds=(-10000.0, 10000.0)),
+            "price_real": _price_model(nwp.get("price_real")),
+            "price_p2p": _price_model(nwp.get("price_p2p")),
             "ghi": WeatherForecaster(nwp_lookup=nwp.get("ghi"), output_bounds=(0.0, 1500.0)),
             "temp_air": WeatherForecaster(nwp_lookup=nwp.get("temp_air"), output_bounds=(-100.0, 100.0)),
             "wind_speed": WeatherForecaster(nwp_lookup=nwp.get("wind_speed"), output_bounds=(0.0, 100.0)),
@@ -100,9 +130,10 @@ class ForecastService:
         nwp: dict[str, Callable[[datetime], float]] | None = None,
     ) -> None:
         if nwp:
-            for name in WEATHER_TARGETS:
-                if name in nwp and isinstance(self.models[name], WeatherForecaster):
-                    self.models[name].nwp_lookup = nwp[name]
+            for name, lookup in nwp.items():
+                model = self.models.get(name)
+                if lookup is not None and isinstance(model, WeatherForecaster):
+                    model.nwp_lookup = lookup
 
         events: list[tuple[datetime, str, float]] = []
         for name, samples in series.items():
@@ -193,13 +224,17 @@ class ForecastService:
     ) -> ForecastService:
         payload = json.loads(Path(path).read_text(encoding="utf-8"))
         service = cls(nwp=nwp, on_refresh=on_refresh)
-        for name in ("price_real", "price_p2p"):
-            service.models[name] = HorizonModel.from_state(payload["models"][name])
-        for name in WEATHER_TARGETS:
-            service.models[name] = WeatherForecaster.from_state(
-                payload["models"][name],
-                nwp_lookup=(nwp or {}).get(name),
-            )
+        for name in TARGETS:
+            model_state = payload["models"][name]
+            lookup = (nwp or {}).get(name)
+            if "residual_alpha" in model_state:
+                # Anchored model (weather, or a price model saved post-anchor).
+                service.models[name] = WeatherForecaster.from_state(model_state, nwp_lookup=lookup)
+            elif lookup is not None:
+                # Legacy un-anchored price state + an anchor now available.
+                service.models[name] = _upgrade_to_anchored(model_state, lookup)
+            else:
+                service.models[name] = HorizonModel.from_state(model_state)
         service._latest = _bundle_from_state(payload["latest"])
         last_realized = payload.get("last_realized", {})
         service._last_realized = {
