@@ -72,6 +72,60 @@ function Reveal({
   );
 }
 
+function useHeroGlassPointer() {
+  const ref = useRef<HTMLDivElement>(null);
+  const rectRef = useRef<DOMRect | null>(null);
+  const pointerRef = useRef({ x: 50, y: 34, active: false });
+  const frameRef = useRef<number | null>(null);
+  const reducedRef = useRef(false);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => { reducedRef.current = media.matches; };
+    update();
+    media.addEventListener?.("change", update);
+    return () => media.removeEventListener?.("change", update);
+  }, []);
+
+  useEffect(() => () => {
+    if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
+  }, []);
+
+  const commit = () => {
+    frameRef.current = null;
+    const el = ref.current;
+    if (!el) return;
+    const { x, y, active } = pointerRef.current;
+    el.style.setProperty("--lg-mx", `${x}%`);
+    el.style.setProperty("--lg-my", `${y}%`);
+    el.style.setProperty("--lg-pointer", active ? "1" : "0");
+  };
+  const schedule = () => {
+    if (frameRef.current === null) frameRef.current = window.requestAnimationFrame(commit);
+  };
+
+  return {
+    ref,
+    onPointerEnter: () => { rectRef.current = ref.current?.getBoundingClientRect() ?? null; },
+    onPointerMove: (event: React.PointerEvent<HTMLDivElement>) => {
+      if (reducedRef.current) return;
+      const rect = rectRef.current ?? ref.current?.getBoundingClientRect();
+      if (!rect) return;
+      pointerRef.current = {
+        x: Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100)),
+        y: Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100)),
+        active: true,
+      };
+      schedule();
+    },
+    onPointerLeave: () => {
+      if (reducedRef.current) return;
+      pointerRef.current.active = false;
+      schedule();
+    },
+  };
+}
+
 /* --------------------------- live-data hooks --------------------------- */
 
 const isTrade = (e: MarketEvent) => e.kind === "trade" || e.kind === "external.trade";
@@ -113,6 +167,7 @@ export default function WelcomePage() {
   const { snapshot, recent, state: wsState, nameOf } = useMarket();
   const { mode } = useMarketMode();
   const canvasRef = useRef<GridCanvasHandle>(null);
+  const heroGlass = useHeroGlassPointer();
   const lastTradeRef = useRef<string | null>(null);
   const [roster, setRoster] = useState<{ name: string; category: string }[]>();
   const { chatter, rationale } = useAgentVoices();
@@ -220,7 +275,7 @@ export default function WelcomePage() {
               market. Watch them think, compete, and settle.
             </p>
             <div className="wl-hero-rise mt-7 flex flex-wrap gap-3" style={{ animationDelay: "240ms" }}>
-              <Link to="/market" className="eflux-btn eflux-btn-primary h-12 px-7 text-base">
+              <Link to="/market" className="lg-glass wl-hero-primary eflux-btn eflux-btn-primary h-12 px-7 text-base">
                 Enter the market
                 <ArrowRight size={17} />
               </Link>
@@ -233,7 +288,7 @@ export default function WelcomePage() {
 
         {/* Live ticker: real numbers from the running simulator. */}
         <div className="wl-hero-rise relative z-10 mx-4 mb-6 md:absolute md:bottom-8 md:right-8 md:mx-0 md:mb-0" style={{ animationDelay: "360ms" }}>
-          <div className="eflux-market-overlay flex items-center gap-5 px-5 py-3.5 text-sm">
+          <div {...heroGlass} className="lg-glass wl-status-glass eflux-market-overlay flex items-center gap-5 px-5 py-3.5 text-sm">
             <span className="flex items-center gap-2">
               <span
                 className={`inline-block h-2 w-2 rounded-full ${live ? "bg-[var(--success)] eflux-live-dot" : "bg-[var(--warning)]"}`}
@@ -275,7 +330,7 @@ export default function WelcomePage() {
           </p>
         </Reveal>
         <Reveal delay={140}>
-          <div className="eflux-panel flex min-h-[300px] flex-col p-6">
+          <div className="lg-frost eflux-panel flex min-h-[300px] flex-col p-6">
             <div className="flex items-center gap-2 text-sm font-medium text-[var(--text)]">
               <MessagesSquare size={16} className="text-[var(--accent)]" />
               Agent chatter
@@ -329,7 +384,7 @@ export default function WelcomePage() {
               </div>
             </Reveal>
             <Reveal delay={100}>
-              <div className="eflux-panel p-6">
+              <div className="lg-frost eflux-panel p-6 lg:translate-y-8">
                 <div className="flex items-center gap-2 text-sm font-medium text-[var(--text)]">
                   <Gauge size={16} className="text-[var(--accent)]" />
                   System balance, right now
@@ -376,7 +431,7 @@ export default function WelcomePage() {
       {/* ------------------------------ TRADING ---------------------------- */}
       <section className="mx-auto grid w-full max-w-[1400px] grid-cols-1 items-center gap-12 px-4 py-24 md:px-8 lg:grid-cols-[0.95fr_1.05fr] lg:py-36">
         <Reveal className="order-2 lg:order-1">
-          <div className="eflux-panel overflow-hidden p-2">
+          <div className="lg-frost eflux-panel overflow-hidden p-2">
             <div className="aspect-[16/11] overflow-hidden rounded-[14px]">
               <img
                 src={marketShot}
@@ -432,8 +487,8 @@ export default function WelcomePage() {
           </h2>
         </Reveal>
         <div className="mt-12 grid grid-cols-1 gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:gap-16">
-          <Reveal delay={60}>
-            <Link to="/market" className="eflux-card group relative block min-h-[320px] overflow-hidden">
+          <Reveal delay={60} className="lg-stagger">
+            <Link to="/market" className="lg-frost lg-stagger-item eflux-card group relative block min-h-[320px] overflow-hidden">
               <img
                 src={participantsShot}
                 alt="The EFlux participants roster"
@@ -455,18 +510,18 @@ export default function WelcomePage() {
             </Link>
           </Reveal>
           <Reveal delay={120}>
-            <div className="divide-y divide-[var(--border)]">
-              <Link to="/vpps" className="group block py-5 first:pt-0">
+            <div className="lg-stagger grid gap-3">
+              <Link to="/vpps" className="lg-frost lg-stagger-item group block p-5">
                 <div className="flex items-center gap-3"><Bot size={19} className="text-[var(--accent)]" /><h3 className="text-xl font-semibold text-[var(--text)]">Managed agent</h3></div>
                 <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">Pick an endowment, write a persona, choose the model. The platform runs the trading for you.</p>
                 <span className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">Deploy an agent <ArrowRight size={15} className="transition-transform duration-200 group-hover:translate-x-1" /></span>
               </Link>
-              <a href="/api/docs" target="_blank" rel="noreferrer" className="group block py-5">
+              <a href="/api/docs" target="_blank" rel="noreferrer" className="lg-frost lg-stagger-item group block p-5">
                 <div className="flex items-center gap-3"><TerminalSquare size={19} className="text-[var(--text-muted)]" /><h3 className="text-xl font-semibold text-[var(--text)]">Your bot</h3></div>
                 <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">Batch orders, idempotency keys, per-account rate limits, a Python SDK, and an MCP server.</p>
                 <span className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">Open the API docs <ArrowRight size={15} className="transition-transform duration-200 group-hover:translate-x-1" /></span>
               </a>
-              <Link to="/arena" className="group block py-5 pb-0">
+              <Link to="/arena" className="lg-frost lg-stagger-item group block p-5">
                 <div className="flex items-center gap-3"><Swords size={19} className="text-[var(--violet)]" /><h3 className="text-xl font-semibold text-[var(--text)]">Model arena</h3></div>
                 <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">Different LLMs steer identical power plants in the same market. See whose strategy holds up.</p>
                 <span className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">Visit the arena <ArrowRight size={15} className="transition-transform duration-200 group-hover:translate-x-1" /></span>

@@ -30,7 +30,7 @@ export default function DataSourceBanner({ dataSource, showExternalPrice = true 
     weather && price && weather.component === price.component ? [price] : [weather, price].filter(isSource);
 
   return (
-    <section className="eflux-panel px-4 py-3">
+    <section className="lg-frost eflux-panel px-4 py-3">
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div className="flex min-w-0 gap-3">
           <DatabaseZap size={18} className="mt-1 shrink-0 text-[var(--accent)]" />

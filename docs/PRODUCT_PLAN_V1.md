@@ -56,7 +56,7 @@ The sandbox market, benchmark fleet, forecasting service, imbalance settlement, 
 ## 5. Design system (unchanged essentials, dials removed)
 
 - Keep: EFlux logo, animated `GridCanvas`, dark/light, cyan accent. Body font: self-hosted **Geist Sans** (note: Inter was declared but never loaded — this also fixes a real inconsistency); **Geist Mono** for numbers/timestamps/code. Wordmark single-color.
-- Cyan = sole interactive accent; green/amber/red = status only; resource colors only in charts/labels. Radii 12/8/pill. Glass only on landing overlay + true overlays; solid surfaces elsewhere. Reduced gradients/glows.
+- Cyan = sole interactive accent; green/amber/red = status only; resource colors only in charts/labels. Radii 12/8/pill. **Materials (superseded 2026-07-11 by user decision — "Liquid Glass Terminal"):** a three-tier glass system replaces the earlier reduce-glass rule — true liquid glass (SVG refraction + specular, Chromium-gated) on chrome/overlays/hero + premium frosted glass on cards/KPIs + crisp solid surfaces for tables/order book/chart plots (numbers never sit on blur); tinted shadows, grain overlay, specular hover sweeps; Safari + reduced-transparency fall back to frosted/solid.
 - Landing: hero fits one viewport; one real market-status overlay labeled `real / cached / synthetic`; no fake dashboards; no repeated glass-card walls.
 - Market page: 4 first-viewport metrics (latest price, spread, supply-demand balance, active agents); merit order + price trend primary; order book/trades right rail; chat → "Agent Activity" tab.
 - Participants: `archetype` + `resources[]` split; search + filters; table on desktop, cards on mobile.

@@ -42,7 +42,7 @@ function Cell({
   }[tone];
 
   return (
-    <div className={`eflux-card min-w-0 ${compact ? "px-3 py-2.5" : "px-4 py-3"}`}>
+    <div className={`lg-frost lg-interactive eflux-card lg-stagger-item min-w-0 ${compact ? "px-3 py-2.5" : "px-4 py-3"}`}>
       <div className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]">
         <Icon size={14} className={toneClass} />
         {label}
@@ -68,7 +68,7 @@ export default function KpiBar({ snapshot, builtinVpps, variant = "p2p", compact
     : "live capacity vs load";
 
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+    <div className="lg-stagger grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <Cell
         label={variant === "realprice" ? "Grid price" : "Latest price"}
         value={formatPrice(latestPrice)}

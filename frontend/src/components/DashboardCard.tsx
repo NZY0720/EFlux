@@ -41,7 +41,7 @@ export function DashboardCard({
   children: React.ReactNode;
   className?: string;
 }) {
-  return <section className={`eflux-card p-4 ${className}`}>{children}</section>;
+  return <section className={`lg-frost eflux-card p-4 ${className}`}>{children}</section>;
 }
 
 export function EmptyState({
@@ -89,5 +89,5 @@ export function StatusPill({
 }
 
 export function TableShell({ children, className = "" }: { children: React.ReactNode; className?: string }) {
-  return <div className={`eflux-table-shell ${className}`}>{children}</div>;
+  return <div className={`lg-solid eflux-table-shell ${className}`}>{children}</div>;
 }

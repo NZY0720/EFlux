@@ -3,7 +3,10 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 
 import App from "./App";
+import { initializeLiquidGlass } from "./lib/glass";
 import "./styles/index.css";
+
+initializeLiquidGlass();
 
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>

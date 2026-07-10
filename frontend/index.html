@@ -7,6 +7,12 @@
     <title>EFlux — VPP Trading</title>
   </head>
   <body>
+    <svg width="0" height="0" aria-hidden="true" focusable="false">
+      <filter id="lg-refract">
+        <feTurbulence type="fractalNoise" baseFrequency="0.008 0.012" numOctaves="2" seed="7" result="n"/>
+        <feDisplacementMap in="SourceGraphic" in2="n" scale="14" xChannelSelector="R" yChannelSelector="G"/>
+      </filter>
+    </svg>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
   </body>

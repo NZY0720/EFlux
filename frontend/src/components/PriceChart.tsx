@@ -438,7 +438,7 @@ export default function PriceChart({
           </>
         )}
       </div>
-      <div className="h-72 w-full">
+      <div className="lg-solid h-72 w-full p-1">
         {effectiveMode === "candles" && !hasCandles ? (
           <div className="flex h-full items-center justify-center text-sm text-[var(--text-subtle)]">
             Waiting for trades to aggregate…

@@ -87,7 +87,7 @@ export default function OrderBookDepth({ snapshot }: Props) {
   };
 
   return (
-    <div className="h-72 w-full">
+    <div className="lg-solid h-72 w-full p-1">
       <ReactECharts option={option} style={{ height: "100%", width: "100%" }} notMerge lazyUpdate />
     </div>
   );

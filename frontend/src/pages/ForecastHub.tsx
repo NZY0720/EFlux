@@ -435,7 +435,7 @@ export default function ForecastHub() {
           </div>
         )}
 
-        <div className="h-[420px] w-full">
+        <div className="lg-solid h-[420px] w-full p-1">
           {loading && !hasChartData ? (
             <EmptyState title="Loading forecast history..." className="h-full" />
           ) : !hasChartData ? (

@@ -74,7 +74,7 @@ export default function EquityCurves({ history, topN = 8 }: Props) {
   const hasData = Object.keys(history).length > 0;
 
   return (
-    <div className="h-72 w-full">
+    <div className="lg-solid h-72 w-full p-1">
       {hasData ? (
         <ReactECharts option={option} style={{ height: "100%", width: "100%" }} onEvents={onEvents} notMerge lazyUpdate />
       ) : (
