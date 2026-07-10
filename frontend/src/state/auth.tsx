@@ -1,7 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
-import { getToken, setAuthExpiredHandler, setToken as setStoredToken } from "../api/client";
+import {
+  getCurrentUser,
+  getToken,
+  logout as endSession,
+  setAuthExpiredHandler,
+  setToken as setStoredToken,
+} from "../api/client";
 
 interface AuthCtx {
   token: string | null;
@@ -15,14 +21,12 @@ const Ctx = createContext<AuthCtx | null>(null);
 
 const EMAIL_KEY = "eflux.email";
 const USER_ID_KEY = "eflux.user_id";
+const COOKIE_SESSION = "cookie-session";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setTokState] = useState<string | null>(() => getToken());
-  const [email, setEmail] = useState<string | null>(() => localStorage.getItem(EMAIL_KEY));
-  const [userId, setUserId] = useState<number | null>(() => {
-    const v = localStorage.getItem(USER_ID_KEY);
-    return v ? Number(v) : null;
-  });
+  const [email, setEmail] = useState<string | null>(null);
+  const [userId, setUserId] = useState<number | null>(null);
 
   useEffect(() => {
     if (email) localStorage.setItem(EMAIL_KEY, email);
@@ -35,17 +39,39 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [userId]);
 
   const setSession: AuthCtx["setSession"] = (s) => {
-    setStoredToken(s.session_token);
-    setTokState(s.session_token);
+    // The server has set the HttpOnly cookie; do not persist this transitional
+    // response token in browser storage.
+    setStoredToken(null);
+    setTokState(COOKIE_SESSION);
     setEmail(s.email);
     setUserId(s.user_id);
   };
 
   const logout = useCallback(() => {
-    setStoredToken(null);
     setTokState(null);
     setEmail(null);
     setUserId(null);
+    // Keep a migrated localStorage token available for this request, then remove
+    // it whether server logout succeeds or the browser is offline.
+    void endSession().finally(() => setStoredToken(null));
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getCurrentUser()
+      .then((user) => {
+        if (cancelled) return;
+        setEmail(user.email);
+        setUserId(user.id);
+        if (!getToken()) setTokState(COOKIE_SESSION);
+      })
+      .catch(() => {
+        // An unauthenticated boot is normal; the response interceptor handles
+        // expired localStorage sessions.
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {

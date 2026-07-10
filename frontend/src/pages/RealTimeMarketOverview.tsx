@@ -1,7 +1,7 @@
 import { BarChart3, ChartNoAxesCombined, ListChecks, MessagesSquare, TrendingUp, Zap } from "lucide-react";
 
 import Chatroom from "../components/Chatroom";
-import { CardTitle, DashboardCard } from "../components/DashboardCard";
+import { CardTitle, DashboardCard, StatusPill } from "../components/DashboardCard";
 import DataSourceBanner from "../components/DataSourceBanner";
 import EquityCurves from "../components/EquityCurves";
 import IntroStrip from "../components/IntroStrip";
@@ -26,6 +26,10 @@ export default function RealTimeMarketOverview() {
   return (
     <div className="mx-auto w-full max-w-[1800px] space-y-6 px-4 py-5 md:p-6">
       <IntroStrip variant="realprice" />
+      <div className="flex justify-end gap-2">
+        <StatusPill tone="amber">Real-time price</StatusPill>
+        {snapshot && <StatusPill tone={snapshot.data_provenance === "real" ? "success" : snapshot.data_provenance === "cached" ? "amber" : "muted"}>data: {snapshot.data_provenance}</StatusPill>}
+      </div>
       <KpiBar variant="realprice" snapshot={snapshot} builtinVpps={snapshot?.num_builtin_vpps ?? 0} />
       <DataSourceBanner dataSource={snapshot?.data_source} />
       <div className="flex justify-end">

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 HORIZONS = ("5m", "1h", "12h")
@@ -29,11 +29,13 @@ def _finite_float(value: float) -> float:
 class ForecastPoint:
     value: float
     stderr: float | None = None
+    provenance: str | None = None
 
-    def to_dict(self) -> dict[str, float | None]:
+    def to_dict(self) -> dict[str, float | str | None]:
         return {
             "value": _finite_float(self.value),
             "stderr": None if self.stderr is None else max(0.0, _finite_float(self.stderr)),
+            "provenance": self.provenance,
         }
 
 
@@ -76,8 +78,8 @@ class ForecastBundle:
     wind_speed: TargetForecast
 
     @classmethod
-    def empty(cls, as_of: datetime | None = None) -> "ForecastBundle":
-        timestamp = as_of or datetime(1970, 1, 1, tzinfo=timezone.utc)
+    def empty(cls, as_of: datetime | None = None) -> ForecastBundle:
+        timestamp = as_of or datetime(1970, 1, 1, tzinfo=UTC)
         return cls(
             as_of=timestamp,
             model_version="empty",

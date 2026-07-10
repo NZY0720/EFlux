@@ -2,19 +2,20 @@ import ReactECharts from "echarts-for-react";
 import { useEffect, useMemo, useState } from "react";
 import { ChartNoAxesCombined, Maximize2 } from "lucide-react";
 
-import { fetchForecastHistory, fetchLatestForecast } from "../api/client";
+import { api, fetchForecastHistory, fetchLatestForecast } from "../api/client";
 import type {
   ForecastHistoryRecord,
   ForecastHorizon,
   ForecastTarget,
   LatestForecastResponse,
+  ForecastSkillResponse,
 } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill } from "../components/DashboardCard";
 import { chartAxis, chartLegend, chartTooltip, useChartTheme } from "../components/chartTheme";
 import { timeZoom, usePersistentTimeZoom } from "../components/chartZoom";
 
-type ViewMode = "overlay" | "fan";
-type SeriesPoint = [number, number];
+type ViewMode = "outlook" | "accuracy";
+type SeriesPoint = [number, number | null];
 
 const HISTORY_LIMIT = 720;
 const POLL_MS = 30_000;
@@ -57,11 +58,23 @@ function formatDateTime(ts: string | null | undefined): string {
   });
 }
 
-function splitAtNow(points: SeriesPoint[], nowMs: number): { past: SeriesPoint[]; future: SeriesPoint[] } {
-  const past = points.filter(([ts]) => ts <= nowMs);
-  const future = points.filter(([ts]) => ts > nowMs);
-  if (future.length > 0 && past.length > 0) return { past, future: [past[past.length - 1], ...future] };
-  return { past, future };
+function median(values: number[]): number | null {
+  if (values.length === 0) return null;
+  const sorted = [...values].sort((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[middle - 1] + sorted[middle]) / 2 : sorted[middle];
+}
+
+function insertHistoryGaps(points: SeriesPoint[], cadenceMs: number | null): SeriesPoint[] {
+  if (cadenceMs === null) return points;
+  return points.reduce<SeriesPoint[]>((withGaps, point) => {
+    const previous = withGaps[withGaps.length - 1];
+    if (previous && point[0] - previous[0] > cadenceMs * 2) {
+      withGaps.push([previous[0] + cadenceMs, null]);
+    }
+    withGaps.push(point);
+    return withGaps;
+  }, []);
 }
 
 function useForecastPolling(target: ForecastTarget, limit = HISTORY_LIMIT) {
@@ -106,10 +119,26 @@ function useForecastPolling(target: ForecastTarget, limit = HISTORY_LIMIT) {
   return { history, latest, loading, error };
 }
 
+function useForecastSkillPolling() {
+  const [skill, setSkill] = useState<ForecastSkillResponse | null>(null);
+  useEffect(() => {
+    let active = true;
+    const load = () => api.get<ForecastSkillResponse>("/forecasts/skill").then(({ data }) => {
+      if (active) setSkill(data);
+    }).catch(() => {});
+    void load();
+    const id = window.setInterval(() => void load(), POLL_MS);
+    return () => { active = false; window.clearInterval(id); };
+  }, []);
+  return skill;
+}
+
 export default function ForecastHub() {
   const [target, setTarget] = useState<ForecastTarget>("price_real");
-  const [view, setView] = useState<ViewMode>("overlay");
+  const [view, setView] = useState<ViewMode>("outlook");
+  const [accuracyHorizon, setAccuracyHorizon] = useState<ForecastHorizon>("5m");
   const { history, latest, loading, error } = useForecastPolling(target);
+  const skill = useForecastSkillPolling();
   const theme = useChartTheme();
   const { zoomRef, onEvents, autoFollow, resetZoom, setExtent } = usePersistentTimeZoom({ trackAutoFollow: true });
 
@@ -119,7 +148,7 @@ export default function ForecastHub() {
   const historyNowMs = history.length > 0 ? asMs(history[history.length - 1].as_of) : null;
   const nowMs = latestMs ?? historyNowMs ?? Date.now();
 
-  const realizedPoints = useMemo(() => {
+  const rawRealizedPoints = useMemo(() => {
     const points: SeriesPoint[] = [];
     for (const record of history) {
       const ts = asMs(record.as_of);
@@ -129,18 +158,32 @@ export default function ForecastHub() {
     return points;
   }, [history, nowMs, target]);
 
-  const overlayForecastPoints = useMemo(() => {
+  const forecastCadenceMs = useMemo(() => {
+    const timestamps = history.map((record) => asMs(record.as_of)).filter((ts): ts is number => ts !== null);
+    const intervals = timestamps.slice(1).map((ts, index) => ts - timestamps[index]).filter((interval) => interval > 0);
+    return median(intervals);
+  }, [history]);
+
+  const realizedPoints = useMemo(
+    () => insertHistoryGaps(rawRealizedPoints, forecastCadenceMs),
+    [forecastCadenceMs, rawRealizedPoints],
+  );
+
+  const historicalForecastPoints = useMemo(() => {
     const byHorizon: Record<ForecastHorizon, SeriesPoint[]> = { "5m": [], "1h": [], "12h": [] };
     for (const record of history) {
       const asOf = asMs(record.as_of);
-      if (asOf === null) continue;
+      if (asOf === null || asOf > nowMs) continue;
       for (const horizon of HORIZONS) {
         const value = asNumber(record.forecasts[target]?.[horizon.key]);
-        if (value !== null) byHorizon[horizon.key].push([asOf + horizon.ms, value]);
+        const targetMs = asOf + horizon.ms;
+        if (value !== null && targetMs <= nowMs) byHorizon[horizon.key].push([targetMs, value]);
       }
     }
-    return byHorizon;
-  }, [history, target]);
+    return Object.fromEntries(
+      HORIZONS.map((horizon) => [horizon.key, insertHistoryGaps(byHorizon[horizon.key], forecastCadenceMs)]),
+    ) as Record<ForecastHorizon, SeriesPoint[]>;
+  }, [forecastCadenceMs, history, nowMs, target]);
 
   const latestFanPoints = useMemo<Array<{ horizon: ForecastHorizon; label: string; data: SeriesPoint[] }>>(() => {
     const anchor = realizedPoints.length > 0 ? realizedPoints[realizedPoints.length - 1][1] : null;
@@ -155,13 +198,13 @@ export default function ForecastHub() {
 
   const allChartPoints = useMemo(() => {
     const points: SeriesPoint[] = [...realizedPoints];
-    if (view === "overlay") {
-      for (const horizon of HORIZONS) points.push(...overlayForecastPoints[horizon.key]);
+    if (view === "accuracy") {
+      points.push(...historicalForecastPoints[accuracyHorizon]);
     } else {
       for (const fan of latestFanPoints) points.push(...fan.data);
     }
     return points;
-  }, [latestFanPoints, overlayForecastPoints, realizedPoints, view]);
+  }, [accuracyHorizon, historicalForecastPoints, latestFanPoints, realizedPoints, view]);
 
   if (allChartPoints.length > 0) {
     const xs = allChartPoints.map(([ts]) => ts);
@@ -194,41 +237,29 @@ export default function ForecastHub() {
       data: [{ xAxis: nowMs }],
     };
 
-    const forecastSeries =
-      view === "overlay"
-        ? HORIZONS.flatMap((horizon) => {
-            const split = splitAtNow(overlayForecastPoints[horizon.key], nowMs);
-            return [
-              {
-                type: "line" as const,
-                name: horizon.label,
-                showSymbol: false,
-                smooth: false,
-                sampling: "lttb",
-                data: split.past,
-                lineStyle: { color: colors[horizon.key], width: 1.6 },
-              },
-              {
-                type: "line" as const,
-                name: horizon.label,
-                showSymbol: false,
-                smooth: false,
-                sampling: "lttb",
-                data: split.future,
-                lineStyle: { color: colors[horizon.key], width: 1.8, type: "dashed" },
-              },
-            ];
-          })
-        : latestFanPoints.map((fan) => ({
+    const selectedHorizon = HORIZONS.find((horizon) => horizon.key === accuracyHorizon) ?? HORIZONS[0];
+    const historicalSeries =
+      view === "accuracy"
+        ? [{
             type: "line" as const,
-            name: fan.label,
+            name: `${selectedHorizon.label} — made ${selectedHorizon.label.replace(" forecast", "")} earlier`,
+            showSymbol: false,
+            smooth: false,
+            sampling: "lttb",
+            data: historicalForecastPoints[accuracyHorizon],
+            lineStyle: { color: colors[accuracyHorizon], width: 1.6, opacity: 0.78 },
+          }]
+        : [];
+    const currentFanSeries = view === "outlook" ? latestFanPoints.map((fan) => ({
+            type: "line" as const,
+            name: `${fan.label} (current)`,
             showSymbol: true,
             symbolSize: 6,
             smooth: false,
             data: fan.data,
             lineStyle: { color: colors[fan.horizon], width: 1.8, type: "dashed" },
             itemStyle: { color: colors[fan.horizon] },
-          }));
+          })) : [];
 
     return {
       backgroundColor: "transparent",
@@ -236,7 +267,11 @@ export default function ForecastHub() {
         top: 0,
         right: 12,
         ...chartLegend(theme),
-        data: ["Realized", ...HORIZONS.map((horizon) => horizon.label)],
+        data: [
+          "Realized",
+          ...(view === "accuracy" ? [`${selectedHorizon.label} — made ${selectedHorizon.label.replace(" forecast", "")} earlier`] : []),
+          ...(view === "outlook" ? HORIZONS.map((horizon) => `${horizon.label} (current)`) : []),
+        ],
       },
       grid: { left: 58, right: 22, top: 34, bottom: 56 },
       xAxis: { type: "time", ...baseAxis },
@@ -269,14 +304,16 @@ export default function ForecastHub() {
           areaStyle: { color: "rgba(18, 201, 155, 0.08)" },
           markLine,
         },
-        ...forecastSeries,
+        ...historicalSeries,
+        ...currentFanSeries,
       ],
       animation: false,
     };
   }, [
+    accuracyHorizon,
+    historicalForecastPoints,
     latestFanPoints,
     nowMs,
-    overlayForecastPoints,
     realizedPoints,
     target,
     targetMeta.unit,
@@ -301,7 +338,9 @@ export default function ForecastHub() {
           Forecasts
         </h1>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
-          Compare realized values against forecast horizons, then inspect the latest forecast fan.
+          {view === "outlook"
+            ? "Dashed lines right of now are the model's current outlook."
+            : "Each point shows what the model predicted for that moment, plotted at that moment — compare it against realized."}
         </p>
       </div>
 
@@ -337,14 +376,29 @@ export default function ForecastHub() {
                 </option>
               ))}
             </select>
-            <div className="inline-flex overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-inset)]">
-              <button type="button" onClick={() => setView("overlay")} className={segBtn(view === "overlay")}>
-                Accuracy overlay
+            <div role="group" aria-label="Forecast view" className="inline-flex overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-inset)]">
+              <button type="button" aria-pressed={view === "outlook"} onClick={() => setView("outlook")} className={segBtn(view === "outlook")}>
+                Outlook
               </button>
-              <button type="button" onClick={() => setView("fan")} className={segBtn(view === "fan")}>
-                Latest fan
+              <button type="button" aria-pressed={view === "accuracy"} onClick={() => setView("accuracy")} className={segBtn(view === "accuracy")}>
+                Accuracy
               </button>
             </div>
+            {view === "accuracy" && (
+              <div role="group" aria-label="Forecast accuracy horizon" className="inline-flex overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-inset)]">
+                {HORIZONS.map((horizon) => (
+                  <button
+                    key={horizon.key}
+                    type="button"
+                    aria-pressed={accuracyHorizon === horizon.key}
+                    onClick={() => setAccuracyHorizon(horizon.key)}
+                    className={segBtn(accuracyHorizon === horizon.key)}
+                  >
+                    {horizon.key}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <StatusPill tone={error ? "danger" : loading ? "amber" : warmingUp ? "amber" : "success"}>
@@ -402,6 +456,19 @@ export default function ForecastHub() {
             />
           )}
         </div>
+      </DashboardCard>
+      <DashboardCard>
+        <CardTitle icon={ChartNoAxesCombined}>Model skill</CardTitle>
+        <p className="mb-3 text-xs text-[var(--text-muted)]">skill = 1 − model MAE ÷ persistence MAE — above 0 beats naive persistence.</p>
+        {!skill ? <EmptyState title="Loading scored outcomes..." /> : (
+          <div className="grid gap-4 lg:grid-cols-2">
+            {["24h", "7d"].map((window) => {
+              const scores = skill.windows[window];
+              return <div key={window} className="eflux-inset rounded-lg p-3"><div className="mb-2 font-mono text-xs font-semibold text-[var(--text)]">{window}</div>{!scores ? <p className="text-sm text-[var(--text-muted)]">No scored outcomes yet.</p> : <div className="space-y-3 font-mono text-[11px]"><div className="grid grid-cols-[1fr_34px_60px_60px_60px] gap-1 text-[var(--text-subtle)]"><span>target / horizon</span><span>n</span><span>mae</span><span>bias</span><span>skill</span></div>{["price_real", "price_p2p"].flatMap((targetName) => ["5m", "1h", "12h"].map((horizon) => { const metric = scores[targetName]?.[horizon]; const n = metric?.n ?? 0; const negative = (metric?.skill_vs_persistence ?? 0) < 0; return n === 0 ? <div key={`${targetName}-${horizon}`} className="grid grid-cols-[1fr_1fr] gap-1 text-[var(--text-muted)]"><span>{targetName === "price_real" ? "grid" : "p2p"} {horizon}</span><span>{horizon === "12h" ? "settles 12h after issue" : "no scored outcomes yet"}</span></div> : <div key={`${targetName}-${horizon}`} className="grid grid-cols-[1fr_34px_60px_60px_60px] gap-1"><span>{targetName === "price_real" ? "grid" : "p2p"} {horizon}</span><span>{n}</span><span>{metric?.mae?.toFixed(2) ?? "—"}</span><span>{metric?.bias?.toFixed(2) ?? "—"}</span><span className={negative ? "text-[var(--danger)]" : "text-[var(--text)]"}>{metric?.skill_vs_persistence == null ? "—" : metric.skill_vs_persistence.toFixed(2)}</span></div>; }))}</div>}</div>;
+            })}
+          </div>
+        )}
+        {latest && ["price_real", "price_p2p"].some((key) => HORIZONS.some((horizon) => { const provenance = latest[key as ForecastTarget]?.[horizon.key]?.provenance; return provenance?.includes("degraded") || provenance?.includes("cold_start"); })) && <div className="mt-3 flex flex-wrap gap-2">{["price_real", "price_p2p"].flatMap((key) => HORIZONS.map((horizon) => { const provenance = latest[key as ForecastTarget]?.[horizon.key]?.provenance; return provenance?.includes("degraded") || provenance?.includes("cold_start") ? <StatusPill key={`${key}-${horizon.key}`} tone="amber">{key} {horizon.key}: {provenance}</StatusPill> : null; }))}</div>}
       </DashboardCard>
     </div>
   );

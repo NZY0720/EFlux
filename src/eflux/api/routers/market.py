@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
+from typing import Literal
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
+from eflux.api.deps import AdminUser, CurrentUser, DbSession, SimulatorDep
 from eflux.data.electricity_market import ExternalMarketQuote
 from eflux.db.models import VPP
 from eflux.market.events import ExternalTradeEvent, TradeEvent
@@ -68,6 +69,12 @@ class MarketBalanceOut(BaseModel):
     ask_depth_kwh: float
 
 
+class MarketSessionOut(BaseModel):
+    market_mode: str
+    sim_time: datetime
+    wall_time: datetime
+
+
 class MarketSnapshot(BaseModel):
     sim_ts: datetime
     speed: float
@@ -77,6 +84,8 @@ class MarketSnapshot(BaseModel):
     bids: list[tuple[str, str]]
     asks: list[tuple[str, str]]
     num_builtin_vpps: int
+    data_provenance: Literal["real", "cached", "synthetic"]
+    session: MarketSessionOut
     data_source: DataSourceStatus
     external_market: ExternalMarketOut
     balance: MarketBalanceOut
@@ -112,8 +121,10 @@ async def snapshot(sim: SimulatorDep, depth: int = 10) -> MarketSnapshot:
     async with sim._lock:
         s = sim.engine.snapshot(depth_levels=depth)
         balance = sim.market_balance()
+    sim_time = sim.clock.now_sim()
+    quote = sim.external_market_quote()
     return MarketSnapshot(
-        sim_ts=sim.clock.now_sim(),
+        sim_ts=sim_time,
         speed=sim.clock.speed,
         best_bid=s["best_bid"],
         best_ask=s["best_ask"],
@@ -121,8 +132,14 @@ async def snapshot(sim: SimulatorDep, depth: int = 10) -> MarketSnapshot:
         bids=s["bids"],
         asks=s["asks"],
         num_builtin_vpps=len(sim.vpps),
+        data_provenance=_data_provenance(quote),
+        session=MarketSessionOut(
+            market_mode=sim.market_mode,
+            sim_time=sim_time,
+            wall_time=datetime.now(UTC),
+        ),
         data_source=sim.data_source_status(),
-        external_market=_external_market_out(sim.external_market_quote()),
+        external_market=_external_market_out(quote),
         balance=balance,
     )
 
@@ -144,6 +161,14 @@ def _external_market_out(q: ExternalMarketQuote) -> ExternalMarketOut:
         detail=q.detail,
         fetched_at=q.fetched_at,
     )
+
+
+def _data_provenance(q: ExternalMarketQuote) -> Literal["real", "cached", "synthetic"]:
+    if q.status == "real":
+        return "real"
+    if q.is_real_price:
+        return "cached"
+    return "synthetic"
 
 
 class SupplyCurveOrder(BaseModel):
@@ -400,7 +425,7 @@ async def set_market_speed(
 
 
 @router.post("/ppo/renew", response_model=PpoRenewStartOut)
-async def renew_ppos(user: CurrentUser, sim: SimulatorDep, days: int = 30) -> PpoRenewStartOut:
+async def renew_ppos(user: AdminUser, sim: SimulatorDep, days: int = 30) -> PpoRenewStartOut:
     """Retrain the PPO warm-start on the latest `days` of real CAISO price + weather, then
     hot-reload every live online policy (standalone PPOs, mirrors, and hybrid executors).
     Runs in the background — poll GET /market/ppo/status for progress. Auth-gated like /speed."""

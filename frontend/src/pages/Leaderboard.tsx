@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
 import { ChartSpline, Info, Trophy } from "lucide-react";
+import { useNavigate } from "react-router-dom";
 
-import { fetchLeaderboard, fetchLeaderboardSessions } from "../api/client";
-import type { LeaderboardOut, LeaderboardRow, LeaderboardSession } from "../api/types";
+import { fetchCompetitionLeaderboard, fetchLeaderboard, fetchLeaderboardSessions } from "../api/client";
+import type { CompetitionLeaderboard, LeaderboardOut, LeaderboardRow, LeaderboardSession } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
 import EquityCurves from "../components/EquityCurves";
 import { CATEGORY_ORDER, categoryMeta } from "../lib/categories";
@@ -10,12 +11,18 @@ import { useServerEquity } from "../state/useServerEquity";
 
 type Scope = "session" | "alltime";
 type SortKey = "score" | "pnl" | "trades" | "hours";
+type Track = "live" | "managed" | "container-standard" | "container-model";
 
 const fmtUsd = (s: string) => {
   const n = Number(s);
   return `${n >= 0 ? "+" : ""}${n.toFixed(2)}`;
 };
 const fmtScore = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(3)}`;
+const maskEmail = (email: string) => {
+  const [local, domain] = email.split("@");
+  if (!domain) return `${email.slice(0, 2)}•••`;
+  return `${local.slice(0, Math.min(2, local.length))}•••@${domain}`;
+};
 
 /**
  * Durable leaderboard — rankings persist across backend restarts (unlike the live
@@ -25,6 +32,7 @@ const fmtScore = (n: number) => `${n >= 0 ? "+" : ""}${n.toFixed(3)}`;
  * a big battery doesn't automatically win.
  */
 export default function Leaderboard() {
+  const [track, setTrack] = useState<Track>("live");
   const [scope, setScope] = useState<Scope>("session");
   const [sessions, setSessions] = useState<LeaderboardSession[]>([]);
   const [sessionId, setSessionId] = useState<number | undefined>(undefined);
@@ -144,6 +152,14 @@ export default function Leaderboard() {
         </div>
       </div>
 
+      <div className="flex flex-wrap gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface-inset)] p-1" role="tablist" aria-label="Leaderboard tracks">
+        <TrackTab id="live" active={track} setActive={setTrack}>Live</TrackTab>
+        <TrackTab id="managed" active={track} setActive={setTrack}>Managed</TrackTab>
+        <TrackTab id="container-standard" active={track} setActive={setTrack}>Container Standard</TrackTab>
+        <TrackTab id="container-model" active={track} setActive={setTrack}>Container Model</TrackTab>
+      </div>
+
+      {track === "live" ? <>
       <div className="flex flex-wrap items-center gap-1.5">
         <button
           onClick={() => setCategory(null)}
@@ -200,6 +216,7 @@ export default function Leaderboard() {
                     <td className="px-3 py-1.5 text-[var(--text-subtle)] tabular-nums">{i + 1}</td>
                     <td className="px-3 py-1.5 text-[var(--text)]">
                       {r.name}
+                      {r.trade_count < 10 && <StatusPill tone="amber" className="ml-2 py-0 text-[10px]">collecting data</StatusPill>}
                       {r.llm_model && (
                         <span className="ml-1.5 text-[10px] text-[var(--violet)]">{r.llm_model}</span>
                       )}
@@ -263,6 +280,31 @@ export default function Leaderboard() {
           <EquityCurves history={equity} topN={8} />
         </DashboardCard>
       )}
+      </> : track === "managed" ? <ManagedLeaderboard /> : <LaterPhaseTrack title={track === "container-standard" ? "Container Standard" : "Container Model"} />}
     </div>
   );
 }
+
+function TrackTab({ id, active, setActive, children }: { id: Track; active: Track; setActive: (track: Track) => void; children: React.ReactNode }) {
+  return <button type="button" role="tab" aria-selected={active === id} onClick={() => setActive(id)} className={`rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${active === id ? "bg-[var(--accent-soft)] text-[var(--accent)]" : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"}`}>{children}</button>;
+}
+
+function ManagedLeaderboard() {
+  const navigate = useNavigate();
+  const [board, setBoard] = useState<CompetitionLeaderboard | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchCompetitionLeaderboard("season-0")
+      .then((data) => { if (!cancelled) { setBoard(data); setError(null); } })
+      .catch((err: Error) => { if (!cancelled) setError(err.message || "Unable to load the managed leaderboard."); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+  const openCompetition = () => navigate("/competitions/season-0");
+  const onRowKeyDown = (event: React.KeyboardEvent<HTMLTableRowElement>) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openCompetition(); } };
+  return <DashboardCard><CardTitle icon={Trophy}>Managed ranking</CardTitle>{error ? <p role="alert" className="text-sm text-[var(--danger)]">{error}</p> : loading ? <p className="text-sm text-[var(--text-muted)]">Loading managed results…</p> : !board?.entries.length ? <EmptyState icon={Trophy} title="No managed results yet" body="Managed submissions will appear after their evaluation runs complete." /> : <TableShell><table className="eflux-table min-w-[700px] text-sm"><thead><tr><th className="px-3 py-2 text-left">Rank</th><th className="px-3 py-2 text-left">Participant</th><th className="px-3 py-2 text-left">Algorithm</th><th className="px-3 py-2 text-right">Score</th><th className="px-3 py-2 text-right">Seeds ok</th><th className="px-3 py-2 text-right">Seeds failed</th></tr></thead><tbody>{board.entries.map((entry) => <tr key={entry.submission_id} role="link" tabIndex={0} onClick={openCompetition} onKeyDown={onRowKeyDown} className="cursor-pointer hover:bg-[var(--surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]"><td className="px-3 py-2 font-mono tabular-nums text-[var(--text)]">{entry.rank}</td><td className="px-3 py-2 text-[var(--text-muted)]">{maskEmail(entry.user_email)}</td><td className="px-3 py-2 text-[var(--text)]">{entry.algorithm}</td><td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--text)]">{entry.score.toFixed(4)}</td><td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--success)]">{entry.seed_ok_count}</td><td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--danger)]">{entry.seed_failed_count}</td></tr>)}</tbody></table></TableShell>}</DashboardCard>;
+}
+
+function LaterPhaseTrack({ title }: { title: string }) { return <DashboardCard><EmptyState icon={Trophy} title={`${title} track`} body="Track opens in a later phase." /></DashboardCard>; }

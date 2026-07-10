@@ -30,6 +30,44 @@ from eflux.simulator.scenarios import (
 
 router = APIRouter(prefix="/vpps", tags=["vpps"])
 
+# Deployment defaults are served to the UI so clients share one canonical set;
+# the frontend retains these values only as an offline fallback.
+VPP_DEPLOYMENT_PRESETS = {
+    "Solar Trader": {
+        "pv": 8,
+        "batt": 8,
+        "load": 2,
+        "wind": 0,
+        "loadProfile": "residential",
+        "algorithm": "ppo",
+        "llm": True,
+        "online": True,
+        "beta": 0.45,
+    },
+    "Battery Arbitrageur": {
+        "pv": 2,
+        "batt": 20,
+        "load": 1.5,
+        "wind": 0,
+        "loadProfile": "flat",
+        "algorithm": "ppo",
+        "llm": True,
+        "online": True,
+        "beta": 0.25,
+    },
+    "Demand Optimizer": {
+        "pv": 4,
+        "batt": 10,
+        "load": 5,
+        "wind": 0,
+        "loadProfile": "commercial",
+        "algorithm": "ppo",
+        "llm": True,
+        "online": True,
+        "beta": 0.8,
+    },
+}
+
 # Tier A3 guidance ingestion: ~2/min sustained per account (comparable to the platform
 # strategist's own 60-tick refresh cadence), small burst for catch-up after reconnect.
 _guidance_limiter = RateLimiter(capacity=10, refill_per_sec=1 / 30)
@@ -52,6 +90,11 @@ class VPPOut(BaseModel):
     is_active: bool
     is_external: bool
     created_at: datetime
+
+
+@router.get("/presets")
+def vpp_presets() -> dict[str, dict[str, float | int | str | bool]]:
+    return VPP_DEPLOYMENT_PRESETS
 
 
 class ManagedVPPOut(BaseModel):

@@ -19,12 +19,12 @@ import yaml
 
 from eflux.agents.aa_agent import AAAgent
 from eflux.agents.base import BaseAgent
+from eflux.agents.character import derive_character
 from eflux.agents.gas import GasGeneratorAgent
 from eflux.agents.gd_agent import GDAgent
 from eflux.agents.hybrid import HybridPolicyAgent, StrategyAgent
 from eflux.agents.reflective.pool import SharedLLM
 from eflux.agents.reflective.strategist import LLMStrategist
-from eflux.agents.character import derive_character
 from eflux.agents.strategy.policy import BaselinePolicy, StrategyPolicy
 from eflux.agents.truthful import TruthfulAgent
 from eflux.agents.zip_agent import ZIPAgent
@@ -447,6 +447,7 @@ def provision_managed_vpp(
     algorithm: str = "ppo",
     llm_enabled: bool = True,
     online_learning: bool = True,
+    use_real_weather: bool | None = None,
 ) -> SimulatorVPP:
     """Provision a cloud-hosted managed VPP for an external user at runtime, attributed to
     ``owner_id`` so ``my_managed_vpps(owner_id)`` scopes it to that user. The agent is then
@@ -469,7 +470,9 @@ def provision_managed_vpp(
     if not llm_enabled and (persona_prompt is not None or model is not None):
         raise ValueError("persona/model are only supported when the LLM strategist is enabled")
 
-    if sim.shared_llm is None:
+    real_weather = _real_pv_available() if use_real_weather is None else use_real_weather
+
+    if llm_enabled and sim.shared_llm is None:
         # The scenario loader sets this at startup; build on demand as a defensive fallback.
         sim.shared_llm = SharedLLM.from_settings(get_settings())
 
@@ -492,7 +495,7 @@ def provision_managed_vpp(
                 sim,
                 spec,
                 shared=sim.shared_llm,
-                use_real_weather=_real_pv_available(),
+                use_real_weather=real_weather,
                 default_seed=seed if seed is not None else 42,
                 offset_index=existing,
                 n_managed=existing + 1,
@@ -524,7 +527,7 @@ def provision_managed_vpp(
                 sim,
                 spec,
                 shared=sim.shared_llm,
-                use_real_weather=_real_pv_available(),
+                use_real_weather=real_weather,
                 default_seed=seed if seed is not None else 42,
                 offset_index=existing,
                 n_managed=existing + 1,
@@ -555,7 +558,7 @@ def provision_managed_vpp(
         params_for_agent.setdefault("use_forecast", True)
         if get_settings().agent_character_enabled:
             params_for_agent.setdefault(
-                "character", derive_character(_build_params(spec, _real_pv_available()))
+                "character", derive_character(_build_params(spec, real_weather))
             )
         params_for_agent["policy"] = _build_executor(
             name, spec.executor, seed=agent_seed, auto_update=True
@@ -572,7 +575,7 @@ def provision_managed_vpp(
 
     vpp = sim.add_builtin_vpp(
         name=spec.name,
-        params=_build_params(spec, _real_pv_available()),
+        params=_build_params(spec, real_weather),
         agent=agent,
         seed=agent_seed,
         strategy=strategy,

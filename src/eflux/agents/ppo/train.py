@@ -24,7 +24,12 @@ from collections import Counter
 from datetime import date
 from pathlib import Path
 
-from eflux.agents.ppo.primitive_encoding import OBS_V1, OBS_V3, action_profile_for_market, primitive_modes_for
+from eflux.agents.ppo.primitive_encoding import (
+    OBS_V1,
+    OBS_V3,
+    action_profile_for_market,
+    primitive_modes_for,
+)
 
 log = logging.getLogger("eflux.ppo.train")
 

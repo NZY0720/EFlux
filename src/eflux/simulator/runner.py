@@ -7,6 +7,7 @@ share an asyncio.Lock to keep the (sync) matching engine race-free.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import time
@@ -15,6 +16,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from itertools import pairwise
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 from zoneinfo import ZoneInfo
@@ -30,6 +32,7 @@ from eflux.data.electricity_market import (
     disabled_quote,
     synthetic_quote,
 )
+from eflux.forecasting.models import MARKET_TIMEZONE, AnchorForecast, HourlyEwmaProfile
 from eflux.forecasting.service import ForecastService
 from eflux.market.clock import RollingClock
 from eflux.market.events import EventKind, ExternalTradeEvent, TickEvent, TradeEvent
@@ -205,7 +208,11 @@ class Simulator:
         # Published CAISO DAM hourly curve (pd.Series) anchoring the price forecasts,
         # and the last realized prices as the anchor's persistence fallback.
         self._forecast_dam_prices: object | None = None
+        self._forecast_dam_source_id: str | None = None
         self._forecast_last_price: dict[str, float] = {}
+        # Rolling own-market hourly clearing profile anchoring price_p2p (never
+        # CAISO DAM — grid settlement runs structurally above P2P clearing).
+        self._forecast_p2p_profile = self._load_forecast_p2p_profile()
         # Background "renew PPOs" (retrain on latest real data + hot-reload) state.
         self._ppo_renew_task: asyncio.Task | None = None
         self._ppo_renew: PpoRenewStatus = {
@@ -753,7 +760,7 @@ class Simulator:
             return
         settings = get_settings()
         if settings.forecast_enabled and self.forecast_service is None:
-            self.forecast_service = ForecastService(nwp=self._forecast_nwp_lookups())
+            self.forecast_service = self._new_forecast_service(self._forecast_nwp_lookups())
             self._forecast_bootstrap_task = asyncio.create_task(
                 self._bootstrap_forecast_service(), name="forecast-bootstrap"
             )
@@ -768,7 +775,10 @@ class Simulator:
         # poll there to avoid needless external calls.
         if (
             settings.external_market_enabled
-            and self.market_mode == "realprice"
+            and (
+                self.market_mode == "realprice"
+                or settings.forecast_poll_realprice_in_p2p
+            )
             and self._external_market_task is None
         ):
             self._external_market_task = asyncio.create_task(
@@ -837,6 +847,25 @@ class Simulator:
         self._external_market_quote = quote
         self._data_source_status = None
 
+    @staticmethod
+    async def _persist_created_forecast_outcomes(rows: list[dict]) -> None:
+        from eflux.forecasting.outcomes import create_outcomes
+
+        await create_outcomes(rows)
+
+    @staticmethod
+    async def _persist_settled_forecast_outcomes(rows: list[dict]) -> None:
+        from eflux.forecasting.outcomes import settle_outcomes
+
+        await settle_outcomes(rows)
+
+    def _new_forecast_service(self, nwp: dict[str, Callable]) -> ForecastService:
+        return ForecastService(
+            nwp=nwp,
+            on_outcomes_created=self._persist_created_forecast_outcomes,
+            on_outcomes_settled=self._persist_settled_forecast_outcomes,
+        )
+
     async def _bootstrap_forecast_service(self) -> None:
         settings = get_settings()
         state_path = self._forecast_state_path()
@@ -876,20 +905,30 @@ class Simulator:
                     raise
                 except Exception:
                     log.exception("Forecast weather lookups unavailable during state restore")
-                self.forecast_service = await asyncio.to_thread(
-                    ForecastService.load,
-                    state_path,
-                    nwp=self._forecast_nwp_lookups(),
-                )
-                if self.forecast_service.is_warm:
+                try:
+                    self.forecast_service = await asyncio.to_thread(
+                        ForecastService.load,
+                        state_path,
+                        nwp=self._forecast_nwp_lookups(),
+                        on_outcomes_created=self._persist_created_forecast_outcomes,
+                        on_outcomes_settled=self._persist_settled_forecast_outcomes,
+                    )
+                except ValueError as exc:
+                    # A state-version change deliberately invalidates feature
+                    # encodings and sparse pre-hardening warm-starts.
+                    log.warning("Forecast state %s ignored: %s", state_path, exc)
+                    self.forecast_service = self._new_forecast_service(
+                        self._forecast_nwp_lookups()
+                    )
+                if self.forecast_service is not None and self.forecast_service.is_warm:
                     log.info("Forecast service restored from %s", state_path)
+                    self._seed_forecast_p2p_prior()
                     return
-                log.warning(
-                    "Forecast state at %s has no price observations (e.g. saved after a "
-                    "throttled CAISO warm-up); keeping its weather models and re-running "
-                    "the price warm-start on top",
-                    state_path,
-                )
+                if self.forecast_service is not None:
+                    log.warning(
+                        "Forecast state at %s has no price observations; re-running the price warm-start",
+                        state_path,
+                    )
             if data is None:
                 try:
                     data = await asyncio.wait_for(
@@ -907,7 +946,7 @@ class Simulator:
                 raise RuntimeError("no forecast warm-up data available (fresh or cached)")
             self._forecast_real_data = data
             nwp = self._forecast_nwp_lookups()
-            service = self.forecast_service or ForecastService(nwp=nwp)
+            service = self.forecast_service or self._new_forecast_service(nwp)
             service.warm_start(series=self._forecast_warmup_series(data), nwp=nwp)
             self.forecast_service = service
             log.info(
@@ -917,6 +956,7 @@ class Simulator:
                 data.end.date(),
                 0 if data.price is None else len(data.price),
             )
+            self._seed_forecast_p2p_prior()
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -925,23 +965,17 @@ class Simulator:
     async def _select_forecast_warmup_data(
         self, fresh: RealMarketData | None, timeout: float
     ) -> RealMarketData | None:
-        """Fresh warm-up window, unless its price series is too thin — then the best
-        recent cached window wins. CAISO 429 throttling degrades the fresh fetch to
-        partial/empty price data, and the thin result is parquet-cached for the rest
-        of the day, so without this fallback one bad fetch poisons every later boot.
-        """
+        """Prefer the densest contiguous price window, including cached candidates."""
         from eflux.agents.ppo.training_data import cached_price_windows
 
         settings = get_settings()
         min_points = max(0, settings.forecast_warmup_min_price_points)
-        best = fresh
-        best_points = 0 if fresh is None or fresh.price is None else len(fresh.price)
-        if best_points >= min_points:
-            return best
-        fresh_points = best_points
-        for start_d, end_d in cached_price_windows()[:4]:
-            if best_points >= min_points:
-                break
+        max_gap_hours = max(0.0, settings.forecast_warmup_max_gap_hours)
+        candidates: list[tuple[str, RealMarketData]] = []
+        if fresh is not None:
+            candidates.append(("fresh", fresh))
+        fresh_points = 0 if fresh is None or fresh.price is None else len(fresh.price)
+        for start_d, end_d in cached_price_windows():
             try:
                 candidate = await asyncio.wait_for(
                     asyncio.to_thread(self._load_forecast_warmup_window, start_d, end_d),
@@ -952,18 +986,49 @@ class Simulator:
             except Exception:
                 log.exception("Cached warm-up window %s..%s unusable", start_d, end_d)
                 continue
-            points = 0 if candidate.price is None else len(candidate.price)
-            if points > best_points:
-                best, best_points = candidate, points
-        if best is not None and best is not fresh:
+            candidates.append((f"cache {start_d}..{end_d}", candidate))
+
+        def quality(data: RealMarketData) -> tuple[int, int, float]:
+            price = data.price
+            if price is None:
+                return (0, 0, float("inf"))
+            times = sorted(price.keys() if hasattr(price, "keys") else [])
+            if not times:
+                return (0, 0, float("inf"))
+            longest = run = 1
+            worst_gap = 0.0
+            for earlier, later in pairwise(times):
+                gap = (later - earlier).total_seconds() / 3600.0
+                worst_gap = max(worst_gap, gap)
+                if gap <= max_gap_hours:
+                    run += 1
+                else:
+                    longest = max(longest, run)
+                    run = 1
+            longest = max(longest, run)
+            return (longest, len(times), worst_gap)
+
+        eligible = [
+            (quality(data), label, data)
+            for label, data in candidates
+            if quality(data)[0] >= min_points and quality(data)[2] <= max_gap_hours
+        ]
+        if not eligible:
             log.warning(
-                "CAISO warm-up fetch too thin (%d price points, need %d); "
-                "warm-starting from cached window %s..%s (%d points) instead",
-                fresh_points,
+                "No contiguous forecast warm-up window met %d points and %.1fh max gap",
                 min_points,
-                best.start.date(),
-                best.end.date(),
+                max_gap_hours,
+            )
+            return None
+        (_, best_points, _), label, best = max(
+            eligible, key=lambda item: (item[0][0], item[0][1], -item[0][2])
+        )
+        if label != "fresh":
+            log.warning(
+                "Using denser contiguous forecast warm-up %s (%d points) over fresh (%d points)",
+                label,
                 best_points,
+                fresh_points,
             )
         return best
 
@@ -1027,6 +1092,7 @@ class Simulator:
             self._forecast_last_price["price_real"] = real_obs
         if p2p_obs is not None:
             self._forecast_last_price["price_p2p"] = p2p_obs
+            self._forecast_p2p_profile.observe(sim_ts, p2p_obs)
         service.observe(
             sim_ts,
             price_real=real_obs,
@@ -1063,15 +1129,15 @@ class Simulator:
             return None
         return bundle
 
-    def _forecast_nwp_lookups(self) -> dict[str, Callable[[datetime], float]]:
-        lookups: dict[str, Callable[[datetime], float]] = {
+    def _forecast_nwp_lookups(self) -> dict[str, Callable]:
+        lookups: dict[str, Callable] = {
             "ghi": lambda ts: self._forecast_weather_value("ghi", ts, 0.0),
             "temp_air": lambda ts: self._forecast_weather_value("temp_air", ts, 20.0),
             "wind_speed": lambda ts: self._forecast_weather_value("wind_speed", ts, 0.0),
         }
         if get_settings().forecast_dam_anchor_enabled:
             lookups["price_real"] = lambda ts: self._forecast_price_anchor(ts, "price_real")
-            lookups["price_p2p"] = lambda ts: self._forecast_price_anchor(ts, "price_p2p")
+            lookups["price_p2p"] = lambda ts: self._forecast_p2p_anchor(ts)
         return lookups
 
     def _load_forecast_dam_prices(self) -> None:
@@ -1092,11 +1158,25 @@ class Simulator:
         cache_dir.mkdir(parents=True, exist_ok=True)
         safe = node.replace("/", "_")
         cache = cache_dir / f"dam_{safe}_{start_d.isoformat()}_{end_d.isoformat()}.parquet"
+        start = datetime(start_d.year, start_d.month, start_d.day, tzinfo=UTC)
+        end = datetime(end_d.year, end_d.month, end_d.day, tzinfo=UTC)
+
+        def complete(candidate) -> bool:
+            if len(candidate) != int((end - start).total_seconds() // 3600):
+                return False
+            index = pd.to_datetime(candidate.index, utc=True)
+            expected = pd.date_range(start, end - timedelta(hours=1), freq="h", tz="UTC")
+            return index.equals(expected)
+
+        series = None
         if cache.exists():
-            series = pd.read_parquet(cache)["lmp"]
-        else:
-            start = datetime(start_d.year, start_d.month, start_d.day, tzinfo=UTC)
-            end = datetime(end_d.year, end_d.month, end_d.day, tzinfo=UTC)
+            cached = pd.read_parquet(cache)["lmp"]
+            if complete(cached):
+                series = cached
+            else:
+                log.warning("Expiring incomplete DAM cache %s (%d rows)", cache, len(cached))
+                cache.unlink(missing_ok=True)
+        if series is None:
             rows = CaisoOasisClient().fetch_lmp_history_sync(node=node, start=start, end=end)
             series = pd.Series(
                 {
@@ -1107,13 +1187,19 @@ class Simulator:
             # Normalize to a tz-aware DatetimeIndex so hour lookups behave the same
             # as the parquet round-trip path.
             series.index = pd.to_datetime(series.index, utc=True)
-            if len(series):
+            if len(series) and complete(series):
                 try:
                     series.rename("lmp").to_frame().to_parquet(cache)
                 except Exception:
                     log.exception("DAM anchor cache write failed: %s", cache)
+            elif len(series):
+                log.warning("DAM response incomplete (%d rows); using only explicit covered hours", len(series))
         if len(series):
             self._forecast_dam_prices = series
+            self._forecast_dam_source_id = (
+                f"{cache.name}:{len(series)}:{series.index.min().isoformat()}:"
+                f"{series.index.max().isoformat()}"
+            )
             log.info(
                 "Forecast DAM anchor loaded: %d hourly points %s..%s",
                 len(series),
@@ -1125,29 +1211,43 @@ class Simulator:
                 "Forecast DAM anchor unavailable (empty fetch); price anchors fall back to persistence"
             )
 
-    def _forecast_price_anchor(self, ts: datetime, target: str) -> float:
-        """DAM price at ts's hour; stale-bounded asof; else last realized; else ref."""
+    def _forecast_price_anchor(self, ts: datetime, target: str) -> AnchorForecast:
+        """DAM price only when the requested hour is covered.
+
+        Historical/current gaps may use a two-hour as-of value. A *future*
+        target must be present exactly; otherwise the model uses its explicit
+        persistence/hour-of-day fallback rather than a stale curve endpoint.
+        """
         series = self._forecast_dam_prices
+        source_id = self._forecast_dam_source_id
+        hour = ts.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
         if series is not None and len(series):  # type: ignore[arg-type]
-            hour = ts.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
             try:
                 if hour in series.index:  # type: ignore[attr-defined]
-                    return float(series.loc[hour])  # type: ignore[attr-defined]
-                past = series.loc[:hour]  # type: ignore[attr-defined]
-                if len(past) and (hour - past.index[-1]) <= timedelta(hours=26):
-                    return float(past.iloc[-1])
+                    return AnchorForecast(float(series.loc[hour]), "dam", source_id)  # type: ignore[attr-defined]
+                now_hour = self.clock.now_sim().astimezone(UTC).replace(
+                    minute=0, second=0, microsecond=0
+                )
+                if hour <= now_hour:
+                    past = series.loc[:hour]  # type: ignore[attr-defined]
+                    if len(past) and (hour - past.index[-1]) <= timedelta(hours=2):
+                        return AnchorForecast(float(past.iloc[-1]), "dam_asof", source_id)
             except Exception:
-                pass
-        last = self._forecast_last_price.get(target)
-        if last is not None:
-            return last
-        # The market's own last print beats a static constant as a persistence
-        # anchor (e.g. price_real in p2p mode, where the CAISO quote may be
-        # throttled and real prices are never observed).
-        engine_last = self.engine.last_price
-        if engine_last is not None:
-            return float(engine_last)
-        return float(get_settings().external_market_fallback_price)
+                log.exception("DAM anchor lookup failed for %s", hour)
+        return AnchorForecast(None, "dam_coverage_missing", source_id or "dam-unavailable")
+
+    def _forecast_p2p_anchor(self, ts: datetime) -> AnchorForecast:
+        """Own-market anchor for P2P price forecasts (decision 2026-07-10).
+
+        CAISO DAM tracks grid settlement, which runs structurally above what
+        this CDA actually clears; anchoring P2P on it forced the learned
+        residual to absorb the whole gap and produced near-zero forecasts.
+        The stable source_id keeps the residual estimator from resetting."""
+        value = self._forecast_p2p_profile.predict(ts)
+        if value is None:
+            return AnchorForecast(None, "p2p_cold_start", "p2p-profile-v1")
+        provenance = "p2p_prior" if self._forecast_p2p_profile.is_prior(ts) else "p2p_profile"
+        return AnchorForecast(float(value), provenance, "p2p-profile-v1")
 
     def _load_forecast_live_frames(self) -> None:
         """Fetch pv/wind-site hourly weather covering ~now±2d for live lookups.
@@ -1217,6 +1317,92 @@ class Simulator:
             path = PROJECT_ROOT / path
         return path / "state.json"
 
+    def _seed_forecast_p2p_prior(self) -> None:
+        """Give a cold own-market P2P anchor an intraday SHAPE prior (2026-07-11).
+
+        A cold profile is honestly flat, and flat 12h forecasts remove the spread
+        the eta-guarded battery arbitrage crosses for — no trades, so the profile
+        never warms (the drive the biased DAM anchor used to provide by accident).
+        Seed cold buckets with the warm-up CAISO curve rescaled to the P2P price
+        level: the shape returns without the DAM level bias, buckets stay labeled
+        "p2p_prior", and the first real print per hour replaces the prior outright.
+        """
+        settings = get_settings()
+        if not settings.forecast_p2p_profile_prior_enabled:
+            return
+        # No warm/prior guard here: seed_prior is per-bucket idempotent, and a
+        # coarse "has any real data" check once blocked 21 cold hours because a
+        # single traded hour existed (2026-07-11).
+        profile = self._forecast_p2p_profile
+        data = self._forecast_real_data
+        price = getattr(data, "price", None) if data is not None else None
+        if price is None or not len(price):  # type: ignore[arg-type]
+            price = self._newest_cached_price_series()
+        if price is None or not len(price):  # type: ignore[arg-type]
+            log.info("P2P shape prior skipped: no warm-up price series available")
+            return
+        by_hour: dict[int, list[float]] = {}
+        try:
+            for ts, value in price.items():  # type: ignore[attr-defined]
+                local = ts if ts.tzinfo is not None else ts.replace(tzinfo=MARKET_TIMEZONE)
+                by_hour.setdefault(local.astimezone(MARKET_TIMEZONE).hour, []).append(float(value))
+        except Exception:
+            log.exception("P2P shape prior skipped: warm-up price series unreadable")
+            return
+        if not by_hour:
+            return
+        hourly = {hour: sum(values) / len(values) for hour, values in by_hour.items()}
+        proxy_mean = sum(hourly.values()) / len(hourly)
+        level = None
+        service = self.forecast_service
+        if service is not None:
+            model = service.models.get("price_p2p")
+            level = getattr(getattr(model, "seasonal", None), "last_value", None)
+        scale = 1.0
+        if level and proxy_mean > 0:
+            scale = min(1.5, max(0.2, float(level) / proxy_mean))
+        seeded = profile.seed_prior({hour: value * scale for hour, value in hourly.items()})
+        if seeded:
+            log.info(
+                "P2P shape prior seeded: %d hour buckets, scale %.2f (p2p level %s / proxy mean %.2f)",
+                seeded,
+                scale,
+                level,
+                proxy_mean,
+            )
+
+    def _newest_cached_price_series(self):
+        """Newest cached CAISO price window, for prior seeding when the warm-up
+        fetch failed (429) on the state-restore path. Cache read only, no network."""
+        try:
+            from eflux.agents.ppo.training_data import cached_price_windows
+
+            windows = cached_price_windows()
+            if not windows:
+                return None
+            start_d, end_d = max(windows, key=lambda w: w[1])
+            data = self._load_forecast_warmup_window(start_d, end_d)
+            return getattr(data, "price", None)
+        except Exception:
+            log.exception("Cached price window unavailable for P2P prior seeding")
+            return None
+
+    def _forecast_p2p_profile_path(self) -> Path:
+        return self._forecast_state_path().with_name("p2p_profile.json")
+
+    def _load_forecast_p2p_profile(self) -> HourlyEwmaProfile:
+        settings = get_settings()
+        try:
+            path = self._forecast_p2p_profile_path()
+            if path.exists():
+                return HourlyEwmaProfile.from_state(json.loads(path.read_text()))
+        except Exception:
+            log.exception("P2P price profile restore failed; starting cold")
+        return HourlyEwmaProfile(
+            alpha=settings.forecast_p2p_profile_alpha,
+            min_obs=settings.forecast_p2p_profile_min_obs,
+        )
+
     def _save_forecast_state(self) -> None:
         service = self.forecast_service
         if service is None or service.observation_count() == 0:
@@ -1225,6 +1411,9 @@ class Simulator:
             state_path = self._forecast_state_path()
             state_path.parent.mkdir(parents=True, exist_ok=True)
             service.save(state_path)
+            self._forecast_p2p_profile_path().write_text(
+                json.dumps(self._forecast_p2p_profile.to_state())
+            )
         except Exception:
             log.exception("Forecast state save failed")
 

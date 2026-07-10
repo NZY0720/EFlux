@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import random
 from datetime import UTC, datetime, timedelta
 
@@ -12,8 +13,9 @@ from eflux.agents.truthful import TruthfulAgent
 from eflux.api.routers import forecasts
 from eflux.bridge.bus import InMemoryBus
 from eflux.config import get_settings
+from eflux.forecasting.models import AnchorForecast, HourlyEwmaProfile
 from eflux.forecasting.schema import ForecastBundle
-from eflux.forecasting.service import ForecastService
+from eflux.forecasting.service import MODEL_VERSION, ForecastService
 from eflux.simulator.runner import Simulator
 from eflux.vpp.base import VPPParams
 
@@ -50,7 +52,7 @@ def test_context_forecast_hides_refreshed_never_warmed_service():
     bundle = service.refresh(datetime(2026, 2, 1, 12, 0, tzinfo=UTC))
     sim.forecast_service = service
 
-    assert bundle.model_version == "online-rls-v1"
+    assert bundle.model_version == MODEL_VERSION
     assert service.is_warm is False
     assert sim._context_forecast() is None
 
@@ -82,6 +84,7 @@ def test_save_forecast_state_skips_placeholder_and_persists_warmed_service(monke
 @pytest.mark.asyncio
 async def test_simulator_forecast_service_starts_and_refreshes(monkeypatch, tmp_path):
     monkeypatch.setenv("EFLUX_FORECAST_ENABLED", "true")
+    monkeypatch.setenv("EFLUX_EXTERNAL_MARKET_ENABLED", "false")
     monkeypatch.setenv("EFLUX_FORECAST_REFRESH_SEC", "3600")
     monkeypatch.setenv("EFLUX_FORECAST_STATE_DIR", str(tmp_path))
     get_settings.cache_clear()
@@ -101,6 +104,28 @@ async def test_simulator_forecast_service_starts_and_refreshes(monkeypatch, tmp_
 
         assert sim.forecast_service.latest is bundle
         assert bundle.as_of == ts
+    finally:
+        await sim.stop()
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_p2p_mode_starts_realprice_poll_when_forecast_gate_enabled(monkeypatch):
+    monkeypatch.setenv("EFLUX_FORECAST_ENABLED", "false")
+    monkeypatch.setenv("EFLUX_EXTERNAL_MARKET_ENABLED", "true")
+    monkeypatch.setenv("EFLUX_FORECAST_POLL_REALPRICE_IN_P2P", "true")
+    get_settings.cache_clear()
+    started = asyncio.Event()
+
+    async def poll(self):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(Simulator, "_run_external_market_poll", poll)
+    sim = Simulator(bus=InMemoryBus())
+    try:
+        await sim.start()
+        await asyncio.wait_for(started.wait(), timeout=1.0)
     finally:
         await sim.stop()
         get_settings.cache_clear()
@@ -221,6 +246,85 @@ async def test_bootstrap_rewarms_price_cold_restored_state(monkeypatch, tmp_path
         get_settings.cache_clear()
 
 
+@pytest.mark.asyncio
+async def test_warmup_selector_prefers_dense_contiguous_cache(monkeypatch):
+    from datetime import date
+
+    from eflux.agents.ppo.training_data import RealMarketData
+
+    monkeypatch.setenv("EFLUX_FORECAST_WARMUP_MIN_PRICE_POINTS", "100")
+    monkeypatch.setenv("EFLUX_FORECAST_WARMUP_MAX_GAP_HOURS", "2")
+    get_settings.cache_clear()
+    start = datetime(2026, 6, 1, tzinfo=UTC)
+    sparse = {
+        start + timedelta(hours=i): 40.0
+        for i in [*range(84), *range(300, 384)]
+    }
+    dense = {start + timedelta(hours=i): 41.0 for i in range(240)}
+
+    def data(price):
+        return RealMarketData(price=price, weather=None, wind=None, start=start, end=start)
+
+    dates = [(date(2026, 6, 1), date(2026, 7, 1)), (date(2026, 5, 1), date(2026, 6, 1))]
+
+    def load_window(self, start_d, end_d):
+        return data(sparse if start_d == dates[0][0] else dense)
+
+    monkeypatch.setattr(Simulator, "_load_forecast_warmup_window", load_window)
+    monkeypatch.setattr(
+        "eflux.agents.ppo.training_data.cached_price_windows", lambda *args, **kwargs: dates
+    )
+    sim = Simulator(bus=InMemoryBus())
+    try:
+        chosen = await sim._select_forecast_warmup_data(data(sparse), timeout=1.0)
+        assert chosen is not None
+        assert len(chosen.price) == len(dense)
+    finally:
+        get_settings.cache_clear()
+
+
+def test_dam_anchor_rejects_missing_future_hour_and_allows_short_past_asof():
+    import pandas as pd
+
+    now = datetime(2026, 7, 10, 12, tzinfo=UTC)
+    sim = Simulator(bus=InMemoryBus(), sim_epoch=now)
+    index = pd.DatetimeIndex([now - timedelta(hours=1), now + timedelta(hours=1)])
+    sim._forecast_dam_prices = pd.Series([21.0, 22.0], index=index)
+    sim._forecast_dam_source_id = "test-curve"
+
+    missing_future = sim._forecast_price_anchor(now + timedelta(hours=2), "price_real")
+    recent_past = sim._forecast_price_anchor(now, "price_real")
+
+    assert isinstance(missing_future, AnchorForecast)
+    assert missing_future.value is None
+    assert missing_future.provenance == "dam_coverage_missing"
+    assert recent_past.value == pytest.approx(21.0)
+    assert recent_past.provenance == "dam_asof"
+
+
+def test_p2p_anchor_uses_own_market_profile_and_explicit_cold_start():
+    now = datetime(2026, 7, 10, 12, tzinfo=UTC)
+    sim = Simulator(bus=InMemoryBus(), sim_epoch=now)
+    # Force a cold profile so a developer machine's persisted profile can't leak in.
+    sim._forecast_p2p_profile = HourlyEwmaProfile(alpha=0.05, min_obs=5)
+
+    cold = sim._forecast_p2p_anchor(now)
+    assert cold.value is None
+    assert cold.provenance == "p2p_cold_start"
+
+    for _ in range(sim._forecast_p2p_profile.min_obs):
+        sim._forecast_p2p_profile.observe(now, 12.5)
+    warm = sim._forecast_p2p_anchor(now)
+    assert warm.value == pytest.approx(12.5)
+    assert warm.provenance == "p2p_profile"
+    assert warm.source_id == "p2p-profile-v1"
+
+    # The forecast wiring routes price_p2p through the own-market anchor,
+    # never the CAISO DAM curve.
+    lookup = sim._forecast_nwp_lookups()["price_p2p"]
+    assert lookup(now).provenance == "p2p_profile"
+
+
 def test_latest_forecast_endpoint_reports_warm_flag():
     service = ForecastService()
     service.refresh(datetime(2026, 3, 1, 0, 0, tzinfo=UTC))
@@ -247,3 +351,56 @@ def test_context_forecast_hides_stale_restored_bundle():
 
     assert service.is_warm
     assert sim._context_forecast() is None
+
+
+def test_p2p_prior_seeding_scales_to_market_level_and_labels_anchor():
+    import types
+
+    import pandas as pd
+
+    now = datetime(2026, 7, 11, 12, tzinfo=UTC)
+    sim = Simulator(bus=InMemoryBus(), sim_epoch=now)
+    sim._forecast_p2p_profile = HourlyEwmaProfile(alpha=0.05, min_obs=5)
+
+    # Two days of hourly proxy prices: 40 off-peak, 80 during hours 17-20 local.
+    index = pd.date_range("2026-07-08", periods=48, freq="h", tz="America/Los_Angeles")
+    values = [80.0 if ts.hour in (17, 18, 19, 20) else 40.0 for ts in index]
+    sim._forecast_real_data = types.SimpleNamespace(price=pd.Series(values, index=index))
+
+    service = ForecastService()
+    service.observe(datetime(2026, 7, 11, 11, 0), price_p2p=23.0)  # p2p level ≈ 23
+    sim.forecast_service = service
+
+    sim._seed_forecast_p2p_prior()
+
+    # scale = 23 / mean(hourly) — off-peak buckets land near 23*40/mean.
+    peak = sim._forecast_p2p_anchor(datetime(2026, 7, 11, 18, 0))
+    off = sim._forecast_p2p_anchor(datetime(2026, 7, 11, 3, 0))
+    assert peak.provenance == "p2p_prior"
+    assert off.provenance == "p2p_prior"
+    assert peak.value == pytest.approx(off.value * 2.0, rel=1e-6)  # shape preserved
+    assert 15.0 < off.value < 30.0  # level-corrected to P2P territory, not CAISO's
+
+    # A real print replaces the prior; the bucket re-earns the gate (explicit
+    # cold-start until min_obs real prints), then flips to real profile data.
+    sim._forecast_p2p_profile.observe(datetime(2026, 7, 11, 18, 5), 21.0)
+    assert sim._forecast_p2p_anchor(datetime(2026, 7, 11, 18, 10)).provenance == "p2p_cold_start"
+    for minute in range(6, 10):
+        sim._forecast_p2p_profile.observe(datetime(2026, 7, 11, 18, minute), 21.0)
+    replaced = sim._forecast_p2p_anchor(datetime(2026, 7, 11, 18, 10))
+    assert replaced.provenance == "p2p_profile"
+    assert replaced.value == pytest.approx(21.0)
+
+    # Idempotent: a second seeding call never overwrites.
+    before = dict(sim._forecast_p2p_profile.by_hour)
+    sim._seed_forecast_p2p_prior()
+    assert sim._forecast_p2p_profile.by_hour == before
+
+
+def test_history_endpoint_is_session_scoped_on_fresh_boot():
+    """Default config: a fresh session's hub chart starts empty — no DB backfill."""
+    app = FastAPI()
+    app.include_router(forecasts.router)
+    app.state.forecast_service = ForecastService()
+
+    assert TestClient(app).get("/forecasts/history").json() == []

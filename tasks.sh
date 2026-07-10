@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Common dev tasks. Run as: ./tasks.sh <task>
 # Tasks: help | start | stop | sync | run | dev | fe-install | fe-dev | smoke | ws | openapi | clean
-#        migrate | makemigration | test | train-ppo | backtest
+#        migrate | makemigration | test | train-ppo | backtest | eval-worker
 
 set -euo pipefail
 
@@ -29,7 +29,7 @@ case "$task" in
   help)
     cat <<'EOF'
 Tasks: start | stop | dev | sync | run | smoke | ws | clean | openapi | fe-dev | fe-install
-       migrate | makemigration | test | train-ppo | bench | eval-ppo | backtest
+       migrate | makemigration | test | train-ppo | bench | eval-ppo | backtest | eval-worker
   start          - one-click: backend + frontend in background + open browser
   stop           - kill backend/frontend dev processes started by start
   sync           - uv sync all deps into .env/
@@ -50,6 +50,7 @@ Tasks: start | stop | dev | sync | run | smoke | ws | clean | openapi | fe-dev |
   bench          - score candidate agents vs a fixed counter-roster (leaderboard)
   eval-ppo       - score a trained torch checkpoint vs the benchmark baselines (--checkpoint FILE.pt)
   backtest       - run a strict historical backtest (default: 1 month, 1s ticks, hourly live LLM)
+  eval-worker    - run the official evaluation queue worker (--once for one queued run)
 EOF
     ;;
 
@@ -168,6 +169,11 @@ EOF
   backtest)
     shift  # drop "backtest", forward the rest to the backtest CLI
     exec "$PY" -m eflux.cli backtest "$@"
+    ;;
+
+  eval-worker)
+    shift  # drop "eval-worker", forward the rest to the worker
+    exec "$PY" -m eflux.evaluation.worker "$@"
     ;;
 
   *)

@@ -24,6 +24,9 @@ import torch
 from eflux.agents.base import AgentContext
 from eflux.agents.ppo.online_net import ActorCriticNet
 from eflux.agents.ppo.primitive_encoding import (
+    action_dim as encoding_action_dim,
+)
+from eflux.agents.ppo.primitive_encoding import (
     action_profile_for_action_dim,
     decode_action,
     encode_obs,
@@ -32,12 +35,9 @@ from eflux.agents.ppo.primitive_encoding import (
     infer_action_profile,
     infer_encoding_version,
     infer_obs_dim,
-    primitive_modes_for,
     obs_version_for_obs_dim,
     price_ref_scale,
-)
-from eflux.agents.ppo.primitive_encoding import (
-    action_dim as encoding_action_dim,
+    primitive_modes_for,
 )
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.agents.valuation import ValuationSignal

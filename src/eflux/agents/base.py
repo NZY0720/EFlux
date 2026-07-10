@@ -141,7 +141,7 @@ class AgentContext:
     risk_rejections_total: float = 0.0
     # Latest platform forecast bundle. Phase-A only transports this signal; agents
     # ignore it until later phases opt in.
-    forecast: "ForecastBundle | None" = None
+    forecast: ForecastBundle | None = None
 
 
 class BaseAgent(ABC):

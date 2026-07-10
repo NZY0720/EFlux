@@ -133,7 +133,7 @@ export default function KpiBar({ snapshot, builtinVpps, variant = "p2p" }: Props
           value={balance?.supply_demand_ratio != null ? `${balance.supply_demand_ratio.toFixed(2)}x` : "—"}
           sub={
             balance
-              ? `${balance.renewable_kw.toFixed(0)} kW renew vs ${balance.load_kw.toFixed(0)} kW load`
+              ? `${balance.renewable_kw.toFixed(0)} kW solar+wind vs ${balance.load_kw.toFixed(0)} kW load`
               : "live capacity vs load"
           }
           icon={Activity}
@@ -155,7 +155,7 @@ export default function KpiBar({ snapshot, builtinVpps, variant = "p2p" }: Props
         value={balance?.supply_demand_ratio != null ? `${balance.supply_demand_ratio.toFixed(2)}x` : "—"}
         sub={
           balance
-            ? `${balance.renewable_kw.toFixed(0)} kW renew + ${balance.gas_capacity_kw.toFixed(0)} kW gas vs ${balance.load_kw.toFixed(0)} kW load`
+            ? `${balance.renewable_kw.toFixed(0)} kW solar+wind + ${balance.gas_capacity_kw.toFixed(0)} kW gas vs ${balance.load_kw.toFixed(0)} kW load`
           : "live capacity vs load"
         }
         icon={Scale}

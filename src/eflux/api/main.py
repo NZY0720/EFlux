@@ -2,24 +2,38 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import select
 
 # Ensure all models are imported before create_all.
 import eflux.db.models  # noqa: F401
 from eflux import __version__
 from eflux.agents.reflective.pool import CURATED_MODELS
 from eflux.agents.reflective.strategist import external_guidance_from_dict
-from eflux.api.routers import auth, benchmarks, forecasts, health, leaderboard, market, orders, vpps
+from eflux.api.routers import (
+    auth,
+    benchmarks,
+    competitions,
+    forecasts,
+    health,
+    leaderboard,
+    market,
+    orders,
+    proveout,
+    vpps,
+)
 from eflux.api.ws import market as market_ws
 from eflux.bridge import InMemoryBus, set_bus
 from eflux.bridge.bus import EventBus
 from eflux.config import get_settings
 from eflux.db.base import Base
-from eflux.db.session import get_engine
+from eflux.db.models import AuditEvent, Competition, CompetitionRuleSet
+from eflux.db.session import get_engine, get_sessionmaker
 from eflux.simulator.runner import Simulator
 from eflux.simulator.scenarios import (
     apply_chat_prefs,
@@ -31,6 +45,86 @@ from eflux.simulator.scenarios import (
 from eflux.stats.session import close_market_session, open_market_session, prune_old_snapshots
 
 log = logging.getLogger(__name__)
+
+_SEASON_0_RULES = {
+    "window_sec": 300,
+    "deadline_ms": 500,
+    "practice_seeds": 3,
+    "hidden_seeds": 5,
+    "holdout_seeds": 2,
+    "submissions_per_day": 2,
+    "seed_hours": 24,
+}
+
+
+async def _apply_pending_migrations_if_managed(engine) -> None:
+    """Upgrade an alembic-managed dev DB to head before create_all runs.
+
+    Forgiving on purpose: a failed upgrade logs loudly and the boot continues on
+    create_all, so a drifted dev database never bricks startup — but new columns
+    on pre-existing tables stay missing until the DB is reconciled manually.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    async with engine.connect() as conn:
+        managed = await conn.run_sync(lambda sync_conn: sa_inspect(sync_conn).has_table("alembic_version"))
+    if not managed:
+        log.info("DB is not alembic-managed; create_all only (run `alembic stamp head` to adopt migrations)")
+        return
+
+    def _upgrade() -> None:
+        from alembic.config import Config as AlembicConfig
+
+        from alembic import command
+        from eflux.config import PROJECT_ROOT
+
+        cfg = AlembicConfig(str(PROJECT_ROOT / "alembic.ini"))
+        # Never let env.py's fileConfig reset app logging mid-boot (it muted
+        # every post-migration log line on 2026-07-11).
+        cfg.attributes["skip_logging_config"] = True
+        command.upgrade(cfg, "head")
+
+    try:
+        await asyncio.to_thread(_upgrade)
+        log.info("Alembic migrations applied (head)")
+    except Exception:
+        log.exception(
+            "Alembic auto-upgrade failed — continuing on create_all; new columns on "
+            "existing tables may be missing until the DB is reconciled"
+        )
+
+
+async def _seed_default_competition() -> None:
+    """Create the first public competition once, including its auditable seed event."""
+    async with get_sessionmaker()() as session:
+        if (await session.execute(select(Competition.id).limit(1))).scalar_one_or_none() is not None:
+            return
+        competition = Competition(
+            slug="season-0",
+            title="EFlux Open — Season 0",
+            description="",
+            status="open",
+        )
+        session.add(competition)
+        await session.flush()
+        session.add(
+            CompetitionRuleSet(
+                competition_id=competition.id,
+                version="rules-v1.1",
+                track="managed",
+                config=_SEASON_0_RULES,
+            )
+        )
+        session.add(
+            AuditEvent(
+                actor_user_id=None,
+                action="competition.seeded",
+                entity_type="competition",
+                entity_id=competition.id,
+                payload={"slug": competition.slug},
+            )
+        )
+        await session.commit()
 
 
 async def _build_bus(settings) -> EventBus:
@@ -156,16 +250,22 @@ async def lifespan(app: FastAPI):
     logging.basicConfig(level=settings.log_level)
     log.info("EFlux starting (env=%s, market_speed=%sx)", settings.env, settings.market_speed)
 
-    # 1. Init DB schema. Dev convenience path runs create_all so a fresh SQLite
-    #    file works without `alembic upgrade head`. Production should set
-    #    EFLUX_AUTO_CREATE_SCHEMA=false and rely on alembic exclusively.
+    # 1. Init DB schema. For alembic-managed DBs, apply pending migrations first —
+    #    create_all alone adds new TABLES but silently skips new COLUMNS on
+    #    existing ones (2026-07-10: users.role absent at stamp 0002 → 500 on
+    #    sign-in). Fresh DBs (no alembic_version — e.g. test databases) keep the
+    #    plain create_all path. Production sets EFLUX_AUTO_CREATE_SCHEMA=false
+    #    and relies on alembic exclusively.
     if settings.env == "dev" and settings.auto_create_schema:
         engine = get_engine()
+        await _apply_pending_migrations_if_managed(engine)
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
         log.info("DB schema ensured (dev create_all)")
     else:
         log.info("Skipping create_all (auto_create_schema=%s, env=%s) — run alembic upgrade head", settings.auto_create_schema, settings.env)
+
+    await _seed_default_competition()
 
     # 2. Event bus. Selects InMemoryBus or RedisStreamBus per settings; if Redis
     #    is configured but unreachable, log a warning and fall back to memory.
@@ -220,8 +320,11 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(auth.router)
+    app.include_router(competitions.router)
+    app.include_router(competitions.submissions_router)
     app.include_router(vpps.router)
     app.include_router(orders.router)
+    app.include_router(proveout.router)
     app.include_router(market.router)
     app.include_router(forecasts.router)
     app.include_router(leaderboard.router)

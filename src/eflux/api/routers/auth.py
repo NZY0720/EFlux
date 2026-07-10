@@ -3,15 +3,16 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Header, HTTPException, Request, Response, status
 from pydantic import BaseModel, EmailStr, Field
 
 from eflux.api.deps import CurrentUser, DbSession
 from eflux.api.ratelimit import RateLimiter
 from eflux.auth.api_key import create_api_key, list_api_keys, revoke_api_key
 from eflux.auth.magic_link import consume_magic_link, create_magic_link
-from eflux.auth.session import create_session
+from eflux.auth.session import create_session, delete_session_for_token
 from eflux.config import get_settings
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -49,6 +50,12 @@ class SessionResponse(BaseModel):
     session_token: str
     user_id: int
     email: str
+
+
+class CurrentUserResponse(BaseModel):
+    id: int
+    email: str
+    role: str
 
 
 class ApiKeyMintRequest(BaseModel):
@@ -103,7 +110,9 @@ async def request_magic_link(
 
 
 @router.post("/consume", response_model=SessionResponse)
-async def consume(payload: ConsumeRequest, request: Request, session: DbSession) -> SessionResponse:
+async def consume(
+    payload: ConsumeRequest, request: Request, response: Response, session: DbSession
+) -> SessionResponse:
     allowed, _remaining = _consume_ip_limiter.check(_client_ip_key(request), 1)
     if not allowed:
         raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "auth consume rate limit exceeded")
@@ -112,7 +121,50 @@ async def consume(payload: ConsumeRequest, request: Request, session: DbSession)
     if user is None:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "invalid or expired token")
     tok = await create_session(session, user)
+    settings = get_settings()
+    response.set_cookie(
+        key="eflux_session",
+        value=tok,
+        max_age=settings.session_ttl_day * 24 * 60 * 60,
+        httponly=True,
+        secure=settings.env != "dev",
+        samesite="lax",
+    )
     return SessionResponse(session_token=tok, user_id=user.id, email=user.email)
+
+
+@router.get("/me", response_model=CurrentUserResponse)
+async def get_current_user(user: CurrentUser) -> CurrentUserResponse:
+    return CurrentUserResponse(id=user.id, email=user.email, role=user.role)
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    session: DbSession,
+    user: CurrentUser,
+    request: Request,
+    response: Response,
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    """Invalidate the current session and clear the browser session cookie.
+
+    API keys retain their existing authentication semantics but cannot be used to
+    revoke a session because they are not session tokens.
+    """
+    del user
+    token = (
+        authorization.split(" ", 1)[1].strip()
+        if authorization and authorization.lower().startswith("bearer ")
+        else request.cookies.get("eflux_session", "")
+    )
+    if not await delete_session_for_token(session, token):
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid session token")
+    response.delete_cookie(
+        "eflux_session",
+        httponly=True,
+        secure=get_settings().env != "dev",
+        samesite="lax",
+    )
 
 
 @router.post("/api-keys", response_model=ApiKeyMintResponse)

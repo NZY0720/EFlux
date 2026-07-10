@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import enum
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
+    Date,
     DateTime,
     Enum,
     Float,
@@ -16,6 +18,7 @@ from sqlalchemy import (
     Integer,
     Numeric,
     String,
+    Text,
     UniqueConstraint,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -40,6 +43,9 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    role: Mapped[str] = mapped_column(
+        String(10), default="user", server_default="user", nullable=False
+    )
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
@@ -52,6 +58,13 @@ class User(Base):
     sessions: Mapped[list[Session]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    submissions: Mapped[list[Submission]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    prove_out_runs: Mapped[list[ProveOutRun]] = relationship(
+        back_populates="user", cascade="all, delete-orphan"
+    )
+    audit_events: Mapped[list[AuditEvent]] = relationship(back_populates="actor_user")
 
 
 class MagicLink(Base):
@@ -232,6 +245,210 @@ class VppStatSnapshot(Base):
     gas_kw_max: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
 
     session: Mapped[MarketSession] = relationship(back_populates="snapshots")
+
+
+class ForecastOutcome(Base):
+    """One issued forecast point, updated when its target becomes realized."""
+
+    __tablename__ = "forecast_outcomes"
+    __table_args__ = (
+        UniqueConstraint("origin_ts", "horizon", "market", name="uq_forecast_outcome_origin"),
+        Index("ix_forecast_outcome_market_target", "market", "target_ts"),
+        Index("ix_forecast_outcome_origin", "origin_ts"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    origin_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    target_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    horizon: Mapped[str] = mapped_column(String(8), nullable=False)
+    market: Mapped[str] = mapped_column(String(32), nullable=False)
+    anchor_value: Mapped[float | None] = mapped_column(Float, nullable=True)
+    residual: Mapped[float | None] = mapped_column(Float, nullable=True)
+    predicted: Mapped[float] = mapped_column(Float, nullable=False)
+    realized: Mapped[float | None] = mapped_column(Float, nullable=True)
+    provenance: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+
+class Competition(Base):
+    __tablename__ = "competitions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    rulesets: Mapped[list[CompetitionRuleSet]] = relationship(
+        back_populates="competition", cascade="all, delete-orphan", passive_deletes=True
+    )
+    submissions: Mapped[list[Submission]] = relationship(
+        back_populates="competition", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class CompetitionRuleSet(Base):
+    __tablename__ = "competition_rulesets"
+    __table_args__ = (
+        UniqueConstraint("competition_id", "track", "version", name="uq_competition_track_version"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    competition_id: Mapped[int] = mapped_column(
+        ForeignKey("competitions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    track: Mapped[str] = mapped_column(String(32), nullable=False)
+    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    competition: Mapped[Competition] = relationship(back_populates="rulesets")
+
+
+class Submission(Base):
+    __tablename__ = "submissions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    competition_id: Mapped[int] = mapped_column(
+        ForeignKey("competitions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    track: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+
+    competition: Mapped[Competition] = relationship(back_populates="submissions")
+    user: Mapped[User] = relationship(back_populates="submissions")
+    evaluation_runs: Mapped[list[EvaluationRun]] = relationship(
+        back_populates="submission", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class EvaluationRun(Base):
+    __tablename__ = "evaluation_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    submission_id: Mapped[int] = mapped_column(
+        ForeignKey("submissions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    rules_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    submission: Mapped[Submission] = relationship(back_populates="evaluation_runs")
+    seed_runs: Mapped[list[EvaluationSeedRun]] = relationship(
+        back_populates="evaluation_run", cascade="all, delete-orphan", passive_deletes=True
+    )
+    metrics: Mapped[list[EvaluationMetric]] = relationship(
+        back_populates="evaluation_run", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class EvaluationSeedRun(Base):
+    __tablename__ = "evaluation_seed_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    evaluation_run_id: Mapped[int] = mapped_column(
+        ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    seed_label: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued")
+    score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    metrics: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    evaluation_run: Mapped[EvaluationRun] = relationship(back_populates="seed_runs")
+
+
+class EvaluationMetric(Base):
+    __tablename__ = "evaluation_metrics"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    evaluation_run_id: Mapped[int] = mapped_column(
+        ForeignKey("evaluation_runs.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    seed_label: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    evaluation_run: Mapped[EvaluationRun] = relationship(back_populates="metrics")
+
+
+class AuditEvent(Base):
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    actor_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    action: Mapped[str] = mapped_column(String(100), nullable=False)
+    entity_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    entity_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+
+    actor_user: Mapped[User | None] = relationship(back_populates="audit_events")
+
+
+class ProveOutRun(Base):
+    """Private historical replay requested by one trader."""
+
+    __tablename__ = "prove_out_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'done', 'failed')",
+            name="ck_prove_out_runs_status",
+        ),
+        Index("ix_prove_out_runs_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    label: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    endowment: Mapped[dict] = mapped_column(JSON, nullable=False)
+    window_start: Mapped[date] = mapped_column(Date, nullable=False)
+    window_end: Mapped[date] = mapped_column(Date, nullable=False)
+    strategy: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    report: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    user: Mapped[User] = relationship(back_populates="prove_out_runs")
 
 
 class Trade(Base):

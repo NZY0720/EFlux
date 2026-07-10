@@ -15,7 +15,9 @@ from eflux.config import get_settings
 from eflux.db.base import Base
 
 config = context.config
-if config.config_file_name is not None:
+# The in-app boot migration (api/main.py) sets skip_logging_config: fileConfig
+# would RESET the application's logging and mute every log line after startup.
+if config.config_file_name is not None and not config.attributes.get("skip_logging_config"):
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata

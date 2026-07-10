@@ -1,20 +1,21 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from decimal import Decimal
+
 import numpy as np
 import pytest
 import torch
-from datetime import UTC, datetime
-from decimal import Decimal
 
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.ppo.bc import BCNet
 from eflux.agents.ppo.online_net import ActorCriticNet
 from eflux.agents.ppo.primitive_encoding import (
-    ACTION_PROFILE_P2P,
-    ACTION_PROFILE_REALPRICE_GRID,
     ACTION_DIM,
     ACTION_DIM_V1,
     ACTION_DIM_V2,
+    ACTION_PROFILE_P2P,
+    ACTION_PROFILE_REALPRICE_GRID,
     ENCODING_V1,
     ENCODING_V2,
     OBS_DIM_V1,
@@ -37,7 +38,7 @@ from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.agents.valuation import ValuationSignal
 from eflux.forecasting.schema import ForecastBundle, ForecastPoint, TargetForecast
 from eflux.vpp.base import VPPParams, VPPState
-from eflux.vpp.der import Battery, FlexibleLoad, PV
+from eflux.vpp.der import PV, Battery, FlexibleLoad
 
 
 def test_action_dim_alias_is_v1():

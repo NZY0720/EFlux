@@ -68,10 +68,43 @@ class Settings(BaseSettings):
     # data (and the thin result is cached for the rest of the day); below this
     # many price points the bootstrap falls back to the newest cached window.
     forecast_warmup_min_price_points: int = 168
+    # A warm-start window must be continuous enough for lag/trend features to be
+    # meaningful. Partial CAISO responses often have week-long holes even when
+    # their raw point count clears the old minimum.
+    forecast_warmup_max_gap_hours: float = 2.0
     forecast_bootstrap_timeout_sec: float = 120.0
     # Anchor price forecasts to the published CAISO DAM day-ahead hourly curve
     # (same hybrid design as weather NWP). Off ⇒ plain autoregressive models.
     forecast_dam_anchor_enabled: bool = True
+    # Keep price forecasts physically/plausibly bounded without erasing the
+    # legitimate negative CAISO price regime.
+    forecast_price_min: float = -50.0
+    forecast_price_max: float = 250.0
+    # DAM hybrid calibration. The anchor receives increasing weight with lead
+    # time; the learned real-time spread decays away at longer horizons.
+    forecast_dam_residual_limit: float = 20.0
+    forecast_dam_blend_max: float = 0.85
+    forecast_dam_blend_full_hours: float = 6.0
+    forecast_dam_residual_decay_hours: float = 4.0
+    # P2P price forecasts anchor on the market's own hourly clearing profile —
+    # never CAISO DAM, which tracks grid settlement and runs structurally above
+    # P2P clearing (the learned residual then over-corrects toward zero).
+    forecast_p2p_profile_alpha: float = 0.05
+    forecast_p2p_profile_min_obs: int = 5
+    # A cold own-market profile is honestly FLAT, which removes the forecast
+    # spread the eta-guarded arbitrage needs — no trades ⇒ no profile data ⇒
+    # still flat (2026-07-11 stall). Seed cold buckets with the warm-up CAISO
+    # intraday SHAPE rescaled to the P2P price level; real prints replace it.
+    forecast_p2p_profile_prior_enabled: bool = True
+    # Keep the CAISO quote fresh even in P2P mode so price_real has realized
+    # observations and can learn a DAM-vs-RTM spread.
+    forecast_poll_realprice_in_p2p: bool = True
+    # Durable scored forecast records are pruned on every bounded write.
+    forecast_outcome_retention_days: int = 14
+    # Start each backend session with a CLEAN hub chart: don't restore the
+    # history deque / last bundle from state.json and don't backfill /history
+    # from the DB. Models stay warm either way; /forecasts/skill stays durable.
+    forecast_history_reset_on_boot: bool = True
     # Derive an endowment-driven Character for live strategy/hybrid/managed agents.
     agent_character_enabled: bool = True
     site_default_lat: float = 34.05
@@ -99,6 +132,7 @@ class Settings(BaseSettings):
     magic_link_ttl_min: int = 15
     session_ttl_day: int = 30
     api_key_prefix: str = "eflux_"
+    admin_emails: str = ""
 
     # --- Durable results (leaderboard) --------------------------------------------------
     # Periodic per-agent stat snapshots to the DB so PnL/leaderboard survive restarts.
@@ -111,6 +145,8 @@ class Settings(BaseSettings):
     # Where the backtest runner writes run artifacts (manifest, metrics CSVs, charts);
     # the /benchmarks API serves them read-only. Relative paths resolve to PROJECT_ROOT.
     backtest_artifacts_dir: str = "artifacts/backtests"
+    # Dedicated official-evaluation worker queue poll cadence (wall seconds).
+    evaluation_poll_sec: float = 5.0
 
     llm_provider: str = "opencode"
     llm_key_file: str = "key.txt"
@@ -167,6 +203,10 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def admin_email_set(self) -> set[str]:
+        return {email.strip().lower() for email in self.admin_emails.split(",") if email.strip()}
 
     @property
     def llm_api_key(self) -> str | None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
 
 @pytest.mark.asyncio
@@ -76,6 +77,7 @@ async def test_magic_link_consume_then_session_protected_route(client):
     assert r.status_code == 409, r.text
 
     # 4. No auth → 401.
+    client.cookies.clear()
     r = await client.get("/vpps")
     assert r.status_code == 401
 
@@ -88,6 +90,108 @@ async def test_magic_link_consume_then_session_protected_route(client):
 async def test_consume_rejects_invalid_token(client):
     r = await client.post("/auth/consume", json={"token": "this-is-not-real-1234567890"})
     assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_consume_sets_cookie_and_cookie_authenticates_me(client):
+    r = await client.post("/auth/magic-link", json={"email": "cookie-user@hku.hk"})
+    r = await client.post("/auth/consume", json={"token": r.json()["dev_token"]})
+    assert r.status_code == 200, r.text
+    set_cookie = r.headers["set-cookie"].lower()
+    assert "eflux_session=" in set_cookie
+    assert "httponly" in set_cookie
+    assert "samesite=lax" in set_cookie
+    assert "max-age=2592000" in set_cookie
+    assert "secure" not in set_cookie
+
+    r = await client.get("/auth/me")
+    assert r.status_code == 200, r.text
+    assert r.json()["email"] == "cookie-user@hku.hk"
+
+
+@pytest.mark.asyncio
+async def test_cookie_logout_clears_cookie_and_invalidates_session(client):
+    r = await client.post("/auth/magic-link", json={"email": "cookie-logout@hku.hk"})
+    r = await client.post("/auth/consume", json={"token": r.json()["dev_token"]})
+    session_token = r.json()["session_token"]
+
+    r = await client.post("/auth/logout")
+    assert r.status_code == 204, r.text
+    assert "eflux_session=\"\"" in r.headers["set-cookie"].lower()
+    assert "max-age=0" in r.headers["set-cookie"].lower()
+
+    r = await client.get("/auth/me")
+    assert r.status_code == 401, r.text
+    r = await client.get("/auth/me", headers={"Authorization": f"Bearer {session_token}"})
+    assert r.status_code == 401, r.text
+
+
+@pytest.mark.asyncio
+async def test_me_reports_default_role_and_logout_invalidates_session(client):
+    r = await client.post("/auth/magic-link", json={"email": "role-default@hku.hk"})
+    token = r.json()["dev_token"]
+    r = await client.post("/auth/consume", json={"token": token})
+    session = r.json()
+    headers = {"Authorization": f"Bearer {session['session_token']}"}
+
+    r = await client.get("/auth/me", headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json() == {
+        "id": session["user_id"],
+        "email": "role-default@hku.hk",
+        "role": "user",
+    }
+
+    r = await client.post("/auth/logout", headers=headers)
+    assert r.status_code == 204, r.text
+
+    r = await client.get("/auth/me", headers=headers)
+    assert r.status_code == 401, r.text
+
+
+@pytest.mark.asyncio
+async def test_magic_link_consume_promotes_configured_admin(monkeypatch, client, db_session):
+    monkeypatch.setenv("EFLUX_ADMIN_EMAILS", "admin-list@hku.hk")
+    from eflux.config import get_settings
+
+    get_settings.cache_clear()
+    r = await client.post("/auth/magic-link", json={"email": "ADMIN-LIST@hku.hk"})
+    token = r.json()["dev_token"]
+    r = await client.post("/auth/consume", json={"token": token})
+    session = r.json()
+    headers = {"Authorization": f"Bearer {session['session_token']}"}
+
+    r = await client.get("/auth/me", headers=headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["role"] == "admin"
+
+    from eflux.db.models import User
+
+    user = (await db_session.execute(select(User).where(User.id == session["user_id"]))).scalar_one()
+    assert user.role == "admin"
+
+
+@pytest.mark.asyncio
+async def test_ppo_renew_requires_admin_and_allows_configured_admin(monkeypatch, client):
+    monkeypatch.setenv("EFLUX_ADMIN_EMAILS", "ppo-admin@hku.hk")
+    from eflux.config import get_settings
+    from eflux.simulator.runner import Simulator
+
+    get_settings.cache_clear()
+    monkeypatch.setattr(Simulator, "start_ppo_renew", lambda self, days: True)
+
+    r = await client.post("/auth/magic-link", json={"email": "ppo-user@hku.hk"})
+    r = await client.post("/auth/consume", json={"token": r.json()["dev_token"]})
+    user_headers = {"Authorization": f"Bearer {r.json()['session_token']}"}
+    r = await client.post("/market/ppo/renew", headers=user_headers)
+    assert r.status_code == 403, r.text
+
+    r = await client.post("/auth/magic-link", json={"email": "ppo-admin@hku.hk"})
+    r = await client.post("/auth/consume", json={"token": r.json()["dev_token"]})
+    admin_headers = {"Authorization": f"Bearer {r.json()['session_token']}"}
+    r = await client.post("/market/ppo/renew", headers=admin_headers)
+    assert r.status_code == 200, r.text
+    assert r.json()["status"] == "started"
 
 
 @pytest.mark.asyncio

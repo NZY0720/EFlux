@@ -17,9 +17,29 @@ export interface MarketSnapshot {
   bids: [string, string][];
   asks: [string, string][];
   num_builtin_vpps: number;
+  data_provenance: "real" | "cached" | "synthetic";
+  session: {
+    market_mode: string;
+    sim_time: string;
+    wall_time: string;
+  };
   data_source: DataSourceStatus;
   external_market: ExternalMarket;
   balance: MarketBalance;
+}
+
+export interface ForecastSkillMetric {
+  n: number;
+  mae: number | null;
+  bias: number | null;
+  persistence_mae: number | null;
+  skill_vs_persistence: number | null;
+}
+
+export interface ForecastSkillResponse {
+  as_of: string;
+  persistence_baseline: string;
+  windows: Record<string, Record<string, Record<string, ForecastSkillMetric>>>;
 }
 
 export interface DataSourceEntry {
@@ -60,6 +80,46 @@ export interface VPP {
   is_active: boolean;
   is_external: boolean;
   created_at: string;
+}
+
+export interface CompetitionListItem {
+  id: number;
+  slug: string;
+  title: string;
+  status: string;
+  tracks: string[];
+  submission_counts: Record<string, number>;
+}
+
+export interface CompetitionRuleSet {
+  id: number;
+  version: string;
+  track: string;
+  config: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface CompetitionDetail extends CompetitionListItem {
+  description: string;
+  rulesets: CompetitionRuleSet[];
+  practice_seed_values: number[];
+  hidden_seed_count: number;
+  holdout_seed_count: number;
+}
+
+export interface CompetitionLeaderboardEntry {
+  rank: number;
+  submission_id: number;
+  user_email: string;
+  algorithm: string;
+  score: number;
+  seed_ok_count: number;
+  seed_failed_count: number;
+}
+
+export interface CompetitionLeaderboard {
+  competition_slug: string;
+  entries: CompetitionLeaderboardEntry[];
 }
 
 export interface AlgorithmParam {
@@ -339,6 +399,7 @@ export type ForecastHorizon = "5m" | "1h" | "12h";
 export interface ForecastEstimate {
   value: number | null;
   stderr: number | null;
+  provenance?: string | null;
 }
 
 export type LatestForecastTarget = Record<ForecastHorizon, ForecastEstimate>;

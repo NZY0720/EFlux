@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -42,3 +42,9 @@ async def get_user_for_session_token(session: AsyncSession, token: str) -> User 
     if not s.user.is_active:
         return None
     return s.user
+
+
+async def delete_session_for_token(session: AsyncSession, token: str) -> bool:
+    """Delete one session by its plaintext Bearer token."""
+    result = await session.execute(delete(Session).where(Session.token_hash == hash_token(token)))
+    return result.rowcount == 1

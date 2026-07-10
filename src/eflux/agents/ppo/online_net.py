@@ -31,6 +31,7 @@ from eflux.agents.ppo.primitive_encoding import (
     infer_obs_dim,
     obs_version_for_obs_dim,
 )
+
 # Initial diagonal log-std (std ≈ 0.61). Modest exploration around a warm-started mean so
 # live learning departs from the baseline gradually rather than thrashing the book.
 LOG_STD_INIT = -0.5

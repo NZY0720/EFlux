@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from eflux.auth.api_key import verify_api_key
 from eflux.auth.session import get_user_for_session_token
+from eflux.config import get_settings
 from eflux.db.models import User
 from eflux.db.session import get_db
 from eflux.forecasting.service import ForecastService
@@ -26,30 +27,62 @@ DbSession = Annotated[AsyncSession, Depends(db_session)]
 
 async def current_user(
     session: DbSession,
+    request: Request,
     authorization: Annotated[str | None, Header()] = None,
 ) -> User:
-    """Resolve user from a Bearer token (session token OR API key)."""
-    if not authorization or not authorization.lower().startswith("bearer "):
+    """Resolve a Bearer API/session token first, then the browser session cookie.
+
+    SameSite=Lax plus JSON-only mutating endpoints is sufficient CSRF protection for
+    v1: cross-site form posts cannot send these requests, and Bearer paths are immune.
+    """
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        # Try API key first (cheaper if it matches prefix), then session.
+        user = await verify_api_key(session, token)
+        if user is None:
+            user = await get_user_for_session_token(session, token)
+        if user is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="invalid token",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return user
+
+    token = request.cookies.get("eflux_session")
+    if token:
+        user = await get_user_for_session_token(session, token)
+        if user is not None:
+            return user
+
+    if not authorization:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="missing bearer token",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    token = authorization.split(" ", 1)[1].strip()
-    # Try API key first (cheaper if it matches prefix), then session.
-    user = await verify_api_key(session, token)
-    if user is None:
-        user = await get_user_for_session_token(session, token)
-    if user is None:
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="invalid token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
+CurrentUser = Annotated[User, Depends(current_user)]
+
+
+async def require_admin(user: CurrentUser) -> User:
+    """Require a persisted admin role or an email configured as an administrator."""
+    settings = get_settings()
+    if user.role != "admin" and user.email.strip().lower() not in settings.admin_email_set:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid token",
-            headers={"WWW-Authenticate": "Bearer"},
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="admin privileges required",
         )
     return user
 
 
-CurrentUser = Annotated[User, Depends(current_user)]
+AdminUser = Annotated[User, Depends(require_admin)]
 
 
 def get_simulator(request: Request) -> Simulator:

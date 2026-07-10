@@ -38,6 +38,7 @@ async def create_magic_link(session: AsyncSession, email: str) -> str:
 
 async def consume_magic_link(session: AsyncSession, token: str) -> User | None:
     """Validate token, mark consumed, return/create the associated User."""
+    settings = get_settings()
     th = hash_token(token)
     stmt = select(MagicLink).where(MagicLink.token_hash == th)
     ml = (await session.execute(stmt)).scalar_one_or_none()
@@ -53,7 +54,15 @@ async def consume_magic_link(session: AsyncSession, token: str) -> User | None:
         await session.execute(select(User).where(User.email == ml.email))
     ).scalar_one_or_none()
     if user is None:
-        user = User(email=ml.email, is_active=True, created_at=datetime.now(UTC))
+        user = User(
+            email=ml.email,
+            role="admin" if ml.email in settings.admin_email_set else "user",
+            is_active=True,
+            created_at=datetime.now(UTC),
+        )
         session.add(user)
+        await session.flush()
+    elif user.email in settings.admin_email_set and user.role != "admin":
+        user.role = "admin"
         await session.flush()
     return user

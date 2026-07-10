@@ -37,10 +37,10 @@ from eflux.agents.ppo.primitive_encoding import (
     infer_action_profile,
     infer_encoding_version,
     infer_obs_dim,
-    primitive_modes_for,
     obs_dim_for,
     obs_version_for_obs_dim,
     price_ref_scale,
+    primitive_modes_for,
 )
 from eflux.agents.ppo.primitive_encoding import (
     action_dim as encoding_action_dim,

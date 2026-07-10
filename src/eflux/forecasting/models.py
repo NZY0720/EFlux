@@ -5,18 +5,20 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from math import cos, pi, sin, sqrt
+from math import cos, exp, pi, sin, sqrt
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import numpy as np
 
-from eflux.forecasting.schema import ForecastPoint, HORIZONS, HORIZON_TIMEDELTAS
+from eflux.forecasting.schema import HORIZON_TIMEDELTAS, HORIZONS, ForecastPoint
 
 # v2 feature set: [bias, 4 hour-of-day harmonics, 2 day-of-week harmonics,
 # last, daily/horizon lag, trend, 15-min ramp]. Persisted states with the old
 # 8-dim linear models are upgraded on load by replaying their observations.
 FEATURE_DIM = 11
 DEFAULT_MAX_OBSERVATIONS = 3 * 24 * 60
+MARKET_TIMEZONE = ZoneInfo("America/Los_Angeles")
 
 
 def _clean_float(value: float, default: float = 0.0) -> float:
@@ -34,13 +36,22 @@ def _clamp(value: float, bounds: tuple[float, float] | None) -> float:
     return float(np.clip(value, lo, hi))
 
 
+def _market_time(ts: datetime) -> datetime:
+    """Canonical timestamp for all calendar features and persisted replay."""
+    if ts.tzinfo is None:
+        return ts.replace(tzinfo=MARKET_TIMEZONE)
+    return ts.astimezone(MARKET_TIMEZONE)
+
+
 def _hour_features(ts: datetime) -> list[float]:
+    ts = _market_time(ts)
     hour = ts.hour + ts.minute / 60.0 + ts.second / 3600.0
     phase = 2.0 * pi * hour / 24.0
     return [sin(phase), cos(phase), sin(2.0 * phase), cos(2.0 * phase)]
 
 
 def _dow_features(ts: datetime) -> list[float]:
+    ts = _market_time(ts)
     day = ts.weekday() + (ts.hour + ts.minute / 60.0) / 24.0
     phase = 2.0 * pi * day / 7.0
     return [sin(phase), cos(phase)]
@@ -116,7 +127,7 @@ class OnlineLinearForecaster:
         }
 
     @classmethod
-    def from_state(cls, state: dict[str, Any]) -> "OnlineLinearForecaster":
+    def from_state(cls, state: dict[str, Any]) -> OnlineLinearForecaster:
         model = cls(
             n_features=int(state["n_features"]),
             forgetting_factor=float(state["forgetting_factor"]),
@@ -127,6 +138,20 @@ class OnlineLinearForecaster:
         model.n_updates = int(state["n_updates"])
         model.residual_var = float(state["residual_var"])
         return model
+
+
+@dataclass(frozen=True)
+class AnchorForecast:
+    """Forward-curve value plus its coverage/provenance state.
+
+    ``value=None`` means the requested target hour is not covered. Callers must
+    use the explicit persistence/seasonal fallback instead of inventing a fixed
+    price anchor.
+    """
+
+    value: float | None
+    provenance: str
+    source_id: str | None = None
 
 
 class SeasonalPersistence:
@@ -160,12 +185,89 @@ class SeasonalPersistence:
         }
 
     @classmethod
-    def from_state(cls, state: dict[str, Any]) -> "SeasonalPersistence":
+    def from_state(cls, state: dict[str, Any]) -> SeasonalPersistence:
         model = cls(default=float(state["default"]))
         model.last_value = None if state["last_value"] is None else float(state["last_value"])
         model.by_hour = {int(k): float(v) for k, v in state["by_hour"].items()}
         model.n_observations = int(state["n_observations"])
         return model
+
+
+class HourlyEwmaProfile:
+    """Per-hour-of-day EWMA profile of observed values (market timezone).
+
+    Own-market price anchor: a bucket stays unavailable until it has seen
+    ``min_obs`` observations, so a cold profile yields an explicit degraded
+    forecast instead of a guessed constant."""
+
+    def __init__(self, alpha: float = 0.05, min_obs: int = 5) -> None:
+        self.alpha = min(1.0, max(1.0e-6, float(alpha)))
+        self.min_obs = max(1, int(min_obs))
+        self.by_hour: dict[int, float] = {}
+        self.counts: dict[int, int] = {}
+        self.prior_hours: set[int] = set()
+
+    def observe(self, ts: datetime, value: float) -> None:
+        clean = _clean_float(value)
+        hour = _market_time(ts).hour
+        if hour in self.prior_hours:
+            # Priors are scaffolding, never data: the first real print replaces
+            # the seeded value outright instead of being EWMA-diluted by it —
+            # and the bucket re-earns the min_obs gate so a single degenerate
+            # print (e.g. a $0.0002 spill dump) can't rule the hour alone.
+            self.prior_hours.discard(hour)
+            self.by_hour[hour] = clean
+            self.counts[hour] = 1
+            return
+        prev = self.by_hour.get(hour)
+        self.by_hour[hour] = clean if prev is None else (1.0 - self.alpha) * prev + self.alpha * clean
+        self.counts[hour] = self.counts.get(hour, 0) + 1
+
+    def predict(self, ts: datetime) -> float | None:
+        hour = _market_time(ts).hour
+        if self.counts.get(hour, 0) < self.min_obs:
+            return None
+        return self.by_hour[hour]
+
+    def seed_prior(self, values_by_hour: dict[int, float]) -> int:
+        """Seed COLD buckets with a shaped prior; returns how many were seeded.
+
+        Seeded buckets predict immediately (counts jump to min_obs) but stay
+        flagged in ``prior_hours`` so callers can label them honestly until a
+        real observation replaces them."""
+        seeded = 0
+        for hour, value in values_by_hour.items():
+            h = int(hour) % 24
+            if self.counts.get(h, 0) > 0:
+                continue
+            self.by_hour[h] = _clean_float(value)
+            self.counts[h] = self.min_obs
+            self.prior_hours.add(h)
+            seeded += 1
+        return seeded
+
+    def is_prior(self, ts: datetime) -> bool:
+        return _market_time(ts).hour in self.prior_hours
+
+    def has_real_data(self) -> bool:
+        return any(count > 0 and hour not in self.prior_hours for hour, count in self.counts.items())
+
+    def to_state(self) -> dict[str, Any]:
+        return {
+            "alpha": self.alpha,
+            "min_obs": self.min_obs,
+            "by_hour": {str(k): v for k, v in self.by_hour.items()},
+            "counts": {str(k): v for k, v in self.counts.items()},
+            "prior_hours": sorted(self.prior_hours),
+        }
+
+    @classmethod
+    def from_state(cls, state: dict[str, Any]) -> HourlyEwmaProfile:
+        profile = cls(alpha=float(state["alpha"]), min_obs=int(state["min_obs"]))
+        profile.by_hour = {int(k): float(v) for k, v in state["by_hour"].items()}
+        profile.counts = {int(k): int(v) for k, v in state["counts"].items()}
+        profile.prior_hours = {int(h) for h in state.get("prior_hours", [])}
+        return profile
 
 
 class HorizonModel:
@@ -290,7 +392,7 @@ class HorizonModel:
         }
 
     @classmethod
-    def from_state(cls, state: dict[str, Any]) -> "HorizonModel":
+    def from_state(cls, state: dict[str, Any]) -> HorizonModel:
         model = cls(
             output_bounds=tuple(state["output_bounds"]) if state["output_bounds"] is not None else None,
             max_observations=int(state["max_observations"]),
@@ -314,11 +416,16 @@ class WeatherForecaster(HorizonModel):
     def __init__(
         self,
         *,
-        nwp_lookup: Callable[[datetime], float] | None = None,
+        nwp_lookup: Callable[[datetime], float | AnchorForecast] | None = None,
         output_bounds: tuple[float, float] | None = None,
         forgetting_factor: float = 0.999,
         max_observations: int = 4096,
         residual_alpha: float = 0.2,
+        residual_limit: float | None = None,
+        dam_blend_max: float = 0.85,
+        dam_blend_full_hours: float = 6.0,
+        residual_decay_hours: float = 4.0,
+        use_horizon_blend: bool = False,
     ) -> None:
         super().__init__(
             output_bounds=output_bounds,
@@ -327,9 +434,47 @@ class WeatherForecaster(HorizonModel):
         )
         self.nwp_lookup = nwp_lookup
         self.residual_alpha = float(residual_alpha)
+        self.residual_limit = None if residual_limit is None else max(0.0, float(residual_limit))
+        self.dam_blend_max = min(1.0, max(0.0, float(dam_blend_max)))
+        self.dam_blend_full_hours = max(1.0e-6, float(dam_blend_full_hours))
+        self.residual_decay_hours = max(1.0e-6, float(residual_decay_hours))
+        self.use_horizon_blend = bool(use_horizon_blend)
         self.residual_ewma = 0.0
         self.residual_var = 1.0
         self.n_residuals = 0
+        self.anchor_source_id: str | None = None
+
+    def _anchor(self, ts: datetime) -> AnchorForecast:
+        if self.nwp_lookup is None:
+            return AnchorForecast(None, "persistence")
+        raw = self.nwp_lookup(ts)
+        anchor = raw if isinstance(raw, AnchorForecast) else AnchorForecast(_clean_float(raw), "anchor")
+        if anchor.source_id != self.anchor_source_id:
+            self.anchor_source_id = anchor.source_id
+            self.residual_ewma = 0.0
+            self.residual_var = 1.0
+            self.n_residuals = 0
+        return anchor
+
+    def _anchor_weight(self, delta: timedelta) -> float:
+        if not self.use_horizon_blend:
+            return 1.0
+        if delta <= timedelta(minutes=15):
+            return 0.0
+        hours = delta.total_seconds() / 3600.0
+        return min(self.dam_blend_max, hours / self.dam_blend_full_hours)
+
+    def _residual_weight(self, delta: timedelta) -> float:
+        if not self.use_horizon_blend:
+            return 1.0
+        if delta <= timedelta(minutes=15):
+            return 0.0
+        hours = delta.total_seconds() / 3600.0
+        return exp(-hours / self.residual_decay_hours)
+
+    def _persistence_shape(self, target_ts: datetime) -> float:
+        last = self.seasonal.last_value
+        return self.seasonal.predict(target_ts) if last is None else last
 
     def predict(self, sim_ts: datetime) -> dict[str, ForecastPoint]:
         if self.nwp_lookup is None:
@@ -339,27 +484,51 @@ class WeatherForecaster(HorizonModel):
         for horizon in HORIZONS:
             delta = HORIZON_TIMEDELTAS[horizon]
             target_ts = sim_ts + delta
+            anchor = self._anchor(target_ts)
+            persistence = self._persistence_shape(target_ts)
             if horizon == "5m":
-                base = self.seasonal.last_value if self.seasonal.last_value is not None else self.seasonal.predict(target_ts)
+                # Five minutes is deliberately pure persistence: an hourly DAM
+                # curve and a slow spread estimate cannot improve this boundary.
+                base = persistence if self.use_horizon_blend else persistence + self.residual_ewma
                 stderr = 0.0
-            else:
-                base = _clean_float(self.nwp_lookup(target_ts))
+                provenance = "persistence" if self.use_horizon_blend else "anchor_residual"
+            elif anchor.value is None:
+                # A missing anchor (DAM coverage gap, cold own-market profile)
+                # is an explicit degraded forecast, never a hidden $50 or a
+                # stale forward-price substitution.
+                weight = self._anchor_weight(delta)
+                base = (1.0 - weight) * persistence + weight * self.seasonal.predict(target_ts)
                 stderr = sqrt(max(1.0e-9, self.residual_var)) if self.n_residuals else 0.0
-            result[horizon] = ForecastPoint(_clamp(base + self.residual_ewma, self.output_bounds), stderr)
+                provenance = "p2p_cold_start" if anchor.provenance == "p2p_cold_start" else "degraded_persistence_shape"
+            else:
+                weight = self._anchor_weight(delta)
+                corrected_anchor = anchor.value + self._residual_weight(delta) * self.residual_ewma
+                base = (1.0 - weight) * persistence + weight * corrected_anchor
+                stderr = sqrt(max(1.0e-9, self.residual_var)) if self.n_residuals else 0.0
+                provenance = anchor.provenance
+            result[horizon] = ForecastPoint(_clamp(base, self.output_bounds), stderr, provenance)
         return result
 
     def observe(self, sim_ts: datetime, value: float) -> None:
         clean = _clamp(value, self.output_bounds)
         if self.nwp_lookup is not None:
-            residual = clean - _clean_float(self.nwp_lookup(sim_ts))
-            if self.n_residuals == 0:
-                self.residual_ewma = residual
-                self.residual_var = 0.0
-            else:
-                error = residual - self.residual_ewma
-                self.residual_ewma = (1.0 - self.residual_alpha) * self.residual_ewma + self.residual_alpha * residual
-                self.residual_var = (1.0 - self.residual_alpha) * self.residual_var + self.residual_alpha * error * error
-            self.n_residuals += 1
+            anchor = self._anchor(sim_ts)
+            if anchor.value is not None:
+                residual = clean - anchor.value
+                if self.residual_limit is not None:
+                    residual = float(np.clip(residual, -self.residual_limit, self.residual_limit))
+                if self.n_residuals == 0:
+                    self.residual_ewma = residual
+                    self.residual_var = 0.0
+                else:
+                    error = residual - self.residual_ewma
+                    self.residual_ewma = (1.0 - self.residual_alpha) * self.residual_ewma + self.residual_alpha * residual
+                    if self.residual_limit is not None:
+                        self.residual_ewma = float(
+                            np.clip(self.residual_ewma, -self.residual_limit, self.residual_limit)
+                        )
+                    self.residual_var = (1.0 - self.residual_alpha) * self.residual_var + self.residual_alpha * error * error
+                self.n_residuals += 1
         super().observe(sim_ts, clean)
 
     def to_state(self) -> dict[str, Any]:
@@ -367,9 +536,15 @@ class WeatherForecaster(HorizonModel):
         state.update(
             {
                 "residual_alpha": self.residual_alpha,
+                "residual_limit": self.residual_limit,
+                "dam_blend_max": self.dam_blend_max,
+                "dam_blend_full_hours": self.dam_blend_full_hours,
+                "residual_decay_hours": self.residual_decay_hours,
+                "use_horizon_blend": self.use_horizon_blend,
                 "residual_ewma": self.residual_ewma,
                 "residual_var": self.residual_var,
                 "n_residuals": self.n_residuals,
+                "anchor_source_id": self.anchor_source_id,
             }
         )
         return state
@@ -379,13 +554,18 @@ class WeatherForecaster(HorizonModel):
         cls,
         state: dict[str, Any],
         *,
-        nwp_lookup: Callable[[datetime], float] | None = None,
-    ) -> "WeatherForecaster":
+        nwp_lookup: Callable[[datetime], float | AnchorForecast] | None = None,
+    ) -> WeatherForecaster:
         model = cls(
             nwp_lookup=nwp_lookup,
             output_bounds=tuple(state["output_bounds"]) if state["output_bounds"] is not None else None,
             max_observations=int(state["max_observations"]),
             residual_alpha=float(state["residual_alpha"]),
+            residual_limit=state.get("residual_limit"),
+            dam_blend_max=float(state.get("dam_blend_max", 0.85)),
+            dam_blend_full_hours=float(state.get("dam_blend_full_hours", 6.0)),
+            residual_decay_hours=float(state.get("residual_decay_hours", 4.0)),
+            use_horizon_blend=bool(state.get("use_horizon_blend", False)),
         )
         observations = [(_parse_ts(ts), float(value)) for ts, value in state["observations"]]
         if cls._linear_state_matches(state):
@@ -404,4 +584,5 @@ class WeatherForecaster(HorizonModel):
         model.residual_ewma = float(state["residual_ewma"])
         model.residual_var = float(state["residual_var"])
         model.n_residuals = int(state["n_residuals"])
+        model.anchor_source_id = state.get("anchor_source_id")
         return model

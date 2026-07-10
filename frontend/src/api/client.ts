@@ -5,6 +5,9 @@ import type {
   BenchmarkDetail,
   BenchmarkSummary,
   ChatMessage,
+  CompetitionDetail,
+  CompetitionLeaderboard,
+  CompetitionListItem,
   ForecastHistoryRecord,
   ForecastTarget,
   LatestForecastResponse,
@@ -46,6 +49,7 @@ export function setToken(token: string | null): void {
 export const api = axios.create({
   baseURL: "/api",
   timeout: 10_000,
+  withCredentials: true,
 });
 
 api.interceptors.request.use((config) => {
@@ -77,6 +81,7 @@ api.interceptors.response.use(undefined, (error) => {
   if (msg && error instanceof Error) error.message = msg;
   if (
     error?.response?.status === 401 &&
+    error?.config?.url !== "/auth/logout" &&
     (msg === "invalid token" || msg === "missing bearer token")
   ) {
     setToken(null);
@@ -94,12 +99,39 @@ export async function requestMagicLink(email: string): Promise<{ dev_token?: str
 
 export async function consumeToken(token: string): Promise<SessionInfo> {
   const { data } = await api.post<SessionInfo>("/auth/consume", { token });
-  setToken(data.session_token);
   return data;
 }
 
-export function logout(): void {
-  setToken(null);
+export async function logout(): Promise<void> {
+  await api.post("/auth/logout");
+}
+
+export interface CurrentUserInfo {
+  id: number;
+  email: string;
+  role: string;
+}
+
+export async function getCurrentUser(): Promise<CurrentUserInfo> {
+  const { data } = await api.get<CurrentUserInfo>("/auth/me");
+  return data;
+}
+
+// --- Competitions ---
+
+export async function listCompetitions(): Promise<CompetitionListItem[]> {
+  const { data } = await api.get<CompetitionListItem[]>("/competitions");
+  return data;
+}
+
+export async function fetchCompetition(slug: string): Promise<CompetitionDetail> {
+  const { data } = await api.get<CompetitionDetail>(`/competitions/${slug}`);
+  return data;
+}
+
+export async function fetchCompetitionLeaderboard(slug: string): Promise<CompetitionLeaderboard> {
+  const { data } = await api.get<CompetitionLeaderboard>(`/competitions/${slug}/leaderboard`);
+  return data;
 }
 
 // --- VPPs ---

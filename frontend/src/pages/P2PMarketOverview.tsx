@@ -1,7 +1,7 @@
 import { ChartCandlestick, ListChecks, MessagesSquare, Scale, Zap } from "lucide-react";
 
 import Chatroom from "../components/Chatroom";
-import { CardTitle, DashboardCard } from "../components/DashboardCard";
+import { CardTitle, DashboardCard, StatusPill } from "../components/DashboardCard";
 import DataSourceBanner from "../components/DataSourceBanner";
 import IntroStrip from "../components/IntroStrip";
 import KpiBar from "../components/KpiBar";
@@ -25,6 +25,10 @@ export default function P2PMarketOverview() {
   return (
     <div className="mx-auto w-full max-w-[1800px] space-y-6 px-4 py-5 md:p-6">
       <IntroStrip variant="p2p" />
+      <div className="flex justify-end gap-2">
+        <StatusPill tone="accent">P2P market</StatusPill>
+        {snapshot && <StatusPill tone={snapshot.data_provenance === "real" ? "success" : snapshot.data_provenance === "cached" ? "amber" : "muted"}>data: {snapshot.data_provenance}</StatusPill>}
+      </div>
       <KpiBar snapshot={snapshot} builtinVpps={snapshot?.num_builtin_vpps ?? 0} />
       <DataSourceBanner dataSource={snapshot?.data_source} showExternalPrice={false} />
       <div className="flex justify-end">

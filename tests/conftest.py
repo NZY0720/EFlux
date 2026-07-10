@@ -17,7 +17,8 @@ import pytest_asyncio
 
 # Set env vars BEFORE importing eflux modules so the first `get_settings()` call
 # inside any imported module picks them up.
-_TMP_DB = Path(tempfile.gettempdir()) / "eflux_pytest.db"
+# Process-local so concurrent pytest/Codex sessions cannot unlink another run's open SQLite DB.
+_TMP_DB = Path(tempfile.gettempdir()) / f"eflux_pytest_{os.getpid()}.db"
 os.environ.setdefault("EFLUX_ENV", "dev")
 os.environ.setdefault("EFLUX_DB_URL", f"sqlite+aiosqlite:///{_TMP_DB}")
 os.environ.setdefault("EFLUX_BUS_BACKEND", "memory")

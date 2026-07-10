@@ -13,8 +13,8 @@ battery degradation, invalid-action, excessive-order, and SOC-target penalties.
 
 from __future__ import annotations
 
-import random
 import math
+import random
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import ClassVar
@@ -407,7 +407,7 @@ class VPPPrimitiveEnv(gym.Env):
         """
         if self._real_data is not None:
             return max(5.0, self._real_data.price_at(ts, default=self._last_price_ref))
-        hours = max(0, int(round((ts - self._sim_ts).total_seconds() / 3600.0)))
+        hours = max(0, round((ts - self._sim_ts).total_seconds() / 3600.0))
         ref = self._last_price_ref
         target = price_ref_scale()
         for _ in range(hours):

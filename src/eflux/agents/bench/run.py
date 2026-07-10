@@ -18,9 +18,14 @@ from eflux.agents.bench.scenarios import candidates, counter_roster, test_slot_p
 from eflux.bridge.bus import InMemoryBus
 from eflux.forecasting.service import ForecastService
 from eflux.simulator.runner import Simulator
+from eflux.vpp.base import VPPParams
 
 # Fixed sim epoch so PV/load time-of-day profiles are identical across runs.
 BENCH_EPOCH = datetime(2024, 6, 1, 0, 0, tzinfo=ZoneInfo("Asia/Hong_Kong"))
+
+
+class CandidateEpisodeError(RuntimeError):
+    """An exception attributable to the candidate rather than benchmark infrastructure."""
 
 
 def _bench_ghi(ts: datetime) -> float:
@@ -49,7 +54,13 @@ def _observe_and_refresh_forecast(sim: Simulator, sim_ts: datetime) -> None:
 
 
 def run_episode(
-    make_agent, *, n_ticks: int, tick_h: float, forecasts_enabled: bool = True
+    make_agent,
+    *,
+    n_ticks: int,
+    tick_h: float,
+    forecasts_enabled: bool = True,
+    episode_seed: int = 0,
+    candidate_params: VPPParams | None = None,
 ) -> tuple[Simulator, object]:
     """One episode: counter-roster + the candidate in the test slot, stepped n_ticks
     through the exact gate path the live loop uses."""
@@ -61,8 +72,22 @@ def run_episode(
     if forecasts_enabled:
         sim.forecast_service = ForecastService()
     for spec in counter_roster():
-        sim.add_builtin_vpp(spec.name, spec.params, spec.agent, seed=spec.seed)
-    test_vpp = sim.add_builtin_vpp("agent-under-test", test_slot_params(), make_agent(), seed=99)
+        sim.add_builtin_vpp(
+            spec.name,
+            spec.params,
+            spec.agent,
+            seed=_episode_vpp_seed(episode_seed, spec.seed),
+        )
+    try:
+        candidate = make_agent()
+        test_vpp = sim.add_builtin_vpp(
+            "agent-under-test",
+            candidate_params or test_slot_params(),
+            candidate,
+            seed=_episode_vpp_seed(episode_seed, 99),
+        )
+    except Exception as exc:
+        raise CandidateEpisodeError("candidate construction failed") from exc
 
     sim_ts = sim.clock.now_sim()
     step = timedelta(seconds=tick_h * 3600.0)
@@ -73,16 +98,30 @@ def run_episode(
         net = sim._open_orders_net_by_vpp()
         counts = sim._open_order_counts_by_vpp()
         for vpp in sim.vpps.values():
-            sim._tick_vpp(
-                vpp, sim_ts, tick_h, market,
-                open_orders_net_kwh=net.get(vpp.vpp_id, 0.0),
-                open_order_count=counts.get(vpp.vpp_id, 0),
-            )
+            try:
+                sim._tick_vpp(
+                    vpp,
+                    sim_ts,
+                    tick_h,
+                    market,
+                    open_orders_net_kwh=net.get(vpp.vpp_id, 0.0),
+                    open_order_count=counts.get(vpp.vpp_id, 0),
+                )
+            except Exception as exc:
+                if vpp is test_vpp:
+                    raise CandidateEpisodeError("candidate execution failed") from exc
+                raise
         sim_ts = sim_ts + step
     return sim, test_vpp
 
 
-def _measure(name: str, sim: Simulator, vpp, n_ticks: int) -> EpisodeMetrics:
+def _episode_vpp_seed(episode_seed: int, vpp_seed: int) -> int:
+    """Mix an official episode seed into each stable per-VPP benchmark seed."""
+    return ((int(episode_seed) * 1_000_003) ^ int(vpp_seed)) & 0xFFFFFFFF
+
+
+def measure_episode(name: str, sim: Simulator, vpp, n_ticks: int) -> EpisodeMetrics:
+    """Measure any VPP from a completed benchmark episode."""
     last = sim.engine.last_price
     pending = vpp.state.pending_net_kwh
     realized = float(vpp.state.pnl)
@@ -103,14 +142,26 @@ def _measure(name: str, sim: Simulator, vpp, n_ticks: int) -> EpisodeMetrics:
 
 
 def score(
-    name: str, make_agent, *, n_ticks: int, tick_h: float, forecasts_enabled: bool = True
+    name: str,
+    make_agent,
+    *,
+    n_ticks: int,
+    tick_h: float,
+    forecasts_enabled: bool = True,
+    episode_seed: int = 0,
+    candidate_params: VPPParams | None = None,
 ) -> EpisodeMetrics:
     """Run one candidate through an episode and measure it (shared by the benchmark
     and the PPO eval so they score identically)."""
     sim, vpp = run_episode(
-        make_agent, n_ticks=n_ticks, tick_h=tick_h, forecasts_enabled=forecasts_enabled
+        make_agent,
+        n_ticks=n_ticks,
+        tick_h=tick_h,
+        forecasts_enabled=forecasts_enabled,
+        episode_seed=episode_seed,
+        candidate_params=candidate_params,
     )
-    return _measure(name, sim, vpp, n_ticks)
+    return measure_episode(name, sim, vpp, n_ticks)
 
 
 def run_benchmark(
