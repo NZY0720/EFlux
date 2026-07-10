@@ -17,7 +17,8 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 
-from eflux.agents.base import CancelIntent, OrderIntent, ReplaceIntent
+from eflux.agents.decision import AgentDecision, CancelRequest, OrderRequest, ReplaceRequest
+from eflux.market.delivery import OrderPurpose
 
 PRICE_MULT_MIN = 0.25
 PRICE_MULT_MAX = 4.0
@@ -77,7 +78,7 @@ class OrderSpec:
     side: str  # "buy" | "sell"
     price: Decimal
     qty: Decimal
-    dispatched: bool = False
+    purpose: OrderPurpose = OrderPurpose.BALANCE
     ttl_ticks: int = 0
 
 
@@ -110,16 +111,20 @@ class CompiledProgram:
     """The lowered program: concrete intents the runner submits. Cancels/replaces
     are ordered before new orders so the book is freed before re-quoting."""
 
-    order_intents: list[OrderIntent] = field(default_factory=list)
-    cancel_intents: list[CancelIntent] = field(default_factory=list)
-    replace_intents: list[ReplaceIntent] = field(default_factory=list)
+    order_requests: list[OrderRequest] = field(default_factory=list)
+    cancel_requests: list[CancelRequest] = field(default_factory=list)
+    replace_requests: list[ReplaceRequest] = field(default_factory=list)
     mode: StrategyMode = StrategyMode.NOOP
     rationale: str | None = None
 
-    def as_intent_list(self) -> list[CancelIntent | ReplaceIntent | OrderIntent]:
-        """Flatten to a single ordered list for a runner that dispatches by type."""
-        return [*self.cancel_intents, *self.replace_intents, *self.order_intents]
+    def as_decision(self) -> AgentDecision:
+        return AgentDecision(
+            orders=tuple(self.order_requests),
+            cancels=tuple(self.cancel_requests),
+            replaces=tuple(self.replace_requests),
+            rationale=self.rationale,
+        )
 
     @property
     def is_empty(self) -> bool:
-        return not (self.order_intents or self.cancel_intents or self.replace_intents)
+        return not (self.order_requests or self.cancel_requests or self.replace_requests)

@@ -149,6 +149,50 @@ def test_cancel_releases_unfilled_resource_but_not_filled_commitment():
     assert second.accepted_order_ids
 
 
+def test_expiry_releases_resource_through_gateway():
+    gateway = _gateway()
+    interval = _interval()
+    first = gateway.execute_decision(
+        participant_id=1,
+        decision=AgentDecision(
+            orders=(
+                OrderRequest(
+                    "sell",
+                    Decimal("50"),
+                    Decimal("0.3"),
+                    interval,
+                    OrderPurpose.BATTERY,
+                    ttl_sec=1.0,
+                ),
+            )
+        ),
+        sim_ts=NOW,
+        wall_ts=NOW,
+    )
+    assert first.accepted_order_ids
+    expired = gateway.expire_orders(
+        sim_ts=NOW + timedelta(seconds=1),
+        wall_ts=NOW + timedelta(seconds=1),
+    )
+    assert expired == first.accepted_order_ids
+    second = gateway.execute_decision(
+        participant_id=1,
+        decision=AgentDecision(
+            orders=(
+                _request(
+                    interval,
+                    side="sell",
+                    qty="0.3",
+                    purpose=OrderPurpose.BATTERY,
+                ),
+            )
+        ),
+        sim_ts=NOW + timedelta(seconds=2),
+        wall_ts=NOW + timedelta(seconds=2),
+    )
+    assert second.accepted_order_ids
+
+
 def test_gas_trade_at_cost_has_zero_profit_after_physical_delivery():
     gateway = TradingGatewayV2()
     gas = VPPParams(

@@ -202,6 +202,30 @@ class TradingGatewayV2:
             self._release_unfilled(self._participant(order.vpp_id), order)
         return tuple(order.order_id for order in removed)
 
+    def close_due(self, *, sim_ts: datetime, wall_ts: datetime) -> tuple[int, ...]:
+        removed = self.engine.close_due(sim_ts=sim_ts, wall_ts=wall_ts)
+        for order in removed:
+            self._release_unfilled(self._participant(order.vpp_id), order)
+        return tuple(order.order_id for order in removed)
+
+    def expire_orders(self, *, sim_ts: datetime, wall_ts: datetime) -> tuple[int, ...]:
+        removed = self.engine.expire(sim_ts=sim_ts, wall_ts=wall_ts)
+        for order in removed:
+            self._release_unfilled(self._participant(order.vpp_id), order)
+        return tuple(order.order_id for order in removed)
+
+    def cancel_all(
+        self, participant_id: int, *, sim_ts: datetime, wall_ts: datetime
+    ) -> tuple[int, ...]:
+        runtime = self._participant(participant_id)
+        cancelled: list[int] = []
+        for order in self.engine.open_orders_for_vpp(participant_id):
+            removed = self.engine.cancel(order.order_id, sim_ts=sim_ts, wall_ts=wall_ts)
+            if removed is not None:
+                self._release_unfilled(runtime, removed)
+                cancelled.append(removed.order_id)
+        return tuple(cancelled)
+
     def record_meter_data(
         self,
         participant_id: int,

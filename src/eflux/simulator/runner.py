@@ -21,8 +21,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal, TypedDict
 from zoneinfo import ZoneInfo
 
-from eflux.agents.base import AgentContext, BaseAgent, MarketSnapshot, OrderIntent
-from eflux.agents.hybrid import RiskGate, RiskLimits, RiskRejected
+from eflux.agents.base import (
+    AgentContext,
+    BaseAgent,
+    ExternalControlAgent,
+    MarketSnapshot,
+    OpenOrderView,
+)
+from eflux.agents.decision import AgentDecision, CancelRequest, OrderRequest
 from eflux.agents.reflective.chat import build_chat_messages, clean_chat_line
 from eflux.bridge.bus import EventBus
 from eflux.config import get_settings
@@ -35,8 +41,19 @@ from eflux.data.electricity_market import (
 from eflux.forecasting.models import MARKET_TIMEZONE, AnchorForecast, HourlyEwmaProfile
 from eflux.forecasting.service import ForecastService
 from eflux.market.clock import RollingClock
+from eflux.market.delivery import OrderPurpose
 from eflux.market.events import EventKind, ExternalTradeEvent, TickEvent, TradeEvent
-from eflux.market.matching_engine import MatchingEngine
+from eflux.market.gateway import GatewayRejected, TradingGatewayV2
+from eflux.market.ledger import usd_for_energy
+from eflux.market.metering import IntervalMeterBook
+from eflux.market.product_engine import ProductMatchingEngine, ProductOrderEvent, ProductTrade
+from eflux.market.products import (
+    DeliveryInterval,
+    delivery_horizon,
+    delivery_interval_containing,
+)
+from eflux.market.scheduler import FairDecisionScheduler
+from eflux.market.settlement import SettlementPrices
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad, WindTurbine
 
@@ -139,12 +156,20 @@ class Simulator:
         # Rolling log of recent trades so late-joining clients (page loads,
         # WS reconnects) can backfill instead of starting from a blank chart.
         self.trade_log: deque[TradeEvent | ExternalTradeEvent] = deque(maxlen=500)
-        self.engine = MatchingEngine(publish_cb=self._publish_event)
+        self.engine = ProductMatchingEngine(publish_cb=self._publish_product_event)
+        self.gateway = TradingGatewayV2(engine=self.engine)
         self.clock = RollingClock(
             sim_epoch=sim_epoch or _default_sim_epoch(settings.site_timezone),
             speed=settings.market_speed,
             tick_sim_sec=settings.market_tick_sec,
         )
+        self.decision_scheduler = FairDecisionScheduler(
+            epoch=self.clock.clock.sim_epoch,
+            cadence_sec=settings.agent_decision_interval_sec,
+            seed=0,
+        )
+        self.meters = IntervalMeterBook()
+        self._settled_intervals: set[str] = set()
         self.vpps: dict[int, SimulatorVPP] = {}
         # One Semaphore-gated LLM connection shared by every managed agent, retained so
         # the API can provision new managed agents at runtime. Set by the scenario loader
@@ -171,21 +196,8 @@ class Simulator:
         self.order_ttl_sec: float = settings.order_ttl_sec
         self.imbalance_settlement_enabled = settings.imbalance_settlement_enabled
         self.imbalance_penalty_mult = settings.imbalance_penalty_mult
-        self.curtailment_price_per_kwh = settings.curtailment_price_per_kwh
-        self.physical_backstop_enabled = settings.physical_backstop_enabled
         self.imbalance_totals_by_vpp: dict[int, dict[str, float]] = {}
-        # Single hard-constraint authority every order (built-in, learned, fallback,
-        # external) passes through before the engine — see agents/hybrid/risk.py.
-        # The max-open-orders cap is derived from the order TTL: a VPP requotes its
-        # balance as it re-accumulates, and each quote rests for the TTL, so one VPP
-        # legitimately holds ~order_ttl_sec/tick_sec resting orders in steady state.
-        # Size the cap above that natural ceiling (with headroom) so the gate never
-        # clips the existing market — it only bounds genuine runaway/abuse.
-        tick_sec = max(settings.market_tick_sec, 1e-9)
-        ttl_ticks = settings.order_ttl_sec / tick_sec if settings.order_ttl_sec > 0 else 0.0
-        self.risk_gate = RiskGate(RiskLimits(max_open_orders=max(256, int(ttl_ticks) + 64)))
-        # Orders the gate vetoed — a global total plus a per-VPP breakdown (the
-        # benchmark's invalid-action metric must be attributable to one candidate).
+        # The gateway is the one static, credit, and physical-resource authority.
         self.risk_rejections = 0
         self.risk_rejections_by_vpp: dict[int, int] = {}
         self.fallback_invocations_by_vpp: dict[int, int] = {}
@@ -251,6 +263,50 @@ class Simulator:
             self.trade_log.append(event)
         self.bus.publish(event)
 
+    def _publish_product_event(self, event) -> None:
+        if isinstance(event, ProductTrade):
+            interval = event.interval
+            self._publish_event(
+                TradeEvent(
+                    trade_id=event.trade_id,
+                    sim_ts=event.sim_ts,
+                    wall_ts=event.wall_ts,
+                    buy_order_id=event.buy_order_id,
+                    sell_order_id=event.sell_order_id,
+                    buy_vpp_id=event.buy_vpp_id,
+                    sell_vpp_id=event.sell_vpp_id,
+                    price=event.price,
+                    qty=event.qty,
+                    interval_id=interval.interval_id,
+                    delivery_start=interval.start,
+                    delivery_end=interval.end,
+                    buy_purpose=event.buy_purpose.value,
+                    sell_purpose=event.sell_purpose.value,
+                )
+            )
+            return
+        if isinstance(event, ProductOrderEvent):
+            from eflux.market.events import OrderEvent
+
+            interval = event.interval
+            self._publish_event(
+                OrderEvent(
+                    kind=EventKind(event.kind),
+                    sim_ts=event.sim_ts,
+                    wall_ts=event.wall_ts,
+                    order_id=event.order_id,
+                    vpp_id=event.vpp_id,
+                    side=event.side,
+                    price=event.price,
+                    qty=event.qty,
+                    remaining_qty=event.remaining_qty,
+                    interval_id=interval.interval_id,
+                    delivery_start=interval.start,
+                    delivery_end=interval.end,
+                    purpose=event.purpose.value,
+                )
+            )
+
     def add_builtin_vpp(
         self,
         name: str,
@@ -314,6 +370,11 @@ class Simulator:
             observed_since_sim=self.clock.now_sim(),
         )
         self.vpps[vpp_id] = vpp
+        self.gateway.register_participant(
+            participant_id=vpp_id,
+            params=params,
+            battery=vpp.battery,
+        )
         log.info("Added built-in VPP id=%d name=%s", vpp_id, name)
         return vpp
 
@@ -326,6 +387,34 @@ class Simulator:
             managed = [vpp for vpp in managed if vpp.owner_id == owner_id]
         return managed
 
+    def register_external_vpp(self, *, vpp_id: int, name: str, params: VPPParams) -> SimulatorVPP:
+        """Attach an externally controlled VPP to the same physics and gateway path."""
+
+        existing = self.vpps.get(vpp_id)
+        if existing is not None:
+            if existing.params != params:
+                raise ValueError(f"external VPP {vpp_id} is already registered differently")
+            return existing
+        if vpp_id <= 0:
+            raise ValueError("external vpp_id must be positive")
+        vpp = self.add_builtin_vpp(
+            name,
+            params,
+            ExternalControlAgent(),
+            strategy="external",
+        )
+        temporary_id = vpp.vpp_id
+        self.vpps.pop(temporary_id)
+        self.gateway.participants.pop(temporary_id)
+        vpp.vpp_id = vpp_id
+        self.vpps[vpp_id] = vpp
+        self.gateway.register_participant(
+            participant_id=vpp_id,
+            params=params,
+            battery=vpp.battery,
+        )
+        return vpp
+
     def remove_managed_vpp(self, managed_def_id: int) -> bool:
         """Remove a provisioned managed VPP (by its stable DB id): cancel its resting orders and
         drop it from the roster so the tick loop stops driving it. Returns False if not found.
@@ -335,8 +424,8 @@ class Simulator:
             return False
         now_sim = self.clock.now_sim()
         now_wall = datetime.now(UTC)
-        for order_id in list(target.open_order_ids):
-            self.engine.cancel(order_id, sim_ts=now_sim, wall_ts=now_wall)
+        self.gateway.cancel_all(target.vpp_id, sim_ts=now_sim, wall_ts=now_wall)
+        self.gateway.participants.pop(target.vpp_id, None)
         self.vpps.pop(target.vpp_id, None)
         log.info("Removed managed VPP id=%s (def=%s)", target.vpp_id, managed_def_id)
         return True
@@ -420,7 +509,7 @@ class Simulator:
             {"name": v.name, "pnl": round(float(v.state.pnl), 2)}
             for v in (ranked[:3] + ranked[-2:])
         ]
-        last = self.engine.last_price
+        last = self.engine.latest_price
         return {
             "market_last_price": float(last) if last is not None else None,
             "recent_trades": self._recent_market_trades(limit=6),
@@ -648,6 +737,8 @@ class Simulator:
         side: str,
         price: Decimal,
         qty: Decimal,
+        interval: DeliveryInterval | None = None,
+        purpose: OrderPurpose = OrderPurpose.BALANCE,
     ) -> ExternalSubmitResult:
         """Entry point for a single SDK-submitted order. Honors the realtime-only constraint."""
         if not self.clock.is_realtime:
@@ -660,12 +751,14 @@ class Simulator:
                 side=side,
                 price=price,
                 qty=qty,
+                interval=interval,
+                purpose=purpose,
                 now_sim=self.clock.now_sim(),
                 now_wall=datetime.now(UTC),
             )
 
     async def submit_external_batch(self, *, orders: list[dict], cancels: list[int]) -> dict:
-        """A batch of external orders + cancels under one lock (Agent Protocol v1). Cancels
+        """A batch of external orders + cancels under one lock. Cancels
         run first, so a cancel-then-replace frees open-order budget; each order is gated
         independently, so one rejection never aborts the batch. Ownership, rate limits, and
         idempotency are enforced by the REST layer before this is called."""
@@ -676,13 +769,19 @@ class Simulator:
         async with self._lock:
             now_sim = self.clock.now_sim()
             now_wall = datetime.now(UTC)
-            cancelled = [
-                {
-                    "order_id": oid,
-                    "ok": bool(self.engine.cancel(oid, sim_ts=now_sim, wall_ts=now_wall)),
-                }
-                for oid in cancels
-            ]
+            cancelled: list[dict] = []
+            for oid in cancels:
+                order = self.engine.get(oid)
+                if order is None:
+                    cancelled.append({"order_id": oid, "ok": False})
+                    continue
+                execution = self.gateway.execute_decision(
+                    participant_id=order.vpp_id,
+                    decision=AgentDecision(cancels=(CancelRequest(oid),)),
+                    sim_ts=now_sim,
+                    wall_ts=now_wall,
+                )
+                cancelled.append({"order_id": oid, "ok": oid in execution.cancelled_order_ids})
             results: list[dict] = []
             for i, spec in enumerate(orders):
                 item: dict = {"index": i, "client_ref": spec.get("client_ref")}
@@ -694,14 +793,16 @@ class Simulator:
                             side=spec["side"],
                             price=spec["price"],
                             qty=spec["qty"],
+                            interval=spec.get("interval"),
+                            purpose=OrderPurpose(spec.get("purpose", "balance")),
                             now_sim=now_sim,
                             now_wall=now_wall,
                         ),
                     )
-                except RiskRejected as e:
+                except GatewayRejected as e:
                     item.update(
                         status="rejected",
-                        reason=e.reason,
+                        reason=str(e),
                         order_id=None,
                         remaining_qty=None,
                         expires_at_sim=None,
@@ -711,61 +812,69 @@ class Simulator:
             return {"tick_id": self._last_tick_no, "results": results, "cancelled": cancelled}
 
     def _submit_one_external(
-        self, *, vpp_id: int, side: str, price: Decimal, qty: Decimal, now_sim, now_wall
+        self,
+        *,
+        vpp_id: int,
+        side: str,
+        price: Decimal,
+        qty: Decimal,
+        interval: DeliveryInterval | None,
+        purpose: OrderPurpose,
+        now_sim,
+        now_wall,
     ) -> ExternalSubmitResult:
-        """Risk-gate + submit one external order. The caller must hold self._lock. Raises
-        RiskRejected when the gate vetoes the order.
+        """Submit through the same gateway and physical reservations as built-ins."""
 
-        Same gate as built-in agents (principle #7). External VPPs carry no in-memory
-        battery/DER state here, so only the universal static and rate limits apply; ownership
-        was already checked at the REST layer."""
-        decision = self.risk_gate.validate(
-            [OrderIntent(side=side, price=price, qty=qty)],
-            vpp_id=vpp_id,
-            open_order_count=self._open_order_counts_by_vpp().get(vpp_id, 0),
+        if vpp_id not in self.vpps or vpp_id not in self.gateway.participants:
+            raise GatewayRejected(f"external VPP {vpp_id} is not registered")
+        product = (
+            interval
+            or delivery_horizon(
+                now_sim,
+                count=1,
+                market=self.market_mode,
+                interval_sec=get_settings().delivery_interval_sec,
+            )[0]
         )
-        if not decision.accepted:
-            self._record_rejections(vpp_id, len(decision.rejected) or 1)
-            reason = decision.rejected[0].reason if decision.rejected else "rejected by risk gate"
-            raise RiskRejected(reason)
-        intent = decision.accepted[0]
-        external_quote = self._external_quote_for_intent(intent)
-        result = self.engine.submit(
-            vpp_id=vpp_id,
-            side=intent.side,
-            price=intent.price,
-            qty=intent.qty,
+        self.engine.register(product)
+        vpp = self.vpps[vpp_id]
+        try:
+            self.gateway.set_balance_projection(
+                vpp_id, product, vpp.state.net_kw * product.duration_h
+            )
+            self.gateway.set_flex_load_capacity(
+                vpp_id,
+                product,
+                max(0.0, vpp.state.load_kw * vpp.params.load_elasticity) * product.duration_h,
+            )
+        except ValueError:
+            pass
+        request = OrderRequest(
+            side=side,
+            price=price,
+            qty_kwh=qty,
+            interval=product,
+            purpose=purpose,
+            ttl_sec=self.order_ttl_sec or get_settings().agent_decision_interval_sec,
+        )
+        execution = self.gateway.execute_decision(
+            participant_id=vpp_id,
+            decision=AgentDecision(orders=(request,)),
             sim_ts=now_sim,
             wall_ts=now_wall,
-            ttl_sec=self.order_ttl_sec or None,
-            rest_unfilled=external_quote is None,
         )
-        self._record_trades(result.trades)
-        external_events: list[ExternalTradeEvent] = []
-        if external_quote is not None and result.order.remaining_qty > 0:
-            # SDK/REST VPPs carry no in-memory state here, so the external fill is only
-            # *published* (tape/chart/WS) — not applied to a SimulatorVPP. Ownership
-            # accounting for these orders lives at the REST layer.
-            external_events.append(
-                self._publish_external_trade_for_vpp_id(
-                    vpp_id=vpp_id,
-                    side=intent.side,
-                    qty=result.order.remaining_qty,
-                    quote=external_quote,
-                    sim_ts=now_sim,
-                )
-            )
-            result.order.remaining_qty = Decimal("0")
+        if execution.rejected:
+            self._record_rejections(vpp_id, len(execution.rejected))
+            raise GatewayRejected(execution.rejected[0].reason)
+        oid = execution.accepted_order_ids[0]
+        resting = self.engine.get(oid)
+        self._record_product_trades(execution.trades)
+        vpp.state.pnl = self.gateway.ledger.balance(vpp_id)
         return {
-            "order_id": result.order.order_id,
-            "remaining_qty": str(result.order.remaining_qty),
-            # Surface the TTL so integrators know unfilled remainders are swept at this
-            # sim time (order.cancelled event) instead of resting.
-            "expires_at_sim": result.order.expires_at,
-            "trades": [
-                *[t.model_dump(mode="json") for t in result.trades],
-                *[t.model_dump(mode="json") for t in external_events],
-            ],
+            "order_id": oid,
+            "remaining_qty": "0" if resting is None else str(resting.remaining_qty),
+            "expires_at_sim": None if resting is None else resting.expires_at,
+            "trades": [self._product_trade_payload(trade) for trade in execution.trades],
         }
 
     async def start(self) -> None:
@@ -1091,7 +1200,7 @@ class Simulator:
             return
         sim_ts = self.clock.now_sim()
         quote = self._external_market_quote
-        last_price = self.engine.last_price
+        last_price = self.engine.latest_price
         real_obs = float(quote.raw_lmp) if quote.is_real_price else None
         p2p_obs = None if last_price is None else float(last_price)
         if real_obs is not None:
@@ -1588,53 +1697,44 @@ class Simulator:
             self.clock.speed,
             self.clock.tick_sim_sec,
         )
-        tick_h = self.clock.tick_sim_sec / 3600.0
         async for tick_no, sim_ts in self.clock.ticks():
             self._last_tick_no = tick_no
             async with self._lock:
-                self._expire_orders(sim_ts)
-                snapshot = self.engine.snapshot(depth_levels=5)
-                market_snap = MarketSnapshot.from_engine(
+                wall_ts = datetime.now(UTC)
+                products = self._ensure_products(sim_ts)
+                self.gateway.expire_orders(sim_ts=sim_ts, wall_ts=wall_ts)
+                self.gateway.close_due(sim_ts=sim_ts, wall_ts=wall_ts)
+                self._settle_due_intervals(sim_ts)
+                current = delivery_interval_containing(
                     sim_ts,
-                    snapshot,
-                    external_market=self._external_market_quote,
-                    # Both live markets price freely off own marginal cost — CAISO is a
-                    # reference (p2p) / the clearing price (realprice), never a valuation cap.
-                    anchor_to_external=False,
-                    market_mode=self.market_mode,
+                    market=self.market_mode,
+                    interval_sec=get_settings().delivery_interval_sec,
                 )
-                market_snap.recent_trades = self._recent_market_trades()
-                market_snap.peer_reflections = self._peer_reflections()
-                open_orders_net = self._open_orders_net_by_vpp()
-                open_order_counts = self._open_order_counts_by_vpp()
-                # Step each built-in VPP. One faulty agent (bad agent_params,
-                # DER model edge case) must not kill the whole market loop.
                 for vpp in self.vpps.values():
                     try:
-                        self._tick_vpp(
-                            vpp,
-                            sim_ts,
-                            tick_h,
-                            market_snap,
-                            open_orders_net_kwh=open_orders_net.get(vpp.vpp_id, 0.0),
-                            open_order_count=open_order_counts.get(vpp.vpp_id, 0),
-                        )
+                        self._step_physics(vpp, sim_ts, current)
                     except Exception:
                         log.exception(
-                            "VPP %s (%d) tick failed — skipping this tick", vpp.name, vpp.vpp_id
+                            "VPP %s (%d) physics failed — skipping this tick",
+                            vpp.name,
+                            vpp.vpp_id,
                         )
-                # Publish a tick event with current market summary.
-                bb = self.engine.book.best_bid()
-                ba = self.engine.book.best_ask()
+                if self.decision_scheduler.is_due(sim_ts):
+                    self._run_decision_round(sim_ts, products)
+
+                primary = products[0]
+                snapshot = self.engine.snapshot(primary.interval_id, depth_levels=5)
+                bids = snapshot["bids"]
+                asks = snapshot["asks"]
                 self.bus.publish(
                     TickEvent(
                         kind=EventKind.TICK,
                         sim_ts=sim_ts,
                         wall_ts=datetime.now(UTC),
                         tick_no=tick_no,
-                        best_bid=bb.price if bb else None,
-                        best_ask=ba.price if ba else None,
-                        last_price=self.engine.last_price,
+                        best_bid=Decimal(bids[0][0]) if bids else None,
+                        best_ask=Decimal(asks[0][0]) if asks else None,
+                        last_price=self.engine.last_price(primary.interval_id),
                         # Only surface a CAISO price when it reflects a live feed
                         # (real/fallback). Synthetic/disabled would otherwise draw a
                         # flat line at the configured fallback and imply a feed.
@@ -1643,8 +1743,11 @@ class Simulator:
                             if self._external_market_quote.is_real_price
                             else None
                         ),
-                        bid_depth=bb.total_qty if bb else Decimal("0"),
-                        ask_depth=ba.total_qty if ba else Decimal("0"),
+                        bid_depth=sum((Decimal(qty) for _, qty in bids), Decimal("0")),
+                        ask_depth=sum((Decimal(qty) for _, qty in asks), Decimal("0")),
+                        interval_id=primary.interval_id,
+                        delivery_start=primary.start,
+                        delivery_end=primary.end,
                     )
                 )
             self._maybe_chat(tick_no)
@@ -1799,171 +1902,260 @@ class Simulator:
             out.append(entry)
         return out
 
-    def _open_orders_net_by_vpp(self) -> dict[int, float]:
-        """Signed resting (non-dispatched) book exposure per VPP: sell
-        remainders +, buy remainders - (the pending_net_kwh convention).
-        Lets agents avoid re-quoting the same forced position while scarcity
-        pricing can still see resting demand depth. One book walk per tick;
-        depth is TTL-bounded."""
-        out: dict[int, float] = {}
-        for side in ("buy", "sell"):
-            for order in self.engine.book.iter_orders(side):
-                if order.dispatched:
-                    continue
-                signed = (
-                    float(order.remaining_qty)
-                    if order.side == "sell"
-                    else -float(order.remaining_qty)
-                )
-                out[order.vpp_id] = out.get(order.vpp_id, 0.0) + signed
-        return out
+    def _ensure_products(self, sim_ts: datetime) -> tuple[DeliveryInterval, ...]:
+        settings = get_settings()
+        current = delivery_interval_containing(
+            sim_ts,
+            market=self.market_mode,
+            interval_sec=settings.delivery_interval_sec,
+        )
+        self.engine.register(current)
+        products = delivery_horizon(
+            sim_ts,
+            count=settings.delivery_horizon_intervals,
+            market=self.market_mode,
+            interval_sec=settings.delivery_interval_sec,
+        )
+        for product in products:
+            self.engine.register(product)
+        return products
 
-    def _open_order_counts_by_vpp(self) -> dict[int, int]:
-        """Live count of resting orders per VPP (the authoritative open-order
-        count for the RiskGate's max-open-orders limit). Counted from the book
-        rather than vpp.open_order_ids, which only sheds ids on TTL expiry."""
-        counts: dict[int, int] = {}
-        for side in ("buy", "sell"):
-            for order in self.engine.book.iter_orders(side):  # type: ignore[arg-type]
-                counts[order.vpp_id] = counts.get(order.vpp_id, 0) + 1
-        return counts
-
-    def _tick_vpp(
-        self,
-        vpp: SimulatorVPP,
-        sim_ts: datetime,
-        tick_h: float,
-        market: MarketSnapshot,
-        *,
-        open_orders_net_kwh: float = 0.0,
-        open_order_count: int = 0,
+    def _step_physics(
+        self, vpp: SimulatorVPP, sim_ts: datetime, interval: DeliveryInterval
     ) -> None:
-        # Refresh DER state.
-        vpp.pv.kw_peak = vpp.params.pv_kw_peak  # keep params live-editable later
+        vpp.pv.kw_peak = vpp.params.pv_kw_peak
         vpp.state.sim_ts = sim_ts
         vpp.state.pv_kw = vpp.pv.output_kw(sim_ts, vpp.rng)
         vpp.state.wind_kw = vpp.wind.output_kw(sim_ts, vpp.rng) if vpp.wind else 0.0
         vpp.state.load_kw = vpp.load.draw_kw(sim_ts, vpp.rng)
         vpp.state.update_net()
-        # Route this tick's DER balance through the physical buffer first. Only the
-        # unbuffered overflow/shortfall becomes a forced market position.
-        cap = max(vpp.params.battery_kwh, 1.0)
-        gen_kwh = vpp.state.net_kw * tick_h
-        max_rate_kwh = max(0.0, vpp.battery.max_power_kw * tick_h)
-        if gen_kwh >= 0.0:
-            absorbed = min(
-                gen_kwh, max(0.0, vpp.battery.capacity_kwh - vpp.battery.soc_kwh), max_rate_kwh
-            )
-            vpp.battery.apply_kwh(absorbed)
-            vpp.state.pending_net_kwh += gen_kwh - absorbed
-        else:
-            needed = -gen_kwh
-            supplied = min(needed, max(0.0, vpp.battery.soc_kwh), max_rate_kwh)
-            vpp.battery.apply_kwh(-supplied)
-            vpp.state.pending_net_kwh -= needed - supplied
         vpp.state.soc_kwh = vpp.battery.soc_kwh
-        unclamped_pending = vpp.state.pending_net_kwh
-        clamped_pending = min(cap, max(-cap, unclamped_pending))
-        overflow_kwh = unclamped_pending - clamped_pending
-        vpp.state.pending_net_kwh = clamped_pending
-        self._settle_imbalance_overflow(vpp, overflow_kwh)
-        self._submit_physical_backstop(vpp, sim_ts)
-
-        ctx = AgentContext(
-            vpp_id=vpp.vpp_id,
-            params=vpp.params,
-            state=vpp.state,
-            pv=vpp.pv,
-            battery=vpp.battery,
-            load=vpp.load,
-            market=market,
-            rng=vpp.rng,
-            tick_duration_h=tick_h,
-            open_orders_net_kwh=open_orders_net_kwh,
-            risk_rejections_total=float(self.risk_rejections_by_vpp.get(vpp.vpp_id, 0)),
-            forecast=self._context_forecast(),
+        vpp.state.pending_net_kwh = vpp.state.net_kw * interval.duration_h
+        self.meters.integrate(
+            participant_id=vpp.vpp_id,
+            interval=interval,
+            renewable_power_kw=vpp.state.pv_kw + vpp.state.wind_kw,
+            uncontrolled_load_power_kw=vpp.state.load_kw,
+            duration_sec=self.clock.tick_sim_sec,
         )
-        self.decide_ticks_by_vpp[vpp.vpp_id] = self.decide_ticks_by_vpp.get(vpp.vpp_id, 0) + 1
-        intents = vpp.agent.decide(ctx)
-        self._gate_and_submit(vpp, ctx, intents, sim_ts, open_order_count)
 
-    def _settle_imbalance_overflow(self, vpp: SimulatorVPP, overflow_kwh: float) -> None:
-        if not self.imbalance_settlement_enabled or abs(overflow_kwh) <= 1e-12:
-            return
-        totals = self.imbalance_totals_by_vpp.setdefault(
-            vpp.vpp_id,
-            {
-                "unserved_load_kwh": 0.0,
-                "spilled_generation_kwh": 0.0,
-                "settlement_cash": 0.0,
-            },
+    def _run_decision_round(self, sim_ts: datetime, products: tuple[DeliveryInterval, ...]) -> None:
+        primary = products[0]
+        snapshot = self.engine.snapshot(primary.interval_id, depth_levels=5)
+        market = MarketSnapshot.from_engine(
+            sim_ts,
+            snapshot,
+            external_market=self._external_market_quote,
+            anchor_to_external=False,
+            market_mode=self.market_mode,
         )
-        if overflow_kwh < 0.0:
-            unserved_kwh = -overflow_kwh
-            import_price = float(
-                getattr(
-                    self._external_market_quote, "import_price", self._external_fallback_price()
+        market.recent_trades = self._recent_market_trades()
+        market.peer_reflections = self._peer_reflections()
+        contexts: dict[int, AgentContext] = {}
+        for vpp in self.vpps.values():
+            projected = vpp.state.net_kw * primary.duration_h
+            for product in products:
+                net_kwh = vpp.state.net_kw * product.duration_h
+                flex_kwh = max(0.0, vpp.state.load_kw * vpp.params.load_elasticity) * (
+                    product.duration_h
                 )
+                try:
+                    self.gateway.set_balance_projection(vpp.vpp_id, product, net_kwh)
+                    self.gateway.set_flex_load_capacity(vpp.vpp_id, product, flex_kwh)
+                except ValueError:
+                    # Existing backed orders retain their last accepted projection;
+                    # the gateway must never silently shrink beneath reservations.
+                    log.debug("projection update retained for backed product", exc_info=True)
+            contexts[vpp.vpp_id] = AgentContext(
+                vpp_id=vpp.vpp_id,
+                params=vpp.params,
+                state=vpp.state,
+                pv=vpp.pv,
+                battery=vpp.battery,
+                load=vpp.load,
+                market=market,
+                rng=vpp.rng,
+                tick_duration_h=self.clock.tick_sim_sec / 3600.0,
+                delivery_intervals=products,
+                decision_interval_sec=get_settings().agent_decision_interval_sec,
+                projected_net_kwh=projected,
+                dispatchable_power_kw=self.gateway.participants[
+                    vpp.vpp_id
+                ].current_dispatchable_power_kw,
+                open_orders_net_kwh=self._open_balance_net(vpp.vpp_id, primary.interval_id),
+                open_orders=self._open_order_views(vpp.vpp_id, sim_ts),
+                risk_rejections_total=float(self.risk_rejections_by_vpp.get(vpp.vpp_id, 0)),
+                forecast=self._context_forecast(),
             )
-            penalty_price = self.imbalance_penalty_mult * import_price
-            cash = unserved_kwh * penalty_price
-            vpp.state.pnl -= Decimal(str(cash))
-            totals["unserved_load_kwh"] += unserved_kwh
-            totals["settlement_cash"] -= cash
-            log.debug(
-                "VPP %s imbalance unserved %.6f kWh settled at %.6f",
-                vpp.vpp_id,
-                unserved_kwh,
-                penalty_price,
+
+        def decide(pid: int, ctx: AgentContext) -> AgentDecision:
+            vpp = self.vpps[pid]
+            self.decide_ticks_by_vpp[pid] = self.decide_ticks_by_vpp.get(pid, 0) + 1
+            try:
+                return vpp.agent.decide(ctx)
+            except Exception:
+                log.exception("VPP %s (%d) decision failed", vpp.name, pid)
+                return AgentDecision.hold("agent decision raised")
+
+        decision_round = self.decision_scheduler.collect(
+            sim_ts=sim_ts,
+            participant_ids=self.vpps,
+            build_context=lambda pid: contexts[pid],
+            decide=decide,
+            snapshot_id=primary.interval_id,
+        )
+        wall_ts = datetime.now(UTC)
+        for scheduled in decision_round.decisions:
+            execution = self.gateway.execute_decision(
+                participant_id=scheduled.participant_id,
+                decision=scheduled.decision,
+                sim_ts=sim_ts,
+                wall_ts=wall_ts,
             )
-        else:
-            spilled_kwh = overflow_kwh
-            cash = spilled_kwh * self.curtailment_price_per_kwh
-            vpp.state.pnl += Decimal(str(cash))
-            totals["spilled_generation_kwh"] += spilled_kwh
-            totals["settlement_cash"] += cash
-            log.debug(
-                "VPP %s imbalance spill %.6f kWh settled at %.6f",
-                vpp.vpp_id,
-                spilled_kwh,
-                self.curtailment_price_per_kwh,
+            self._record_rejections(scheduled.participant_id, len(execution.rejected))
+            self._record_product_trades(execution.trades)
+            vpp = self.vpps[scheduled.participant_id]
+            vpp.open_order_ids = [
+                order.order_id
+                for order in self.engine.open_orders_for_vpp(scheduled.participant_id)
+            ]
+            vpp.state.pnl = self.gateway.ledger.balance(scheduled.participant_id)
+
+    def _open_balance_net(self, participant_id: int, interval_id: str) -> float:
+        return sum(
+            float(order.remaining_qty) if order.side == "sell" else -float(order.remaining_qty)
+            for side in ("buy", "sell")
+            for order in self.engine.iter_orders(interval_id, side)
+            if order.vpp_id == participant_id and order.purpose.value == "balance"
+        )
+
+    def _open_order_views(self, participant_id: int, sim_ts: datetime) -> list[OpenOrderView]:
+        cadence = max(get_settings().agent_decision_interval_sec, 1e-9)
+        return [
+            OpenOrderView(
+                order_id=order.order_id,
+                side=order.side,
+                price=order.price,
+                remaining_qty=order.remaining_qty,
+                age_ticks=max(0, int((sim_ts - order.sim_ts).total_seconds() / cadence)),
+                dispatched=order.purpose.value != "balance",
             )
+            for order in self.engine.open_orders_for_vpp(participant_id)
+        ]
+
+    def _settle_due_intervals(self, sim_ts: datetime) -> None:
+        for interval in self.engine.intervals:
+            iid = interval.interval_id
+            if iid in self._settled_intervals or interval.end > sim_ts:
+                continue
+            prices = self._settlement_prices(interval)
+            for vpp in self.vpps.values():
+                meter = self.meters.pop(vpp.vpp_id, iid)
+                self.gateway.record_meter_data(
+                    vpp.vpp_id,
+                    interval,
+                    renewable_generation_kwh=(
+                        0.0 if meter is None else meter.renewable_generation_kwh
+                    ),
+                    load_demand_kwh=(0.0 if meter is None else meter.uncontrolled_load_kwh),
+                )
+                result = self.gateway.settle_participant(
+                    vpp.vpp_id,
+                    interval,
+                    prices=SettlementPrices(
+                        prices.long_imbalance_price,
+                        prices.short_imbalance_price,
+                        prices.curtailment_price,
+                        Decimal(str(vpp.params.value_of_lost_load_per_mwh)),
+                    ),
+                    occurred_at=sim_ts,
+                )
+                position = self.gateway.participants[vpp.vpp_id].positions[iid]
+                totals = self.imbalance_totals_by_vpp.setdefault(
+                    vpp.vpp_id,
+                    {
+                        "unserved_load_kwh": 0.0,
+                        "spilled_generation_kwh": 0.0,
+                        "settlement_cash": 0.0,
+                    },
+                )
+                totals["unserved_load_kwh"] += position.unserved_load_kwh
+                totals["spilled_generation_kwh"] += position.curtailed_generation_kwh
+                totals["settlement_cash"] += float(result.imbalance_usd)
+                vpp.state.soc_kwh = vpp.battery.soc_kwh
+                vpp.state.pnl = self.gateway.ledger.balance(vpp.vpp_id)
+            self._settled_intervals.add(iid)
+
+    def _settlement_prices(self, interval: DeliveryInterval) -> SettlementPrices:
+        raw = self.engine.last_price(interval.interval_id)
+        if raw is None:
+            raw = self.engine.latest_price
+        if raw is None:
+            raw = Decimal(str(self._external_fallback_price()))
+        multiplier = max(1.0, float(self.imbalance_penalty_mult))
+        spread = abs(raw) * Decimal(str(multiplier - 1.0))
+        return SettlementPrices(
+            long_imbalance_price=raw - spread,
+            short_imbalance_price=raw + spread,
+            curtailment_price=Decimal(str(get_settings().curtailment_price_per_mwh)),
+        )
+
+    def _record_product_trades(self, trades: tuple[ProductTrade, ...]) -> None:
+        for trade in trades:
+            cash = usd_for_energy(trade.price, trade.qty)
+            for participant_id, side, counterparty in (
+                (trade.buy_vpp_id, "buy", trade.sell_vpp_id),
+                (trade.sell_vpp_id, "sell", trade.buy_vpp_id),
+            ):
+                vpp = self.vpps.get(participant_id)
+                if vpp is None:
+                    continue
+                if side == "buy":
+                    vpp.state.cumulative_energy_bought_kwh += float(trade.qty)
+                else:
+                    vpp.state.cumulative_energy_sold_kwh += float(trade.qty)
+                self._push_recent_trade(
+                    vpp,
+                    {
+                        "trade_id": trade.trade_id,
+                        "interval_id": trade.interval.interval_id,
+                        "delivery_start": trade.interval.start,
+                        "delivery_end": trade.interval.end,
+                        "side": side,
+                        "price": str(trade.price),
+                        "qty": str(trade.qty),
+                        "cash_usd": str(cash if side == "sell" else -cash),
+                        "counterparty_vpp_id": counterparty,
+                        "buy_vpp_id": trade.buy_vpp_id,
+                        "sell_vpp_id": trade.sell_vpp_id,
+                        "sim_ts": trade.sim_ts,
+                        "wall_ts": trade.wall_ts,
+                    },
+                )
+                vpp.state.pnl = self.gateway.ledger.balance(participant_id)
+
+    @staticmethod
+    def _product_trade_payload(trade: ProductTrade) -> dict[str, object]:
+        return {
+            "kind": "trade",
+            "trade_id": trade.trade_id,
+            "interval_id": trade.interval.interval_id,
+            "delivery_start": trade.interval.start.isoformat(),
+            "delivery_end": trade.interval.end.isoformat(),
+            "sim_ts": trade.sim_ts.isoformat(),
+            "wall_ts": trade.wall_ts.isoformat(),
+            "buy_order_id": trade.buy_order_id,
+            "sell_order_id": trade.sell_order_id,
+            "buy_vpp_id": trade.buy_vpp_id,
+            "sell_vpp_id": trade.sell_vpp_id,
+            "buy_purpose": trade.buy_purpose.value,
+            "sell_purpose": trade.sell_purpose.value,
+            "price": str(trade.price),
+            "qty": str(trade.qty),
+        }
 
     def _external_fallback_price(self) -> float:
         return float(get_settings().external_market_fallback_price)
-
-    def _submit_physical_backstop(self, vpp: SimulatorVPP, sim_ts: datetime) -> None:
-        if (
-            self.market_mode != "realprice"
-            or not self.physical_backstop_enabled
-            or not self._external_market_quote.external_trading_enabled
-        ):
-            return
-        pending = vpp.state.pending_net_kwh
-        if vpp.battery.soc_frac >= 0.995 and pending > 0.0:
-            qty = pending
-            side = "sell"
-            price = self._external_market_quote.export_price
-        elif vpp.battery.soc_frac <= 0.005 and pending < 0.0:
-            qty = -pending
-            side = "buy"
-            price = self._external_market_quote.import_price
-        else:
-            return
-        if qty < 0.01:
-            return
-        log.info(
-            "VPP %s physical backstop %s %.6f kWh at %s",
-            vpp.vpp_id,
-            side,
-            qty,
-            price,
-        )
-        self._submit_intent(
-            vpp,
-            OrderIntent(side=side, price=price, qty=Decimal(str(qty))),
-            sim_ts,
-        )
 
     def imbalance_totals(self, vpp_id: int) -> dict[str, float]:
         totals = self.imbalance_totals_by_vpp.get(vpp_id)
@@ -1975,61 +2167,10 @@ class Simulator:
             }
         return dict(totals)
 
-    def _gate_and_submit(
-        self,
-        vpp: SimulatorVPP,
-        ctx: AgentContext,
-        intents: list[OrderIntent],
-        sim_ts: datetime,
-        open_order_count: int,
-    ) -> None:
-        """Run the VPP's order batch through the RiskGate, then submit what survives.
-        If every order is vetoed and the agent exposes a `risk_fallback` policy, the
-        fallback's (re-gated) action is submitted instead; otherwise the agent stands
-        down for the tick and the hold is counted."""
-        decision = self.risk_gate.validate(
-            intents,
-            vpp_id=vpp.vpp_id,
-            params=vpp.params,
-            battery=vpp.battery,
-            tick_h=ctx.tick_duration_h,
-            open_order_count=open_order_count,
-        )
-        self._record_rejections(vpp.vpp_id, len(decision.rejected))
-        if decision.requires_fallback:
-            fallback = getattr(vpp.agent, "risk_fallback", None)
-            if fallback is not None:
-                self.fallback_invocations_by_vpp[vpp.vpp_id] = (
-                    self.fallback_invocations_by_vpp.get(vpp.vpp_id, 0) + 1
-                )
-                decision = self.risk_gate.validate(
-                    fallback.decide(ctx),
-                    vpp_id=vpp.vpp_id,
-                    params=vpp.params,
-                    battery=vpp.battery,
-                    tick_h=ctx.tick_duration_h,
-                    open_order_count=open_order_count,
-                )
-                self._record_rejections(vpp.vpp_id, len(decision.rejected))
-            else:
-                self.veto_holds_by_vpp[vpp.vpp_id] = self.veto_holds_by_vpp.get(vpp.vpp_id, 0) + 1
-        for intent in decision.accepted:
-            self._submit_intent(vpp, intent, sim_ts)
-
     def _record_rejections(self, vpp_id: int, n: int) -> None:
         if n:
             self.risk_rejections += n
             self.risk_rejections_by_vpp[vpp_id] = self.risk_rejections_by_vpp.get(vpp_id, 0) + n
-
-    def _expire_orders(self, sim_ts: datetime) -> None:
-        """Expire TTL'd resting orders and shed local open-order ids."""
-        expired = self.engine.expire(sim_ts=sim_ts, wall_ts=datetime.now(UTC))
-        for order in expired:
-            vpp = self.vpps.get(order.vpp_id)
-            if vpp is None:
-                continue  # external order — the owner re-quotes on its own
-            if order.order_id in vpp.open_order_ids:
-                vpp.open_order_ids.remove(order.order_id)
 
     def market_balance(self) -> MarketBalanceSummary:
         """Aggregate live supply/demand across built-in VPPs plus book depth —
@@ -2038,8 +2179,16 @@ class Simulator:
         load_kw = sum(v.state.load_kw for v in self.vpps.values())
         gas_capacity_kw = sum(v.params.gas_kw_max for v in self.vpps.values())
         ratio = (renewable_kw + gas_capacity_kw) / load_kw if load_kw > 1e-6 else None
-        bid_depth = sum(q for _, q in self.engine.book.depth("buy", 10**6))
-        ask_depth = sum(q for _, q in self.engine.book.depth("sell", 10**6))
+        product = delivery_horizon(
+            self.clock.now_sim(),
+            count=1,
+            market=self.market_mode,
+            interval_sec=get_settings().delivery_interval_sec,
+        )[0]
+        self.engine.register(product)
+        snapshot = self.engine.snapshot(product.interval_id, depth_levels=10**6)
+        bid_depth = sum(Decimal(qty) for _, qty in snapshot["bids"])
+        ask_depth = sum(Decimal(qty) for _, qty in snapshot["asks"])
         return {
             "renewable_kw": round(renewable_kw, 3),
             "load_kw": round(load_kw, 3),
@@ -2049,200 +2198,6 @@ class Simulator:
             "bid_depth_kwh": float(bid_depth),
             "ask_depth_kwh": float(ask_depth),
         }
-
-    def _submit_intent(self, vpp: SimulatorVPP, intent: OrderIntent, sim_ts: datetime) -> None:
-        if self.market_mode == "realprice":
-            self._submit_intent_realprice(vpp, intent, sim_ts)
-            return
-        # Pure P2P: agents trade only with each other through the CDA. CAISO never
-        # settles trades here (it is a reference signal only), so unfilled orders rest.
-        try:
-            result = self.engine.submit(
-                vpp_id=vpp.vpp_id,
-                side=intent.side,
-                price=intent.price,
-                qty=intent.qty,
-                sim_ts=sim_ts,
-                wall_ts=datetime.now(UTC),
-                ttl_sec=self.order_ttl_sec or None,
-                dispatched=intent.dispatched,
-                rest_unfilled=True,
-            )
-            if result.order.remaining_qty > 0:
-                vpp.open_order_ids.append(result.order.order_id)
-            self._record_trades(result.trades)
-        except ValueError:
-            log.exception("VPP %s submitted an invalid order", vpp.vpp_id)
-
-    def _submit_intent_realprice(
-        self, vpp: SimulatorVPP, intent: OrderIntent, sim_ts: datetime
-    ) -> None:
-        """Real-time price market: agents are pure price-takers against the live CAISO
-        price. An order settles in full against the grid when it crosses the grid's
-        import/export quote; otherwise nothing happens (no peer matching, no resting —
-        the agent simply re-quotes next tick). Battery (dispatched) orders trade too,
-        so battery arbitrage against the grid works. Agent volume never moves the price:
-        that is the point — a clean testbed for strategy P&L against a real price curve.
-        """
-        quote = self._external_quote_for_intent(intent, include_dispatched=True)
-        if quote is None:
-            return  # no live grid price, or the order does not cross the grid spread
-        try:
-            self._settle_external_trade(
-                vpp,
-                side=intent.side,
-                qty=intent.qty,
-                quote=quote,
-                sim_ts=sim_ts,
-            )
-        except Exception:
-            log.exception("VPP %s grid settlement failed", vpp.vpp_id)
-            return
-
-    def _external_quote_for_intent(
-        self, intent: OrderIntent, *, include_dispatched: bool = False
-    ) -> ExternalMarketQuote | None:
-        if intent.dispatched and not include_dispatched:
-            return None
-        quote = self._external_market_quote
-        if not quote.external_trading_enabled:
-            return None
-        if intent.side == "buy" and intent.price >= quote.import_price:
-            return quote
-        if intent.side == "sell" and intent.price <= quote.export_price:
-            return quote
-        return None
-
-    def _settle_external_trade(
-        self,
-        vpp: SimulatorVPP,
-        *,
-        side: str,
-        qty: Decimal,
-        quote: ExternalMarketQuote,
-        sim_ts: datetime,
-    ) -> ExternalTradeEvent:
-        event = self._publish_external_trade_for_vpp_id(
-            vpp_id=vpp.vpp_id,
-            side=side,
-            qty=qty,
-            quote=quote,
-            sim_ts=sim_ts,
-        )
-        self._apply_external_trade_to_vpp(event)
-        return event
-
-    def _publish_external_trade_for_vpp_id(
-        self,
-        *,
-        vpp_id: int,
-        side: str,
-        qty: Decimal,
-        quote: ExternalMarketQuote,
-        sim_ts: datetime,
-    ) -> ExternalTradeEvent:
-        event = ExternalTradeEvent(
-            external_trade_id=self._alloc_external_trade_id(),
-            sim_ts=sim_ts,
-            wall_ts=datetime.now(UTC),
-            vpp_id=vpp_id,
-            side=side,
-            price=quote.import_price if side == "buy" else quote.export_price,
-            raw_lmp=quote.raw_lmp,
-            qty=qty,
-            region=quote.region,
-            node=quote.node,
-            counterparty="CAISO SP15",
-            interval_start=quote.interval_start,
-            interval_end=quote.interval_end,
-        )
-        self._publish_event(event)
-        return event
-
-    def _alloc_external_trade_id(self) -> int:
-        tid = self._next_external_trade_id
-        self._next_external_trade_id += 1
-        return tid
-
-    def _record_trades(self, trades: list[TradeEvent]) -> None:
-        for trade in trades:
-            self._apply_trade_to_vpp(trade, side="buy")
-            self._apply_trade_to_vpp(trade, side="sell")
-
-    def _apply_external_trade_to_vpp(self, trade: ExternalTradeEvent) -> None:
-        vpp = self.vpps.get(trade.vpp_id)
-        if vpp is None:
-            return
-
-        qty_f = float(trade.qty)
-        cash = Decimal(str(float(trade.price) * qty_f))
-        self._settle_cash_and_energy(vpp, side=trade.side, qty_f=qty_f, cash=cash)
-
-        self._push_recent_trade(
-            vpp,
-            {
-                "trade_id": f"external-{trade.external_trade_id}",
-                "kind": trade.kind,
-                "side": trade.side,
-                "price": str(trade.price),
-                "raw_lmp": str(trade.raw_lmp),
-                "qty": str(trade.qty),
-                "cash": str(cash),
-                "counterparty": trade.counterparty,
-                "counterparty_vpp_id": 0,
-                "buy_vpp_id": trade.vpp_id if trade.side == "buy" else 0,
-                "sell_vpp_id": 0 if trade.side == "buy" else trade.vpp_id,
-                "sim_ts": trade.sim_ts,
-                "wall_ts": trade.wall_ts,
-            },
-        )
-
-    def _apply_trade_to_vpp(self, trade: TradeEvent, *, side: str) -> None:
-        vpp_id = trade.buy_vpp_id if side == "buy" else trade.sell_vpp_id
-        vpp = self.vpps.get(vpp_id)
-        if vpp is None:
-            return
-
-        qty_f = float(trade.qty)
-        cash = Decimal(str(float(trade.price) * qty_f))
-        counterparty = trade.sell_vpp_id if side == "buy" else trade.buy_vpp_id
-        self._settle_cash_and_energy(vpp, side=side, qty_f=qty_f, cash=cash)
-
-        self._push_recent_trade(
-            vpp,
-            {
-                "trade_id": trade.trade_id,
-                "side": side,
-                "price": str(trade.price),
-                "qty": str(trade.qty),
-                "cash": str(cash),
-                "counterparty_vpp_id": counterparty,
-                "buy_vpp_id": trade.buy_vpp_id,
-                "sell_vpp_id": trade.sell_vpp_id,
-                "sim_ts": trade.sim_ts,
-                "wall_ts": trade.wall_ts,
-            },
-        )
-
-    def _settle_cash_and_energy(
-        self, vpp: SimulatorVPP, *, side: str, qty_f: float, cash: Decimal
-    ) -> None:
-        """Apply a fill's cash, energy counters, and battery SoC to a VPP. Shared
-        by internal (P2P) and external (CAISO) settlement so the two can't drift."""
-        if side == "buy":
-            vpp.state.pnl -= cash
-            vpp.state.cumulative_energy_bought_kwh += qty_f
-            cover = min(qty_f, max(0.0, -vpp.state.pending_net_kwh))
-            vpp.state.pending_net_kwh += cover
-            vpp.battery.apply_kwh(qty_f - cover)
-            vpp.state.soc_kwh = vpp.battery.soc_kwh
-        else:
-            vpp.state.pnl += cash
-            vpp.state.cumulative_energy_sold_kwh += qty_f
-            clear = min(qty_f, max(0.0, vpp.state.pending_net_kwh))
-            vpp.state.pending_net_kwh -= clear
-            vpp.battery.apply_kwh(-(qty_f - clear))
-            vpp.state.soc_kwh = vpp.battery.soc_kwh
 
     def _push_recent_trade(self, vpp: SimulatorVPP, record: dict) -> None:
         vpp.trade_count += 1

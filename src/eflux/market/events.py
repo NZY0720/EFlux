@@ -34,6 +34,10 @@ class OrderEvent(_Base):
     price: Decimal
     qty: Decimal
     remaining_qty: Decimal
+    interval_id: str
+    delivery_start: datetime
+    delivery_end: datetime
+    purpose: str
 
 
 class TradeEvent(_Base):
@@ -45,6 +49,11 @@ class TradeEvent(_Base):
     sell_vpp_id: int
     price: Decimal
     qty: Decimal
+    interval_id: str
+    delivery_start: datetime
+    delivery_end: datetime
+    buy_purpose: str
+    sell_purpose: str
 
 
 class ExternalTradeEvent(_Base):
@@ -73,6 +82,9 @@ class TickEvent(_Base):
     external_price: Decimal | None = None
     bid_depth: Decimal = Decimal("0")
     ask_depth: Decimal = Decimal("0")
+    interval_id: str
+    delivery_start: datetime
+    delivery_end: datetime
 
 
 MarketEvent = OrderEvent | TradeEvent | ExternalTradeEvent | TickEvent

@@ -14,7 +14,9 @@ from datetime import datetime
 from decimal import Decimal
 from typing import TYPE_CHECKING
 
+from eflux.agents.decision import AgentDecision
 from eflux.data.electricity_market import ExternalMarketQuote
+from eflux.market.products import DeliveryInterval, next_delivery_interval
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
 
@@ -126,6 +128,16 @@ class AgentContext:
     market: MarketSnapshot
     rng: random.Random
     tick_duration_h: float
+    # Products visible to this decision. The first is the primary/nearest
+    # delivery interval; policies may place orders farther along the horizon.
+    delivery_intervals: tuple[DeliveryInterval, ...] = field(default_factory=tuple)
+    # Built-in decision cadence is independent of the one-second physics tick.
+    decision_interval_sec: float = 30.0
+    # Forecast uncontrolled net injection for the primary interval. Positive is
+    # surplus, negative is deficit. None is allowed in isolated policy tests.
+    projected_net_kwh: float | None = None
+    # Current dispatchable output, used to value startup decisions.
+    dispatchable_power_kw: float = 0.0
     # Signed energy this VPP has resting in non-dispatched book orders: sell
     # remainders positive, buy remainders negative — the same convention as
     # pending_net_kwh. Populated by the runner.
@@ -143,8 +155,20 @@ class AgentContext:
     # ignore it until later phases opt in.
     forecast: ForecastBundle | None = None
 
+    @property
+    def primary_interval(self) -> DeliveryInterval:
+        if self.delivery_intervals:
+            return self.delivery_intervals[0]
+        return next_delivery_interval(self.state.sim_ts)
+
 
 class BaseAgent(ABC):
     @abstractmethod
-    def decide(self, ctx: AgentContext) -> list[OrderIntent]:
-        ...
+    def decide(self, ctx: AgentContext) -> AgentDecision: ...
+
+
+class ExternalControlAgent(BaseAgent):
+    """Physical VPP whose decisions arrive through the external protocol."""
+
+    def decide(self, ctx: AgentContext) -> AgentDecision:
+        return AgentDecision.hold("externally controlled participant")

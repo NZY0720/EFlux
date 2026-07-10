@@ -5,12 +5,14 @@ A pure data record produced by `TruthfulValuationOracle`. It decouples *valuatio
 Truthful agent assembles orders from it, the strategy compiler prices primitives off
 it, and the RiskGate uses it as an economic reference for sane price bands.
 
-Prices are floats in the market's price unit (currency per kWh); quantities are kWh.
+Prices are floats in USD/MWh; quantities are terminal kWh.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+from eflux.market.delivery import OrderPurpose
 
 
 @dataclass(frozen=True)
@@ -35,12 +37,9 @@ class ValuationSignal:
     # neutral mid SOC (negative = room to charge, positive = should discharge).
     soc_frac: float
     soc_pressure: float
-    # True when the surplus on offer is dispatchable generation (gas fuel) rather than
-    # ambient/battery energy: its sell orders must carry dispatched=True so the book keeps
-    # them out of ambient open-order exposure. Gas folds into the existing surplus_kwh /
-    # fair_sell_price channels (so the PPO obs is unchanged); this flag only routes the
-    # resulting orders. Default False keeps every non-gas path identical.
-    supply_dispatched: bool = False
+    # Physical resource backing the surplus. Gas folds into the existing
+    # surplus/fair-price channels but is routed to dispatchable reservations.
+    supply_purpose: OrderPurpose = OrderPurpose.BALANCE
     expected_ref_1h: float | None = None
     expected_ref_12h: float | None = None
     # Normalized forward price direction in roughly [-1, 1]; positive means the

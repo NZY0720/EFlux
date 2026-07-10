@@ -38,11 +38,12 @@ class Settings(BaseSettings):
 
     market_speed: float = 1.0
     market_tick_sec: float = 1.0
-    # Resting orders expire after this many sim-seconds (0 disables expiry).
-    # Keeps never-crossing quotes (e.g. gas asks above every bid) from piling
-    # up in the book. Must exceed the agents' 30-tick quote cadence or the
-    # book flickers empty between re-quotes.
-    order_ttl_sec: float = 180.0
+    agent_decision_interval_sec: float = 30.0
+    delivery_interval_sec: int = 300
+    delivery_horizon_intervals: int = 6
+    # Agent requests may override this; tactical policies default to one
+    # decision interval so stale exposure is released before the next quote.
+    order_ttl_sec: float = 30.0
     site_timezone: str = "America/Los_Angeles"
     market_region: str = "caiso_sp15"
     # Which market this process runs (one market per launch — see the two .command
@@ -58,8 +59,7 @@ class Settings(BaseSettings):
     external_market_transaction_fee: float = 2.0
     imbalance_settlement_enabled: bool = True
     imbalance_penalty_mult: float = 2.0
-    curtailment_price_per_kwh: float = 0.0
-    physical_backstop_enabled: bool = True
+    curtailment_price_per_mwh: float = 0.0
     forecast_enabled: bool = True
     forecast_refresh_sec: float = 60.0
     forecast_warmup_days: int = 30

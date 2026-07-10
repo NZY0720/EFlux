@@ -15,11 +15,14 @@ Side choice mirrors ZI: positive net energy ⇒ sell; negative ⇒ buy; balanced
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from decimal import Decimal
 
-from eflux.agents.base import AgentContext, BaseAgent, OrderIntent
+from eflux.agents.base import AgentContext, BaseAgent
+from eflux.agents.decision import AgentDecision, OrderRequest
 from eflux.agents.valuation import TruthfulValuationOracle, ValuationSignal
+from eflux.market.delivery import OrderPurpose
 
 
 @dataclass
@@ -33,7 +36,7 @@ class TruthfulAgent(BaseAgent):
     # boot SOC so a fresh market has supply from the first minute.
     soc_high: float = 0.45
     soc_low: float = 0.25
-    battery_quote_every_n_ticks: int = 30
+    battery_quote_every_n_decisions: int = 1
     # Price-responsive demand: bid price rises with the deficit fraction
     # (deficit relative to battery capacity), up to price_ref * price_cap_mult.
     # 0.0 = legacy flat bidding at price_ref. With demand_beta=0.5 an urgent
@@ -52,62 +55,93 @@ class TruthfulAgent(BaseAgent):
             price_cap_mult=self.price_cap_mult,
         )
 
-    def decide(self, ctx: AgentContext) -> list[OrderIntent]:
+    def decide(self, ctx: AgentContext) -> AgentDecision:
         sig = self._oracle.estimate(ctx)
-        intents: list[OrderIntent] = []
+        requests: list[OrderRequest] = []
         min_qty_f = float(self.min_qty)
 
         # 1) Quote the accumulated untraded balance, not this tick's sliver of
         # energy: with a 1s tick the per-tick net is ~1e-3 kWh and would never
         # clear min_qty. The oracle reports it as surplus_kwh / deficit_kwh.
         if sig.surplus_kwh >= min_qty_f:
-            # Gas-backed surplus is dispatched (settles through fuel, not the ambient balance).
+            # Gas-backed surplus settles through fuel, not ambient balance.
             self._append_balance_order(
-                intents, "sell", sig.fair_sell_price, sig.surplus_kwh, dispatched=sig.supply_dispatched
+                requests,
+                ctx,
+                "sell",
+                sig.fair_sell_price,
+                sig.surplus_kwh,
+                purpose=sig.supply_purpose,
             )
         elif sig.deficit_kwh >= min_qty_f:
-            self._append_balance_order(intents, "buy", sig.fair_buy_price, sig.deficit_kwh)
+            self._append_balance_order(
+                requests,
+                ctx,
+                "buy",
+                sig.fair_buy_price,
+                sig.deficit_kwh,
+                purpose=OrderPurpose.BALANCE,
+            )
 
         # 2) Battery-band arbitrage quote (throttled). Sized to what the battery
         # could physically deliver over the cooldown window, capped by the SOC
         # distance to the band edge so it self-limits as fills move the SOC.
-        self._append_battery_band_order(intents, ctx, sig)
+        self._append_battery_band_order(requests, ctx, sig)
 
-        return intents
+        return AgentDecision(orders=tuple(requests))
 
     def _append_balance_order(
-        self, intents: list[OrderIntent], side: str, price_f: float, qty_f: float, *, dispatched: bool = False
+        self,
+        requests: list[OrderRequest],
+        ctx: AgentContext,
+        side: str,
+        price_f: float,
+        qty_f: float,
+        *,
+        purpose: OrderPurpose,
     ) -> None:
         price = Decimal(str(price_f)).quantize(Decimal("0.0001"))
         qty = Decimal(str(qty_f)).quantize(Decimal("0.0001"))
-        if price > 0 and qty >= self.min_qty:
-            intents.append(OrderIntent(side=side, price=price, qty=qty, dispatched=dispatched))
+        if price.is_finite() and qty >= self.min_qty:
+            requests.append(
+                OrderRequest(
+                    side=side,
+                    price=price,
+                    qty_kwh=qty,
+                    interval=ctx.primary_interval,
+                    purpose=purpose,
+                    ttl_sec=ctx.decision_interval_sec,
+                )
+            )
 
     def _append_battery_band_order(
-        self, intents: list[OrderIntent], ctx: AgentContext, sig: ValuationSignal
+        self, requests: list[OrderRequest], ctx: AgentContext, sig: ValuationSignal
     ) -> None:
         self._ticks_since_battery_quote += 1
-        if self._ticks_since_battery_quote < self.battery_quote_every_n_ticks:
+        if self._ticks_since_battery_quote < self.battery_quote_every_n_decisions:
             return
-        block = ctx.battery.max_power_kw * ctx.tick_duration_h * self.battery_quote_every_n_ticks
+        block = ctx.battery.max_power_kw * ctx.primary_interval.duration_h
         soc = ctx.battery.soc_frac
         cap = ctx.battery.capacity_kwh
+        eta = math.sqrt(ctx.battery.eta_rt)
         batt_side: str | None = None
         if soc > self.soc_high:
             batt_side = "sell"
-            batt_qty = min(block, (soc - self.soc_high) * cap)
+            batt_qty = min(block, (soc - self.soc_high) * cap * eta)
             batt_price = sig.battery_sell_price
         elif soc < self.soc_low:
             batt_side = "buy"
-            batt_qty = min(block, (self.soc_low - soc) * cap)
+            batt_qty = min(block, (self.soc_low - soc) * cap / eta)
             batt_price = sig.battery_buy_price
         if batt_side is not None and batt_qty >= float(self.min_qty):
             self._ticks_since_battery_quote = 0
-            intents.append(
-                OrderIntent(
+            requests.append(
+                OrderRequest(
                     side=batt_side,
                     price=Decimal(str(batt_price)).quantize(Decimal("0.0001")),
-                    qty=Decimal(str(batt_qty)).quantize(Decimal("0.0001")),
-                    dispatched=True,
+                    qty_kwh=Decimal(str(batt_qty)).quantize(Decimal("0.0001")),
+                    interval=ctx.primary_interval,
+                    purpose=OrderPurpose.BATTERY,
+                    ttl_sec=ctx.decision_interval_sec,
                 )
             )

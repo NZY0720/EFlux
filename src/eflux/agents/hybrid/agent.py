@@ -17,8 +17,9 @@ import asyncio
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from eflux.agents.base import AgentContext, BaseAgent, OrderIntent
+from eflux.agents.base import AgentContext, BaseAgent
 from eflux.agents.character import Character, endowment_summary
+from eflux.agents.decision import AgentDecision
 from eflux.agents.reflective.strategist import (
     Strategist,
     StrategyGuidance,
@@ -54,14 +55,14 @@ class StrategyAgent(BaseAgent):
         )
         self._compiler = OrderProgramCompiler(min_qty=self.min_qty)
 
-    def decide(self, ctx: AgentContext) -> list[OrderIntent]:
+    def decide(self, ctx: AgentContext) -> AgentDecision:
         valuation = self._oracle.estimate(ctx)
         action = self._policy.select_action(ctx, valuation)
         action = self.character.apply(action)
         compiled = self._compiler.compile(ctx, action, valuation)
         # The scripted policy emits no cancel/replace intents; those flow once a
         # repricing policy (CANCEL_REPRICE) is wired through the runner.
-        return compiled.order_intents
+        return compiled.as_decision()
 
 
 @dataclass
@@ -97,7 +98,9 @@ class HybridPolicyAgent(BaseAgent):
             allowed = ", ".join(sorted(allowed_fallback_policies))
             raise ValueError(f"fallback_policy must be one of: {allowed}")
         self._oracle = TruthfulValuationOracle(
-            price_ref=self.price_ref, demand_beta=self.demand_beta, price_cap_mult=self.price_cap_mult
+            price_ref=self.price_ref,
+            demand_beta=self.demand_beta,
+            price_cap_mult=self.price_cap_mult,
         )
         self._executor: StrategyPolicy = self.executor or ScriptedStrategyPolicy(
             min_qty=float(self.min_qty), use_forecast=self.use_forecast
@@ -107,7 +110,9 @@ class HybridPolicyAgent(BaseAgent):
         self.risk_fallback: BaseAgent | None = self.fallback
         if self.risk_fallback is None and self.fallback_policy == "truthful":
             self.risk_fallback = TruthfulAgent(
-                price_ref=self.price_ref, demand_beta=self.demand_beta, price_cap_mult=self.price_cap_mult
+                price_ref=self.price_ref,
+                demand_beta=self.demand_beta,
+                price_cap_mult=self.price_cap_mult,
             )
         self._last_guidance: StrategyGuidance | None = None
         self._ticks = 0
@@ -122,7 +127,7 @@ class HybridPolicyAgent(BaseAgent):
         # Off-tick PPO update future (online executor + async mode only).
         self._online_task: object | None = None
 
-    def decide(self, ctx: AgentContext) -> list[OrderIntent]:
+    def decide(self, ctx: AgentContext) -> AgentDecision:
         self._maybe_refresh_guidance(ctx)
         guidance = self.strategist.current_guidance() if self.strategist is not None else None
         self._last_guidance = guidance
@@ -141,7 +146,7 @@ class HybridPolicyAgent(BaseAgent):
         action = self.character.apply(action)
         compiled = self._compiler.compile(ctx, action, valuation)
         self._maybe_online_update(ctx)
-        return compiled.order_intents
+        return compiled.as_decision()
 
     def record_trade(self, record: dict) -> None:
         # Forward fills to a stateful executor (e.g. a BaselinePolicy wrapping AA/ZIP/GD) so its
@@ -240,6 +245,7 @@ class HybridPolicyAgent(BaseAgent):
 
     def _regime_note(self, ctx: AgentContext) -> str:
         """Cheap deterministic market-regime summary for the slow strategist."""
+
         def _as_float(value) -> float | None:
             if value is None:
                 return None

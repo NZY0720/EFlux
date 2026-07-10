@@ -19,8 +19,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from eflux.agents.base import AgentContext, BaseAgent, OrderIntent
+from eflux.agents.base import AgentContext, BaseAgent
+from eflux.agents.decision import AgentDecision, OrderRequest
 from eflux.agents.valuation import TruthfulValuationOracle, ValuationSignal
+from eflux.market.delivery import OrderPurpose
 
 _QUANT = Decimal("0.0001")
 
@@ -60,7 +62,7 @@ class BaselineAgent(BaseAgent):
         result to rationality so a learner can never quote a losing trade."""
         raise NotImplementedError
 
-    def decide(self, ctx: AgentContext) -> list[OrderIntent]:
+    def decide(self, ctx: AgentContext) -> AgentDecision:
         sig = self._oracle.estimate(ctx)
         min_qty_f = float(self.min_qty)
         if sig.surplus_kwh >= min_qty_f:
@@ -68,11 +70,17 @@ class BaselineAgent(BaseAgent):
         elif sig.deficit_kwh >= min_qty_f:
             side, qty_f, limit = "buy", sig.deficit_kwh, sig.fair_buy_price
         else:
-            return []
+            return AgentDecision.hold("no projected balance above minimum quantity")
         price_f = self._quote_price(side=side, limit=limit, ctx=ctx, sig=sig)
-        # Gas-backed surplus settles through fuel — its sell order is dispatched.
-        dispatched = side == "sell" and sig.supply_dispatched
-        return self._order(side, self._rationalize(side, price_f, limit), qty_f, dispatched=dispatched)
+        purpose = sig.supply_purpose if side == "sell" else OrderPurpose.BALANCE
+        orders = self._order(
+            ctx,
+            side,
+            self._rationalize(side, price_f, limit),
+            qty_f,
+            purpose=purpose,
+        )
+        return AgentDecision(orders=orders)
 
     # -- shared helpers ---------------------------------------------------------------
     @staticmethod
@@ -81,12 +89,29 @@ class BaselineAgent(BaseAgent):
         never bids above its marginal value."""
         return max(price_f, limit) if side == "sell" else min(price_f, limit)
 
-    def _order(self, side: str, price_f: float, qty_f: float, *, dispatched: bool = False) -> list[OrderIntent]:
-        price = Decimal(str(max(price_f, 0.0001))).quantize(_QUANT)
+    def _order(
+        self,
+        ctx: AgentContext,
+        side: str,
+        price_f: float,
+        qty_f: float,
+        *,
+        purpose: OrderPurpose,
+    ) -> tuple[OrderRequest, ...]:
+        price = Decimal(str(price_f)).quantize(_QUANT)
         qty = Decimal(str(qty_f)).quantize(_QUANT)
-        if price <= 0 or qty < self.min_qty:
-            return []
-        return [OrderIntent(side=side, price=price, qty=qty, dispatched=dispatched)]
+        if not price.is_finite() or qty < self.min_qty:
+            return ()
+        return (
+            OrderRequest(
+                side=side,
+                price=price,
+                qty_kwh=qty,
+                interval=ctx.primary_interval,
+                purpose=purpose,
+                ttl_sec=ctx.decision_interval_sec,
+            ),
+        )
 
     @staticmethod
     def _last_market_price(ctx: AgentContext) -> float | None:

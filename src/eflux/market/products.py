@@ -144,6 +144,30 @@ def next_delivery_interval(
     )
 
 
+def delivery_interval_containing(
+    at: datetime,
+    *,
+    market: str = "p2p",
+    interval_sec: int = DEFAULT_DELIVERY_INTERVAL_SEC,
+    trading_horizon_sec: int = DEFAULT_TRADING_HORIZON_SEC,
+) -> DeliveryInterval:
+    """Return the aligned interval physically delivering at ``at``."""
+
+    at_utc = _utc(at, "at")
+    if interval_sec <= 0:
+        raise ValueError("interval_sec must be positive")
+    epoch_sec = int(at_utc.timestamp())
+    start_sec = epoch_sec - epoch_sec % interval_sec
+    start = datetime.fromtimestamp(start_sec, tz=UTC)
+    return DeliveryInterval(
+        market=market,
+        start=start,
+        end=start + timedelta(seconds=interval_sec),
+        gate_closure=start,
+        opens_at=start - timedelta(seconds=trading_horizon_sec),
+    )
+
+
 def delivery_horizon(
     at: datetime,
     *,

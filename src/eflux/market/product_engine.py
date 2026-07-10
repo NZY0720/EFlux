@@ -75,8 +75,33 @@ class ProductMatchingEngine:
         self._order_to_interval: dict[int, str] = {}
         self._closed: set[str] = set()
         self._last_price: dict[str, Decimal] = {}
+        self._latest_price: Decimal | None = None
+        self._trade_count = 0
         self._next_order_id = 1
         self._next_trade_id = 1
+
+    @property
+    def intervals(self) -> tuple[DeliveryInterval, ...]:
+        return tuple(sorted(self._intervals.values(), key=lambda interval: interval.start))
+
+    def last_price(self, interval_id: str) -> Decimal | None:
+        return self._last_price.get(interval_id)
+
+    @property
+    def latest_price(self) -> Decimal | None:
+        return self._latest_price
+
+    @property
+    def trade_count(self) -> int:
+        return self._trade_count
+
+    def iter_orders(self, interval_id: str, side: str) -> tuple[ProductLimitOrder, ...]:
+        if side not in {"buy", "sell"}:
+            raise ValueError(f"side must be 'buy' or 'sell', got {side!r}")
+        book = self._books.get(interval_id)
+        if book is None:
+            return ()
+        return tuple(book.iter_orders(side))  # type: ignore[arg-type, return-value]
 
     def register(self, interval: DeliveryInterval) -> None:
         iid = interval.interval_id
@@ -292,6 +317,8 @@ class ProductMatchingEngine:
             )
             self._next_trade_id += 1
             self._last_price[iid] = resting.price
+            self._latest_price = resting.price
+            self._trade_count += 1
             trades.append(trade)
             self.publish(trade)
         return trades

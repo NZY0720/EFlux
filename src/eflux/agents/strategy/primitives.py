@@ -26,6 +26,7 @@ from eflux.agents.strategy.schema import (
     StrategyMode,
 )
 from eflux.agents.valuation import ValuationSignal
+from eflux.market.delivery import OrderPurpose
 
 QUANT = Decimal("0.0001")
 GRID_PRICE_MARGIN = 0.05
@@ -64,14 +65,20 @@ def _effective_price(
     return px.quantize(QUANT)
 
 
-def _battery_qty_kwh(ctx: AgentContext, valuation: ValuationSignal, action: StrategyAction, side: str) -> float:
-    """SOC headroom toward soc_target, capped by one tick's battery throughput."""
+def _battery_qty_kwh(
+    ctx: AgentContext, valuation: ValuationSignal, action: StrategyAction, side: str
+) -> float:
+    """Terminal energy toward SOC target, capped by delivery-interval power."""
     cap = ctx.battery.capacity_kwh
     soc = valuation.soc_frac
-    head = (soc - action.soc_target) * cap if side == "sell" else (action.soc_target - soc) * cap
-    head = max(0.0, head)
-    per_tick = ctx.battery.max_power_kw * ctx.tick_duration_h
-    return min(head, per_tick) * max(0.0, action.qty_fraction)
+    cell_head = (
+        (soc - action.soc_target) * cap if side == "sell" else (action.soc_target - soc) * cap
+    )
+    cell_head = max(0.0, cell_head)
+    eta = max(0.01, ctx.battery.eta_rt) ** 0.5
+    terminal_head = cell_head * eta if side == "sell" else cell_head / eta
+    interval_limit = ctx.battery.max_power_kw * ctx.primary_interval.duration_h
+    return min(terminal_head, interval_limit) * max(0.0, action.qty_fraction)
 
 
 def _imbalance_qty_fraction(action: StrategyAction) -> float:
@@ -116,16 +123,14 @@ def _forecast_reference(ctx: AgentContext, valuation: ValuationSignal) -> float 
         or _positive(valuation.marginal_battery_value)
         or _market_mid(ctx)
         or _positive(
-            0.5
-            * (
-                float(valuation.fair_buy_price or 0.0)
-                + float(valuation.fair_sell_price or 0.0)
-            )
+            0.5 * (float(valuation.fair_buy_price or 0.0) + float(valuation.fair_sell_price or 0.0))
         )
     )
 
 
-def build_program(action: StrategyAction, ctx: AgentContext, valuation: ValuationSignal) -> OrderProgram:
+def build_program(
+    action: StrategyAction, ctx: AgentContext, valuation: ValuationSignal
+) -> OrderProgram:
     mode = action.mode
     market = ctx.market
 
@@ -141,7 +146,10 @@ def build_program(action: StrategyAction, ctx: AgentContext, valuation: Valuatio
             return OrderProgram(mode=mode, orders=[])
         qty = _battery_qty_kwh(ctx, valuation, action, "buy")
         price = max(_anchor(current, action), _q(current))
-        return OrderProgram(mode, orders=_one("buy", price, qty, action, dispatched=True))
+        return OrderProgram(
+            mode,
+            orders=_one("buy", price, qty, action, purpose=OrderPurpose.BATTERY),
+        )
 
     if mode == StrategyMode.GRID_DISCHARGE_ON_PEAK:
         if market.market_mode != "realprice":
@@ -152,25 +160,36 @@ def build_program(action: StrategyAction, ctx: AgentContext, valuation: Valuatio
             return OrderProgram(mode=mode, orders=[])
         qty = _battery_qty_kwh(ctx, valuation, action, "sell")
         price = min(_anchor(current, action), _q(current))
-        return OrderProgram(mode, orders=_one("sell", price, qty, action, dispatched=True))
+        return OrderProgram(
+            mode,
+            orders=_one("sell", price, qty, action, purpose=OrderPurpose.BATTERY),
+        )
 
     if mode == StrategyMode.LIQUIDATE_SURPLUS:
         qty = valuation.surplus_kwh * _imbalance_qty_fraction(action)
         price = _effective_price("sell", _anchor(valuation.fair_sell_price, action), action, market)
-        # Gas-backed surplus settles through fuel (dispatched); ambient surplus does not.
-        return OrderProgram(mode, orders=_one("sell", price, qty, action, dispatched=valuation.supply_dispatched))
+        return OrderProgram(
+            mode,
+            orders=_one("sell", price, qty, action, purpose=valuation.supply_purpose),
+        )
 
     if mode == StrategyMode.COVER_DEFICIT:
         qty = valuation.deficit_kwh * _imbalance_qty_fraction(action)
         price = _effective_price("buy", _anchor(valuation.fair_buy_price, action), action, market)
-        return OrderProgram(mode, orders=_one("buy", price, qty, action))
+        return OrderProgram(
+            mode,
+            orders=_one("buy", price, qty, action, purpose=OrderPurpose.BALANCE),
+        )
 
     if mode == StrategyMode.BATTERY_ARBITRAGE:
         side = "sell" if valuation.soc_frac >= action.soc_target else "buy"
         base = valuation.battery_sell_price if side == "sell" else valuation.battery_buy_price
         qty = _battery_qty_kwh(ctx, valuation, action, side)
         price = _effective_price(side, _anchor(base, action), action, market)
-        return OrderProgram(mode, orders=_one(side, price, qty, action, dispatched=True))
+        return OrderProgram(
+            mode,
+            orders=_one(side, price, qty, action, purpose=OrderPurpose.BATTERY),
+        )
 
     if mode == StrategyMode.AGGRESSIVE_TAKER:
         # Cross the spread on the imbalance side to take liquidity now.
@@ -187,10 +206,21 @@ def build_program(action: StrategyAction, ctx: AgentContext, valuation: Valuatio
             anchored = _anchor(base, action)
             limited = max(px, anchored) if side == "sell" else min(px, anchored)
             price = _effective_price(side, limited, action, market)
-            price = max(price, anchored.quantize(QUANT)) if side == "sell" else min(price, anchored.quantize(QUANT))
-        dispatched = side == "sell" and valuation.supply_dispatched
+            price = (
+                max(price, anchored.quantize(QUANT))
+                if side == "sell"
+                else min(price, anchored.quantize(QUANT))
+            )
+        purpose = valuation.supply_purpose if side == "sell" else OrderPurpose.BALANCE
         return OrderProgram(
-            mode, orders=_one(side, price, avail * _imbalance_qty_fraction(action), action, dispatched=dispatched)
+            mode,
+            orders=_one(
+                side,
+                price,
+                avail * _imbalance_qty_fraction(action),
+                action,
+                purpose=purpose,
+            ),
         )
 
     if mode in (StrategyMode.LADDER_SELL, StrategyMode.LADDER_BUY):
@@ -205,10 +235,25 @@ def build_program(action: StrategyAction, ctx: AgentContext, valuation: Valuatio
     return OrderProgram(mode, orders=[])
 
 
-def _one(side: str, price: Decimal, qty: float, action: StrategyAction, *, dispatched: bool = False) -> list[OrderSpec]:
+def _one(
+    side: str,
+    price: Decimal,
+    qty: float,
+    action: StrategyAction,
+    *,
+    purpose: OrderPurpose,
+) -> list[OrderSpec]:
     if qty <= 0:
         return []
-    return [OrderSpec(side=side, price=price, qty=_q(qty), dispatched=dispatched, ttl_ticks=action.ttl_ticks)]
+    return [
+        OrderSpec(
+            side=side,
+            price=price,
+            qty=_q(qty),
+            purpose=purpose,
+            ttl_ticks=action.ttl_ticks,
+        )
+    ]
 
 
 def _ladder(mode: StrategyMode, action: StrategyAction, valuation: ValuationSignal) -> OrderProgram:
@@ -218,7 +263,7 @@ def _ladder(mode: StrategyMode, action: StrategyAction, valuation: ValuationSign
     levels = max(1, action.ladder_levels)
     per = (avail * max(0.0, action.qty_fraction)) / levels
     slope = Decimal(str(action.ladder_slope))
-    dispatched = sell and valuation.supply_dispatched  # gas-backed ladder sells settle via fuel
+    purpose = valuation.supply_purpose if sell else OrderPurpose.BALANCE
     specs: list[OrderSpec] = []
     for i in range(levels):
         # Sells step up (ask higher further out); buys step down (bid lower).
@@ -226,12 +271,20 @@ def _ladder(mode: StrategyMode, action: StrategyAction, valuation: ValuationSign
         price = (base * factor).quantize(QUANT)
         if price > 0 and per > 0:
             specs.append(
-                OrderSpec("sell" if sell else "buy", price, _q(per), dispatched=dispatched, ttl_ticks=action.ttl_ticks)
+                OrderSpec(
+                    "sell" if sell else "buy",
+                    price,
+                    _q(per),
+                    purpose=purpose,
+                    ttl_ticks=action.ttl_ticks,
+                )
             )
     return OrderProgram(mode, orders=specs)
 
 
-def _market_make(action: StrategyAction, ctx: AgentContext, valuation: ValuationSignal) -> OrderProgram:
+def _market_make(
+    action: StrategyAction, ctx: AgentContext, valuation: ValuationSignal
+) -> OrderProgram:
     """Two-sided maker quotes straddling the battery fair value, backed by the
     battery (dispatched). Half-spread comes from ladder_slope (default a few %)."""
     mid = _anchor(valuation.marginal_battery_value, action)
@@ -242,13 +295,31 @@ def _market_make(action: StrategyAction, ctx: AgentContext, valuation: Valuation
     ask = (mid * (Decimal("1") + half)).quantize(QUANT)
     bid = (mid * (Decimal("1") - half)).quantize(QUANT)
     if sell_qty > 0:
-        specs.append(OrderSpec("sell", ask, _q(sell_qty), dispatched=True, ttl_ticks=action.ttl_ticks))
+        specs.append(
+            OrderSpec(
+                "sell",
+                ask,
+                _q(sell_qty),
+                purpose=OrderPurpose.BATTERY,
+                ttl_ticks=action.ttl_ticks,
+            )
+        )
     if buy_qty > 0:
-        specs.append(OrderSpec("buy", bid, _q(buy_qty), dispatched=True, ttl_ticks=action.ttl_ticks))
+        specs.append(
+            OrderSpec(
+                "buy",
+                bid,
+                _q(buy_qty),
+                purpose=OrderPurpose.BATTERY,
+                ttl_ticks=action.ttl_ticks,
+            )
+        )
     return OrderProgram(action.mode, orders=specs)
 
 
-def _cancel_reprice(action: StrategyAction, ctx: AgentContext, valuation: ValuationSignal) -> OrderProgram:
+def _cancel_reprice(
+    action: StrategyAction, ctx: AgentContext, valuation: ValuationSignal
+) -> OrderProgram:
     """Cancel/replace stale resting quotes and re-quote the current imbalance.
     The compiler pairs the fresh specs below with the cancelled orders."""
     fresh = build_program(
@@ -266,4 +337,6 @@ def _cancel_reprice(action: StrategyAction, ctx: AgentContext, valuation: Valuat
         valuation,
     )
     policy = CancelPolicy(cancel_age_ticks=max(1, action.cancel_age_ticks), reprice=True)
-    return OrderProgram(StrategyMode.CANCEL_REPRICE, orders=list(fresh.orders), cancel_policy=policy)
+    return OrderProgram(
+        StrategyMode.CANCEL_REPRICE, orders=list(fresh.orders), cancel_policy=policy
+    )

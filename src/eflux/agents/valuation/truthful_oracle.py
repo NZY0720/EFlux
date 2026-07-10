@@ -20,11 +20,12 @@ efficiency, and capacity are read live from the `AgentContext`.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 
 from eflux.agents.base import AgentContext
 from eflux.agents.valuation.schema import ValuationSignal
+from eflux.market.delivery import OrderPurpose
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -52,25 +53,9 @@ class TruthfulValuationOracle:
     price_cap_mult: float = 1.5
     # Neutral SOC for the (informational) soc_pressure signal.
     soc_neutral: float = 0.5
-    # Dispatchable-gas supply (only active when params.gas_kw_max > 0): the oracle reports
-    # one quote-window of fuel capacity as surplus at the gas marginal cost, every N ticks —
-    # the same metered cadence the dedicated GasGeneratorAgent uses, so gas is rate-limited
-    # to gas_kw_max instead of being re-offered unbounded each tick.
-    gas_quote_every_n_ticks: int = 30
-    # Throttle is gated on the tick timestamp (not the call count) so it advances once per
-    # tick even if estimate() is called multiple times within a tick (e.g. the training env
-    # estimates once for the action and once for the next observation). `_gas_fire` caches the
-    # per-tick offer/skip decision so every estimate() in the same tick agrees.
-    _gas_ticks: int = field(default=0, init=False, repr=False, compare=False)
-    _last_gas_ts: object = field(default=None, init=False, repr=False, compare=False)
-    _gas_fire: bool = field(default=False, init=False, repr=False, compare=False)
 
     def reset(self) -> None:
-        """Clear the gas throttle (e.g. between training episodes) so the metering cadence
-        starts fresh."""
-        self._gas_ticks = 0
-        self._last_gas_ts = None
-        self._gas_fire = False
+        """Valuation is stateless; retained as the policy lifecycle hook."""
 
     def estimate(self, ctx: AgentContext) -> ValuationSignal:
         pr = float(self.price_ref)
@@ -83,7 +68,11 @@ class TruthfulValuationOracle:
         # the book. This assumes a VPP is not intentionally resting both sides for
         # the same forced position; two-sided market making remains represented by
         # the separate scarcity term below.
-        net_kwh = ctx.state.pending_net_kwh
+        net_kwh = (
+            ctx.projected_net_kwh
+            if ctx.projected_net_kwh is not None
+            else ctx.state.pending_net_kwh
+        )
         effective_kwh = net_kwh - ctx.open_orders_net_kwh
         surplus_kwh = max(0.0, effective_kwh)
         deficit_kwh = max(0.0, -effective_kwh)
@@ -111,32 +100,14 @@ class TruthfulValuationOracle:
             battery_buy_price = min(battery_buy_price, anchor)
             battery_sell_price = max(battery_sell_price, anchor)
 
-        # Dispatchable gas supply. When this VPP has fuel capacity, meter one quote-window of
-        # it onto the sell side at its marginal cost on the throttle cadence (between windows
-        # the previously-offered capacity is already resting on the book). Gas folds into the
-        # existing surplus_kwh / fair_sell_price channels — so every strategy and the unchanged
-        # PPO obs see it — while supply_dispatched routes the resulting sells through fuel
-        # settlement. A gas provider is modelled as pure supply (no pv/wind/load — enforced in
-        # simulator/agent_spec.py), so the ambient surplus it would otherwise carry is ~0 and
-        # overriding it is safe.
-        supply_dispatched = False
+        # A gas provider offers one full delivery interval of capacity. Quote
+        # cadence belongs to the decision scheduler, never to physics tick count.
+        supply_purpose = OrderPurpose.BALANCE
         gas_kw = float(ctx.params.gas_kw_max)
         if gas_kw > 0.0:
-            ts = ctx.state.sim_ts
-            if ts != self._last_gas_ts:  # advance once per distinct tick, not per estimate() call
-                self._last_gas_ts = ts
-                self._gas_ticks += 1
-                self._gas_fire = self._gas_ticks >= self.gas_quote_every_n_ticks
-                if self._gas_fire:
-                    self._gas_ticks = 0
-            if self._gas_fire:
-                # Offer the fuel energy available over one quote window. Gas is storage-free,
-                # so this must not be capped by battery_kwh.
-                surplus_kwh = gas_kw * ctx.tick_duration_h * self.gas_quote_every_n_ticks
-                fair_sell_price = max(float(ctx.params.gas_cost_per_mwh), 0.0001)
-                supply_dispatched = True
-            else:
-                surplus_kwh = 0.0  # metered capacity already on the book between windows
+            surplus_kwh = gas_kw * ctx.primary_interval.duration_h
+            fair_sell_price = float(ctx.params.gas_cost_per_mwh)
+            supply_purpose = OrderPurpose.DISPATCHABLE
 
         soc_frac = ctx.battery.soc_frac
         expected_ref_1h: float | None = None
@@ -168,7 +139,7 @@ class TruthfulValuationOracle:
             deficit_kwh=deficit_kwh,
             soc_frac=soc_frac,
             soc_pressure=soc_frac - self.soc_neutral,
-            supply_dispatched=supply_dispatched,
+            supply_purpose=supply_purpose,
             expected_ref_1h=expected_ref_1h,
             expected_ref_12h=expected_ref_12h,
             price_trend=price_trend,
