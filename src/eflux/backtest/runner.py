@@ -64,7 +64,7 @@ ENDOWMENT_FIELDS = (
     "wind_kw_rated",
     "wind_mean_speed",
     "gas_kw_max",
-    "gas_cost_per_kwh",
+    "gas_cost_per_mwh",
     "pv_lat",
     "pv_lon",
     "pv_tilt",

@@ -74,7 +74,7 @@ def test_commercial_and_flat_profiles():
 # --- GasGeneratorAgent ---------------------------------------------------------
 
 def _gas_ctx(gas_kw_max: float, cost: float = 60.0) -> AgentContext:
-    params = VPPParams(gas_kw_max=gas_kw_max, gas_cost_per_kwh=cost, battery_kwh=0.0, battery_kw_max=0.0)
+    params = VPPParams(gas_kw_max=gas_kw_max, gas_cost_per_mwh=cost, battery_kwh=0.0, battery_kw_max=0.0)
     state = VPPState(sim_ts=datetime.now(UTC), soc_kwh=0.0)
     market = MarketSnapshot(
         sim_ts=state.sim_ts, best_bid=None, best_ask=None, last_price=None, mid_price=None

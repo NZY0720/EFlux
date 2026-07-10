@@ -16,7 +16,7 @@ def _sim_with_two_vpps() -> Simulator:
     sim.add_builtin_vpp(
         "solar-a", VPPParams(pv_kw_peak=4.0, battery_kwh=10.0, battery_kw_max=3.0), TruthfulAgent()
     )
-    sim.add_builtin_vpp("gas-a", VPPParams(gas_kw_max=20.0, gas_cost_per_kwh=60.0), TruthfulAgent())
+    sim.add_builtin_vpp("gas-a", VPPParams(gas_kw_max=20.0, gas_cost_per_mwh=60.0), TruthfulAgent())
     return sim
 
 

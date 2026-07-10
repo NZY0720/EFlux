@@ -272,7 +272,7 @@ export interface MarketAgent {
   battery_kw_max: number;
   load_kw_base: number;
   gas_kw_max: number;
-  gas_cost_per_kwh: number;
+  gas_cost_per_mwh: number;
   pnl: string;
   soc_kwh: number;
   soc_frac: number;

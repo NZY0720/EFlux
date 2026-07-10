@@ -2893,7 +2893,7 @@
             "type": "number",
             "title": "Gas Kw Max"
           },
-          "gas_cost_per_kwh": {
+          "gas_cost_per_mwh": {
             "type": "number",
             "title": "Gas Cost Per Kwh"
           },
@@ -3015,7 +3015,7 @@
           "battery_kw_max",
           "load_kw_base",
           "gas_kw_max",
-          "gas_cost_per_kwh",
+          "gas_cost_per_mwh",
           "pnl",
           "soc_kwh",
           "soc_frac",

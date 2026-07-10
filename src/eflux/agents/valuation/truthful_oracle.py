@@ -133,7 +133,7 @@ class TruthfulValuationOracle:
                 # Offer the fuel energy available over one quote window. Gas is storage-free,
                 # so this must not be capped by battery_kwh.
                 surplus_kwh = gas_kw * ctx.tick_duration_h * self.gas_quote_every_n_ticks
-                fair_sell_price = max(float(ctx.params.gas_cost_per_kwh), 0.0001)
+                fair_sell_price = max(float(ctx.params.gas_cost_per_mwh), 0.0001)
                 supply_dispatched = True
             else:
                 surplus_kwh = 0.0  # metered capacity already on the book between windows

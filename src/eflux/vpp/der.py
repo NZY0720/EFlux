@@ -51,7 +51,9 @@ class PV:
                     self._fallback_warned = True
                     log.warning(
                         "PV physical model (%.1f kWp) fell back to the sine stub: %s: %s",
-                        self.kw_peak, type(e).__name__, e,
+                        self.kw_peak,
+                        type(e).__name__,
+                        e,
                     )
         hour = sim_ts.hour + sim_ts.minute / 60.0
         if 6 <= hour <= 18:
@@ -65,10 +67,10 @@ class PV:
 @dataclass
 class WindTurbine:
     rated_kw: float
-    cut_in: float = 3.0       # m/s — below this the rotor doesn't turn
+    cut_in: float = 3.0  # m/s — below this the rotor doesn't turn
     rated_speed: float = 12.0  # m/s — at/above this output is rated_kw
-    cut_out: float = 25.0     # m/s — storm shutdown
-    mean_wind: float = 7.0    # m/s — stub base speed when no weather attached
+    cut_out: float = 25.0  # m/s — storm shutdown
+    mean_wind: float = 7.0  # m/s — stub base speed when no weather attached
     # Optional Open-Meteo weather DataFrame (UTC hourly, "wind_speed" column).
     weather = None  # type: ignore[var-annotated]  # pd.DataFrame | None
     _v: float | None = field(default=None, repr=False)  # AR(1) speed state
@@ -111,7 +113,11 @@ class Battery:
     soc_kwh: float = 0.0
 
     def apply_kwh(self, delta_kwh: float) -> float:
-        """Move cell SOC losslessly. Returns the actual signed SOC delta."""
+        """Move cell SOC losslessly for initialization/legacy bookkeeping only.
+
+        Market delivery must use :meth:`execute_terminal_interval`; using this
+        clamping helper for a fill would hide under-delivery and skip efficiency.
+        """
         before = self.soc_kwh
         self.soc_kwh = min(self.capacity_kwh, max(0.0, self.soc_kwh + delta_kwh))
         return self.soc_kwh - before
@@ -143,9 +149,82 @@ class Battery:
         self.soc_kwh -= draw
         return delivered
 
+    def execute_terminal_interval(
+        self,
+        *,
+        charge_terminal_kwh: float = 0.0,
+        discharge_terminal_kwh: float = 0.0,
+        duration_h: float,
+    ) -> BatteryDelivery:
+        """Execute a pre-reserved interval schedule without silent clipping.
+
+        Both terminal directions may be non-zero when a two-sided market maker
+        receives fills on both quotes.  They share one inverter, so gross terminal
+        throughput is power-limited.  Both charge-first and discharge-first
+        sequences must fit the starting SOC; this matches the reservation book's
+        conservative feasibility rule.
+        """
+
+        values = (charge_terminal_kwh, discharge_terminal_kwh, duration_h)
+        if not all(math.isfinite(v) for v in values):
+            raise ValueError("battery interval quantities must be finite")
+        if charge_terminal_kwh < 0.0 or discharge_terminal_kwh < 0.0:
+            raise ValueError("battery terminal quantities must be non-negative")
+        if duration_h <= 0.0:
+            raise ValueError("duration_h must be positive")
+        terminal_budget = self.max_power_kw * duration_h
+        gross = charge_terminal_kwh + discharge_terminal_kwh
+        if gross > terminal_budget + 1e-9:
+            raise ValueError(
+                f"battery gross terminal energy {gross:.6f} kWh exceeds "
+                f"{terminal_budget:.6f} kWh interval power budget"
+            )
+        eta_c = math.sqrt(self.eta_rt)
+        eta_d = math.sqrt(self.eta_rt)
+        cell_charge = charge_terminal_kwh * eta_c
+        cell_discharge = discharge_terminal_kwh / eta_d
+        start = self.soc_kwh
+        if cell_discharge > start + 1e-9:
+            raise ValueError(
+                f"battery discharge requires {cell_discharge:.6f} cell kWh; "
+                f"only {start:.6f} available"
+            )
+        room = self.capacity_kwh - start
+        if cell_charge > room + 1e-9:
+            raise ValueError(
+                f"battery charge requires {cell_charge:.6f} cell kWh room; "
+                f"only {room:.6f} available"
+            )
+        end = start + cell_charge - cell_discharge
+        if not -1e-9 <= end <= self.capacity_kwh + 1e-9:
+            raise ValueError(f"battery interval ends at infeasible SOC {end:.6f}")
+        self.soc_kwh = min(self.capacity_kwh, max(0.0, end))
+        return BatteryDelivery(
+            starting_soc_kwh=start,
+            ending_soc_kwh=self.soc_kwh,
+            charge_terminal_kwh=charge_terminal_kwh,
+            discharge_terminal_kwh=discharge_terminal_kwh,
+            cell_charge_kwh=cell_charge,
+            cell_discharge_kwh=cell_discharge,
+        )
+
     @property
     def soc_frac(self) -> float:
         return self.soc_kwh / self.capacity_kwh if self.capacity_kwh > 0 else 0.0
+
+
+@dataclass(frozen=True, slots=True)
+class BatteryDelivery:
+    starting_soc_kwh: float
+    ending_soc_kwh: float
+    charge_terminal_kwh: float
+    discharge_terminal_kwh: float
+    cell_charge_kwh: float
+    cell_discharge_kwh: float
+
+    @property
+    def cell_throughput_kwh(self) -> float:
+        return self.cell_charge_kwh + self.cell_discharge_kwh
 
 
 @dataclass

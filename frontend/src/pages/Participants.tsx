@@ -260,7 +260,7 @@ function ResourceList({ resources }: { resources: string[] }) {
 }
 
 function endowmentText(agent: MarketAgent) {
-  return [agent.pv_kw_peak > 0 && `PV ${agent.pv_kw_peak}kW`, agent.wind_kw_rated > 0 && `Wind ${agent.wind_kw_rated}kW`, agent.battery_kwh > 0 && `Batt ${agent.battery_kwh}kWh`, agent.load_kw_base > 0 && `Load ${agent.load_kw_base}kW`, agent.gas_kw_max > 0 && `Gas ${agent.gas_kw_max}kW @ ${agent.gas_cost_per_kwh}`].filter(Boolean).join(" · ");
+  return [agent.pv_kw_peak > 0 && `PV ${agent.pv_kw_peak}kW`, agent.wind_kw_rated > 0 && `Wind ${agent.wind_kw_rated}kW`, agent.battery_kwh > 0 && `Batt ${agent.battery_kwh}kWh`, agent.load_kw_base > 0 && `Load ${agent.load_kw_base}kW`, agent.gas_kw_max > 0 && `Gas ${agent.gas_kw_max}kW @ ${agent.gas_cost_per_mwh}`].filter(Boolean).join(" · ");
 }
 
 function NetFlow({ netKw }: { netKw: number }) {

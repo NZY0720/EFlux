@@ -7,6 +7,7 @@ A VPP is an economic actor backed by a portfolio of DERs (PV + battery + flexibl
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -18,6 +19,9 @@ class VPPParams:
     battery_kwh: float = 10.0
     battery_kw_max: float = 3.0
     battery_eta_rt: float = 0.9  # round-trip efficiency
+    battery_initial_soc_frac: float = 0.5
+    # Economic wear charged per MWh of absolute cell-energy throughput.
+    battery_degradation_cost_per_mwh_throughput: float = 20.0
     load_kw_base: float = 1.5
     load_elasticity: float = 0.2  # fractional flex around base
     # Daily load shape: residential | industrial | commercial | flat.
@@ -29,7 +33,12 @@ class VPPParams:
     # Dispatchable gas generation (0 = none). The GasGeneratorAgent offers this
     # capacity at its marginal cost; energy comes from fuel, not the balance.
     gas_kw_max: float = 0.0
-    gas_cost_per_kwh: float = 60.0
+    gas_min_kw: float = 0.0
+    gas_ramp_kw_per_min: float | None = None
+    gas_cost_per_mwh: float = 60.0
+    gas_startup_cost_usd: float = 0.0
+    value_of_lost_load_per_mwh: float = 10000.0
+    starting_cash_usd: float = 0.0
     risk_aversion: float = 0.5  # 0 = risk neutral, 1 = very averse
     forecast_noise_std: float = 0.1
     markup_floor: float = 0.0  # min markup over marginal cost (sell side)
@@ -38,8 +47,46 @@ class VPPParams:
     # both the pvlib PV model and real wind speeds. None on either disables it.
     pv_lat: float | None = None
     pv_lon: float | None = None
-    pv_tilt: float = 30.0       # degrees from horizontal
-    pv_azimuth: float = 180.0   # degrees clockwise from north (180 = south, equator-facing)
+    pv_tilt: float = 30.0  # degrees from horizontal
+    pv_azimuth: float = 180.0  # degrees clockwise from north (180 = south, equator-facing)
+
+    def __post_init__(self) -> None:
+        nonnegative = (
+            "pv_kw_peak",
+            "battery_kwh",
+            "battery_kw_max",
+            "battery_degradation_cost_per_mwh_throughput",
+            "load_kw_base",
+            "load_elasticity",
+            "wind_kw_rated",
+            "wind_mean_speed",
+            "gas_kw_max",
+            "gas_min_kw",
+            "gas_cost_per_mwh",
+            "gas_startup_cost_usd",
+            "value_of_lost_load_per_mwh",
+            "forecast_noise_std",
+            "markup_floor",
+            "markup_ceiling",
+        )
+        for name in nonnegative:
+            value = getattr(self, name)
+            if not math.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
+        if not 0.0 < self.battery_eta_rt <= 1.0:
+            raise ValueError("battery_eta_rt must be in (0, 1]")
+        if not 0.0 <= self.battery_initial_soc_frac <= 1.0:
+            raise ValueError("battery_initial_soc_frac must be in [0, 1]")
+        if not 0.0 <= self.risk_aversion <= 1.0:
+            raise ValueError("risk_aversion must be in [0, 1]")
+        if self.gas_min_kw > self.gas_kw_max:
+            raise ValueError("gas_min_kw cannot exceed gas_kw_max")
+        if self.gas_ramp_kw_per_min is not None and (
+            not math.isfinite(self.gas_ramp_kw_per_min) or self.gas_ramp_kw_per_min <= 0.0
+        ):
+            raise ValueError("gas_ramp_kw_per_min must be finite and positive when set")
+        if not math.isfinite(self.starting_cash_usd):
+            raise ValueError("starting_cash_usd must be finite")
 
     @classmethod
     def from_dict(cls, d: dict) -> VPPParams:

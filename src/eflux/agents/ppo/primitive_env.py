@@ -59,11 +59,11 @@ COUNTERPARTY_ID = 999
 _SYNTHETIC_EPOCH = datetime(2024, 6, 21, tzinfo=UTC)
 
 # Reward weights (§7). Realized cash is the primary term; the rest shape behaviour.
-W_INVENTORY = 0.1     # mark-to-market value of unsettled energy
-W_IMBALANCE = 1.0     # unserved position
-W_SOC = 8.0           # asymmetric deviation outside the SOC band
-W_INVALID = 10.0      # per gate-vetoed order
-W_DEGRADE = 0.3       # per kWh of battery throughput
+W_INVENTORY = 0.1  # mark-to-market value of unsettled energy
+W_IMBALANCE = 1.0  # unserved position
+W_SOC = 8.0  # asymmetric deviation outside the SOC band
+W_INVALID = 10.0  # per gate-vetoed order
+W_DEGRADE = 0.3  # per kWh of battery throughput
 W_EXCESS_ORDERS = 4.0  # per order beyond the soft cap
 ORDER_SOFT_CAP = 3
 SOC_LOW, SOC_HIGH = 0.1, 0.95
@@ -98,21 +98,45 @@ class VPPPrimitiveEnv(gym.Env):
             self.action_dim = int(action_dim)
             self.action_profile = action_profile or action_profile_for_action_dim(self.action_dim)
         else:
-            self.action_profile = action_profile or action_profile_for_market(self._market_mode) or ACTION_PROFILE_P2P
-            self.action_dim = encoding_action_dim(encoding_version, action_profile=self.action_profile)
+            self.action_profile = (
+                action_profile or action_profile_for_market(self._market_mode) or ACTION_PROFILE_P2P
+            )
+            self.action_dim = encoding_action_dim(
+                encoding_version, action_profile=self.action_profile
+            )
         self.encoding_version = encoding_version_for_action_dim(self.action_dim)
         self.obs_version = int(obs_version)
         self.observation_space = spaces.Box(
             low=-np.inf, high=np.inf, shape=(obs_dim_for(self.obs_version),), dtype=np.float32
         )
         # Loosely-bounded continuous action; decode_action() squashes/argmaxes it.
-        self.action_space = spaces.Box(low=-5.0, high=5.0, shape=(self.action_dim,), dtype=np.float32)
+        self.action_space = spaces.Box(
+            low=-5.0, high=5.0, shape=(self.action_dim,), dtype=np.float32
+        )
         self._episode_ticks = int(cfg.get("episode_ticks", EPISODE_TICKS))
         self._seed = cfg.get("seed")
         self._params_pool: list[VPPParams] = cfg.get("params_pool") or [
-            VPPParams(pv_kw_peak=8.0, battery_kwh=15.0, battery_kw_max=4.0, load_kw_base=4.0, markup_floor=0.4),
-            VPPParams(pv_kw_peak=4.0, battery_kwh=20.0, battery_kw_max=6.0, load_kw_base=6.0, markup_floor=0.4),
-            VPPParams(pv_kw_peak=2.0, battery_kwh=10.0, battery_kw_max=3.0, load_kw_base=3.0, markup_floor=0.4),
+            VPPParams(
+                pv_kw_peak=8.0,
+                battery_kwh=15.0,
+                battery_kw_max=4.0,
+                load_kw_base=4.0,
+                markup_floor=0.4,
+            ),
+            VPPParams(
+                pv_kw_peak=4.0,
+                battery_kwh=20.0,
+                battery_kw_max=6.0,
+                load_kw_base=6.0,
+                markup_floor=0.4,
+            ),
+            VPPParams(
+                pv_kw_peak=2.0,
+                battery_kwh=10.0,
+                battery_kw_max=3.0,
+                load_kw_base=3.0,
+                markup_floor=0.4,
+            ),
         ]
         # Optional RealMarketData (eflux.agents.ppo.training_data): when present the env
         # replays real CAISO price + real weather-driven PV instead of the synthetic walk.
@@ -123,7 +147,9 @@ class VPPPrimitiveEnv(gym.Env):
         # checkpoint. Defaults to p2p for back-compat.
         self._txn_fee = float(cfg.get("transaction_fee", 2.0))
         self._forecast_noise_frac = float(cfg.get("forecast_noise_frac", 0.1))
-        self._oracle = TruthfulValuationOracle(price_ref=Decimal(str(price_ref_scale())), demand_beta=0.5)
+        self._oracle = TruthfulValuationOracle(
+            price_ref=Decimal(str(price_ref_scale())), demand_beta=0.5
+        )
         self._compiler = OrderProgramCompiler()
         self._risk_gate = RiskGate()
         # Late-initialized in reset().
@@ -142,7 +168,11 @@ class VPPPrimitiveEnv(gym.Env):
 
     def reset(self, *, seed: int | None = None, options: dict | None = None):
         super().reset(seed=seed)
-        rseed = seed if seed is not None else (self._seed if self._seed is not None else random.randint(0, 1 << 30))
+        rseed = (
+            seed
+            if seed is not None
+            else (self._seed if self._seed is not None else random.randint(0, 1 << 30))
+        )
         self._rng = random.Random(rseed)
         self._np_rng = np.random.default_rng(rseed)
         self._forecast_rng = np.random.default_rng(rseed + 0xF03ECA57)
@@ -150,15 +180,18 @@ class VPPPrimitiveEnv(gym.Env):
 
         self._params = self._rng.choice(self._params_pool)
         self._sim_ts = self._pick_start()
-        self._state = VPPState(sim_ts=self._sim_ts, soc_kwh=self._params.battery_kwh * 0.5)
+        initial_soc = self._params.battery_kwh * self._params.battery_initial_soc_frac
+        self._state = VPPState(sim_ts=self._sim_ts, soc_kwh=initial_soc)
         self._pv = PV(kw_peak=self._params.pv_kw_peak)
         self._battery = Battery(
             capacity_kwh=self._params.battery_kwh,
             max_power_kw=self._params.battery_kw_max,
             eta_rt=self._params.battery_eta_rt,
-            soc_kwh=self._params.battery_kwh * 0.5,
+            soc_kwh=initial_soc,
         )
-        self._load = FlexibleLoad(base_kw=self._params.load_kw_base, profile=self._params.load_profile)
+        self._load = FlexibleLoad(
+            base_kw=self._params.load_kw_base, profile=self._params.load_profile
+        )
         self._engine = MatchingEngine()
         self._tick = 0
         self._last_price_ref = price_ref_scale()
@@ -176,7 +209,9 @@ class VPPPrimitiveEnv(gym.Env):
 
         ctx = self._make_ctx()
         valuation = self._oracle.estimate(ctx)
-        strategy_action = decode_action(action, version=self.encoding_version, action_profile=self.action_profile)
+        strategy_action = decode_action(
+            action, version=self.encoding_version, action_profile=self.action_profile
+        )
         compiled = self._compiler.compile(ctx, strategy_action, valuation)
         decision = self._risk_gate.validate(
             compiled.order_intents,
@@ -292,7 +327,9 @@ class VPPPrimitiveEnv(gym.Env):
         gen_kwh = self._state.net_kw * TICK_DURATION_H
         max_rate_kwh = max(0.0, self._battery.max_power_kw * TICK_DURATION_H)
         if gen_kwh >= 0.0:
-            absorbed = min(gen_kwh, max(0.0, self._battery.capacity_kwh - self._battery.soc_kwh), max_rate_kwh)
+            absorbed = min(
+                gen_kwh, max(0.0, self._battery.capacity_kwh - self._battery.soc_kwh), max_rate_kwh
+            )
             self._battery.apply_kwh(absorbed)
             self._state.pending_net_kwh += gen_kwh - absorbed
         else:
@@ -305,7 +342,10 @@ class VPPPrimitiveEnv(gym.Env):
 
     def _open_order_count(self) -> int:
         return sum(
-            1 for side in ("buy", "sell") for o in self._engine.book.iter_orders(side) if o.vpp_id == VPP_ID
+            1
+            for side in ("buy", "sell")
+            for o in self._engine.book.iter_orders(side)
+            if o.vpp_id == VPP_ID
         )
 
     def _open_orders_net(self) -> float:
@@ -326,7 +366,9 @@ class VPPPrimitiveEnv(gym.Env):
             return _SYNTHETIC_EPOCH + timedelta(hours=self._rseed % 24)
         span_h = max(1, self._real_data.hours - self._episode_ticks)
         offset = self._rng.randint(0, span_h)
-        return (self._real_data.start + timedelta(hours=offset)).replace(minute=0, second=0, microsecond=0)
+        return (self._real_data.start + timedelta(hours=offset)).replace(
+            minute=0, second=0, microsecond=0
+        )
 
     def _step_der(self) -> None:
         self._state.sim_ts = self._sim_ts

@@ -150,11 +150,11 @@ vpps:
   - name: gas-base-26
     agent: gas
     params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
-              gas_kw_max: 20.0, gas_cost_per_kwh: 55.0 }
+              gas_kw_max: 20.0, gas_cost_per_mwh: 55.0 }
   - name: gas-peaker-28
     agent: gas
     params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0,
-              gas_kw_max: 15.0, gas_cost_per_kwh: 68.0 }
+              gas_kw_max: 15.0, gas_cost_per_mwh: 68.0 }
 
   # ===================== HYBRID LLM strategists (6, each mirrored) =====================
   # Online-learning PPO executor (warm-started from the BC checkpoint) coached by the LLM

@@ -61,7 +61,7 @@ async def test_agent_summary_separates_archetype_from_battery_solar_resources(cl
         battery_kw_max=fixture["battery_kw_max"],
         load_kw_base=fixture["load_kw_base"],
         gas_kw_max=fixture["gas_kw_max"],
-        gas_cost_per_kwh=fixture["gas_cost_per_kwh"],
+        gas_cost_per_mwh=fixture["gas_cost_per_mwh"],
     )
 
     assert fixture["archetype"] == derive_character(params).archetype

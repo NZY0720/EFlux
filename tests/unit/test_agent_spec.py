@@ -172,7 +172,7 @@ def test_json_schema_export_contains_contract_fields():
     assert "persona" in schema["properties"]
     # params is expanded to the full VPPParams field schema.
     assert "pv_kw_peak" in schema["properties"]["params"]["properties"]
-    assert "gas_cost_per_kwh" in schema["properties"]["params"]["properties"]
+    assert "gas_cost_per_mwh" in schema["properties"]["params"]["properties"]
 
 
 def test_executor_legacy_ppo_kind_rejected():

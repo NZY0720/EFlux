@@ -180,7 +180,7 @@ vpps:
   - name: provider-gas-truthful
     agent: truthful
     seed: 231
-    params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0, gas_kw_max: 30.0, gas_cost_per_kwh: 60.0, markup_floor: 0.4 }
+    params: { pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0, gas_kw_max: 30.0, gas_cost_per_mwh: 60.0, markup_floor: 0.4 }
 
   # ===================== VPP — non-LLM prosumers (5 strategies) =====================
   - name: vpp-truthful

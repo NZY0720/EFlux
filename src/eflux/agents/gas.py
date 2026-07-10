@@ -1,7 +1,7 @@
 """Gas generator agent — dispatchable supply at marginal cost.
 
 A gas plant has no ambient energy balance to trade: it simply offers its
-capacity at its fuel marginal cost (params.gas_cost_per_kwh) and generates
+capacity at its fuel marginal cost (params.gas_cost_per_mwh) and generates
 whatever fills. Quotes carry dispatched=True so the runner and book keep them
 out of ambient open-order exposure. Economically this puts a soft price cap on the market:
 whenever bids rise above gas marginal cost, gas supply gets dispatched
@@ -36,7 +36,7 @@ class GasGeneratorAgent(BaseAgent):
         qty = Decimal(str(qty_f)).quantize(Decimal("0.0001"))
         if qty < self.min_qty:
             return []
-        price = Decimal(str(ctx.params.gas_cost_per_kwh)).quantize(Decimal("0.0001"))
+        price = Decimal(str(ctx.params.gas_cost_per_mwh)).quantize(Decimal("0.0001"))
         if price <= 0:
             return []
         return [OrderIntent(side="sell", price=price, qty=qty, dispatched=True)]

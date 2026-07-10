@@ -31,4 +31,4 @@ vpps:
     params: { pv_kw_peak: 6.0, battery_kwh: 10.0, load_kw_base: 4.0 }
   - name: demo-gas-backstop
     agent: gas
-    params: { gas_kw_max: 20.0, gas_cost_per_kwh: 65.0, pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0 }
+    params: { gas_kw_max: 20.0, gas_cost_per_mwh: 65.0, pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0 }

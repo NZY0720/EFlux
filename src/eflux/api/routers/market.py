@@ -231,7 +231,7 @@ class AgentOut(BaseModel):
     battery_kw_max: float
     load_kw_base: float
     gas_kw_max: float
-    gas_cost_per_kwh: float
+    gas_cost_per_mwh: float
     # Live state (changes every tick)
     pnl: str  # USD (converted from internal $/MWh x kWh units; see market.units)
     soc_kwh: float
@@ -289,7 +289,7 @@ def _market_agents_out(sim) -> list[AgentOut]:
                 battery_kw_max=p.battery_kw_max,
                 load_kw_base=p.load_kw_base,
                 gas_kw_max=p.gas_kw_max,
-                gas_cost_per_kwh=p.gas_cost_per_kwh,
+                gas_cost_per_mwh=p.gas_cost_per_mwh,
                 pnl=str(internal_cash_to_usd(vpp.state.pnl)),
                 soc_kwh=vpp.battery.soc_kwh,
                 soc_frac=vpp.battery.soc_frac,

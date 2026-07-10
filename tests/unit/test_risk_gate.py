@@ -165,7 +165,7 @@ def test_full_roster_tick_loop_has_zero_vetoes(caplog):
     )
     sim.add_builtin_vpp(
         "gas",
-        VPPParams(gas_kw_max=20.0, gas_cost_per_kwh=72.0, battery_kwh=0.0, battery_kw_max=0.0, load_kw_base=0.0),
+        VPPParams(gas_kw_max=20.0, gas_cost_per_mwh=72.0, battery_kwh=0.0, battery_kw_max=0.0, load_kw_base=0.0),
         GasGeneratorAgent(),
     )
 

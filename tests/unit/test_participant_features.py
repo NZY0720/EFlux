@@ -56,7 +56,7 @@ def _gas_ctx(*, gas_kw_max: float = 20.0, gas_cost: float = 60.0, soc_kwh: float
     """A pure gas provider: fuel capacity, no storage, no pv/wind/load."""
     params = VPPParams(
         pv_kw_peak=0.0, battery_kwh=0.0, battery_kw_max=0.0, load_kw_base=0.0,
-        gas_kw_max=gas_kw_max, gas_cost_per_kwh=gas_cost,
+        gas_kw_max=gas_kw_max, gas_cost_per_mwh=gas_cost,
     )
     ts = sim_ts or _GAS_EPOCH
     state = VPPState(sim_ts=ts, soc_kwh=soc_kwh, pv_kw=0.0, load_kw=0.0)
@@ -140,7 +140,7 @@ def test_truthful_gas_emits_dispatched_sell_at_marginal_cost():
     assert gas_sells, "gas provider should offer fuel after the throttle window"
     sell = gas_sells[0]
     assert sell.dispatched is True            # settles through fuel, not the ambient balance
-    assert sell.price == Decimal("60.0000")   # gas_cost_per_kwh
+    assert sell.price == Decimal("60.0000")   # gas_cost_per_mwh
     assert sell.qty > 0
 
 

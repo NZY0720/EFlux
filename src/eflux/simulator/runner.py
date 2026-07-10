@@ -289,7 +289,10 @@ class Simulator:
             llm_live=llm_live,
             llm_status=llm_status,
             algorithm=algorithm,
-            state=VPPState(sim_ts=self.clock.now_sim(), soc_kwh=params.battery_kwh * 0.5),
+            state=VPPState(
+                sim_ts=self.clock.now_sim(),
+                soc_kwh=params.battery_kwh * params.battery_initial_soc_frac,
+            ),
             pv=PV(
                 kw_peak=params.pv_kw_peak,
                 noise_std=params.forecast_noise_std,
@@ -299,7 +302,7 @@ class Simulator:
                 capacity_kwh=params.battery_kwh,
                 max_power_kw=params.battery_kw_max,
                 eta_rt=params.battery_eta_rt,
-                soc_kwh=params.battery_kwh * 0.5,
+                soc_kwh=params.battery_kwh * params.battery_initial_soc_frac,
             ),
             load=FlexibleLoad(
                 base_kw=params.load_kw_base,
@@ -327,9 +330,7 @@ class Simulator:
         """Remove a provisioned managed VPP (by its stable DB id): cancel its resting orders and
         drop it from the roster so the tick loop stops driving it. Returns False if not found.
         Call under self._lock to stay race-free with the tick loop and external submits."""
-        target = next(
-            (v for v in self.vpps.values() if v.managed_def_id == managed_def_id), None
-        )
+        target = next((v for v in self.vpps.values() if v.managed_def_id == managed_def_id), None)
         if target is None:
             return False
         now_sim = self.clock.now_sim()
@@ -372,7 +373,9 @@ class Simulator:
             vpp.name.lower() in m["text"].lower() for m in recent if m["name"] != vpp.name
         )
         force_fresh = self._chat_reply_streak >= CHAT_MAX_REPLY_STREAK
-        reply = bool(recent) and not force_fresh and (mentioned or random.random() < CHAT_REPLY_PROB)
+        reply = (
+            bool(recent) and not force_fresh and (mentioned or random.random() < CHAT_REPLY_PROB)
+        )
         try:
             messages = build_chat_messages(
                 name=vpp.name,
@@ -478,9 +481,11 @@ class Simulator:
         """Current status, re-checked when stale — the sim clock keeps moving, so
         'does the weather cover the current sim hour' is a moving target."""
         current = self._data_source_status
-        if current is None or (
-            datetime.now(UTC) - current["checked_at"]
-        ).total_seconds() > self.DATA_SOURCE_TTL_SEC:
+        if (
+            current is None
+            or (datetime.now(UTC) - current["checked_at"]).total_seconds()
+            > self.DATA_SOURCE_TTL_SEC
+        ):
             self.refresh_data_sources()
         return self._data_source_status or {}
 
@@ -575,7 +580,9 @@ class Simulator:
             )
             log.info(
                 "Site weather attached for (%.2f, %.2f), %d rows",
-                params.pv_lat, params.pv_lon, len(weather),
+                params.pv_lat,
+                params.pv_lon,
+                len(weather),
             )
             self._site_weather_cache[key] = weather
             return weather
@@ -657,9 +664,7 @@ class Simulator:
                 now_wall=datetime.now(UTC),
             )
 
-    async def submit_external_batch(
-        self, *, orders: list[dict], cancels: list[int]
-    ) -> dict:
+    async def submit_external_batch(self, *, orders: list[dict], cancels: list[int]) -> dict:
         """A batch of external orders + cancels under one lock (Agent Protocol v1). Cancels
         run first, so a cancel-then-replace frees open-order budget; each order is gated
         independently, so one rejection never aborts the batch. Ownership, rate limits, and
@@ -672,7 +677,10 @@ class Simulator:
             now_sim = self.clock.now_sim()
             now_wall = datetime.now(UTC)
             cancelled = [
-                {"order_id": oid, "ok": bool(self.engine.cancel(oid, sim_ts=now_sim, wall_ts=now_wall))}
+                {
+                    "order_id": oid,
+                    "ok": bool(self.engine.cancel(oid, sim_ts=now_sim, wall_ts=now_wall)),
+                }
                 for oid in cancels
             ]
             results: list[dict] = []
@@ -780,10 +788,7 @@ class Simulator:
         # poll there to avoid needless external calls.
         if (
             settings.external_market_enabled
-            and (
-                self.market_mode == "realprice"
-                or settings.forecast_poll_realprice_in_p2p
-            )
+            and (self.market_mode == "realprice" or settings.forecast_poll_realprice_in_p2p)
             and self._external_market_task is None
         ):
             self._external_market_task = asyncio.create_task(
@@ -892,9 +897,7 @@ class Simulator:
             except asyncio.CancelledError:
                 raise
             except Exception:
-                log.exception(
-                    "DAM anchor fetch failed; price anchors fall back to persistence"
-                )
+                log.exception("DAM anchor fetch failed; price anchors fall back to persistence")
         try:
             if state_path.exists():
                 try:
@@ -922,9 +925,7 @@ class Simulator:
                     # A state-version change deliberately invalidates feature
                     # encodings and sparse pre-hardening warm-starts.
                     log.warning("Forecast state %s ignored: %s", state_path, exc)
-                    self.forecast_service = self._new_forecast_service(
-                        self._forecast_nwp_lookups()
-                    )
+                    self.forecast_service = self._new_forecast_service(self._forecast_nwp_lookups())
                 if self.forecast_service is not None and self.forecast_service.is_warm:
                     log.info("Forecast service restored from %s", state_path)
                     self._seed_forecast_p2p_prior()
@@ -1191,7 +1192,9 @@ class Simulator:
             rows = CaisoOasisClient().fetch_lmp_history_sync(node=node, start=start, end=end)
             series = pd.Series(
                 {
-                    r.interval_start.astimezone(UTC).replace(minute=0, second=0, microsecond=0): float(r.price)
+                    r.interval_start.astimezone(UTC).replace(
+                        minute=0, second=0, microsecond=0
+                    ): float(r.price)
                     for r in rows
                 }
             ).sort_index()
@@ -1204,7 +1207,10 @@ class Simulator:
                 except Exception:
                     log.exception("DAM anchor cache write failed: %s", cache)
             elif len(series):
-                log.warning("DAM response incomplete (%d rows); using only explicit covered hours", len(series))
+                log.warning(
+                    "DAM response incomplete (%d rows); using only explicit covered hours",
+                    len(series),
+                )
         if len(series):
             self._forecast_dam_prices = series
             self._forecast_dam_source_id = (
@@ -1236,8 +1242,8 @@ class Simulator:
             try:
                 if hour in series.index:  # type: ignore[attr-defined]
                     return AnchorForecast(float(series.loc[hour]), "dam", source_id)  # type: ignore[attr-defined]
-                now_hour = self.clock.now_sim().astimezone(UTC).replace(
-                    minute=0, second=0, microsecond=0
+                now_hour = (
+                    self.clock.now_sim().astimezone(UTC).replace(minute=0, second=0, microsecond=0)
                 )
                 if hour <= now_hour:
                     past = series.loc[:hour]  # type: ignore[attr-defined]
@@ -1285,7 +1291,11 @@ class Simulator:
     @staticmethod
     def _hourly_frame_value(frame: object, col: str, ts: datetime) -> float | None:
         """Exact-hour lookup in an Open-Meteo hourly DataFrame; None when absent."""
-        if frame is None or getattr(frame, "empty", True) or col not in getattr(frame, "columns", []):
+        if (
+            frame is None
+            or getattr(frame, "empty", True)
+            or col not in getattr(frame, "columns", [])
+        ):
             return None
         target = ts.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
         try:
@@ -1502,13 +1512,17 @@ class Simulator:
         # this market's own structure, so a p2p renew never overwrites the realprice prior.
         checkpoint = str(PROJECT_ROOT / "checkpoints" / f"bc_primitive_{self.market_mode}.pt")
         self._ppo_renew_task = asyncio.create_task(
-            self._run_ppo_renew(days=days, episodes=episodes, epochs=epochs, checkpoint_path=checkpoint),
+            self._run_ppo_renew(
+                days=days, episodes=episodes, epochs=epochs, checkpoint_path=checkpoint
+            ),
             name="ppo-renew",
         )
         self._ppo_renew_task.add_done_callback(_log_unexpected_loop_exit)
         return True
 
-    async def _run_ppo_renew(self, *, days: int, episodes: int, epochs: int, checkpoint_path: str) -> None:
+    async def _run_ppo_renew(
+        self, *, days: int, episodes: int, epochs: int, checkpoint_path: str
+    ) -> None:
         self._ppo_renew.update(
             state="training",
             started_at=datetime.now(UTC).isoformat(),
@@ -1531,7 +1545,9 @@ class Simulator:
                 epochs=epochs,
                 market_mode=self.market_mode,
             )
-            self._ppo_renew.update(state="reloading", metrics=metrics, detail="hot-reloading live policies")
+            self._ppo_renew.update(
+                state="reloading", metrics=metrics, detail="hot-reloading live policies"
+            )
             n = await self.reload_online_policies(checkpoint_path)
             self._ppo_renew.update(
                 state="done",
@@ -1567,7 +1583,11 @@ class Simulator:
         return count
 
     async def _run(self) -> None:
-        log.info("Simulator loop started (speed=%sx, tick=%ss)", self.clock.speed, self.clock.tick_sim_sec)
+        log.info(
+            "Simulator loop started (speed=%sx, tick=%ss)",
+            self.clock.speed,
+            self.clock.tick_sim_sec,
+        )
         tick_h = self.clock.tick_sim_sec / 3600.0
         async for tick_no, sim_ts in self.clock.ticks():
             self._last_tick_no = tick_no
@@ -1600,7 +1620,9 @@ class Simulator:
                             open_order_count=open_order_counts.get(vpp.vpp_id, 0),
                         )
                     except Exception:
-                        log.exception("VPP %s (%d) tick failed — skipping this tick", vpp.name, vpp.vpp_id)
+                        log.exception(
+                            "VPP %s (%d) tick failed — skipping this tick", vpp.name, vpp.vpp_id
+                        )
                 # Publish a tick event with current market summary.
                 bb = self.engine.book.best_bid()
                 ba = self.engine.book.best_ask()
@@ -1829,7 +1851,9 @@ class Simulator:
         gen_kwh = vpp.state.net_kw * tick_h
         max_rate_kwh = max(0.0, vpp.battery.max_power_kw * tick_h)
         if gen_kwh >= 0.0:
-            absorbed = min(gen_kwh, max(0.0, vpp.battery.capacity_kwh - vpp.battery.soc_kwh), max_rate_kwh)
+            absorbed = min(
+                gen_kwh, max(0.0, vpp.battery.capacity_kwh - vpp.battery.soc_kwh), max_rate_kwh
+            )
             vpp.battery.apply_kwh(absorbed)
             vpp.state.pending_net_kwh += gen_kwh - absorbed
         else:
@@ -1877,7 +1901,9 @@ class Simulator:
         if overflow_kwh < 0.0:
             unserved_kwh = -overflow_kwh
             import_price = float(
-                getattr(self._external_market_quote, "import_price", self._external_fallback_price())
+                getattr(
+                    self._external_market_quote, "import_price", self._external_fallback_price()
+                )
             )
             penalty_price = self.imbalance_penalty_mult * import_price
             cash = unserved_kwh * penalty_price
