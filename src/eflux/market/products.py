@@ -12,9 +12,16 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 
 DEFAULT_DELIVERY_INTERVAL_SEC = 5 * 60
 DEFAULT_TRADING_HORIZON_SEC = 30 * 60
+
+
+class TimeInForce(StrEnum):
+    GOOD_TIL_GATE = "good_til_gate"
+    IMMEDIATE_OR_CANCEL = "immediate_or_cancel"
+    FILL_OR_KILL = "fill_or_kill"
 
 
 def energy_kwh_from_average_power(power_kw: float, duration_sec: float) -> float:
