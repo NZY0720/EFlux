@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -16,7 +16,6 @@ from eflux.agents.reflective.strategist import ExternalStrategist
 from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
 from eflux.api.ratelimit import RateLimiter
 from eflux.db.models import VPP
-from eflux.market.units import internal_cash_to_usd
 from eflux.simulator.agent_spec import validate_vpp_params
 from eflux.simulator.scenarios import (
     MANAGED_ALGORITHMS,
@@ -27,6 +26,7 @@ from eflux.simulator.scenarios import (
     provision_managed_vpp,
     validate_managed_agent_params,
 )
+from eflux.vpp.base import VPPParams
 
 router = APIRouter(prefix="/vpps", tags=["vpps"])
 
@@ -132,7 +132,7 @@ class ManagedTradeOut(BaseModel):
     price: str  # $/MWh
     raw_lmp: str | None = None  # $/MWh
     qty: str
-    cash: str  # USD (converted from internal $/MWh x kWh units; see market.units)
+    cash_usd: str
     counterparty: str | None = None
     counterparty_vpp_id: int
     buy_vpp_id: int
@@ -302,14 +302,12 @@ async def get_my_managed_vpp_performance(
     return ManagedVPPPerformanceOut(
         id=vpp.vpp_id,
         name=vpp.name,
-        pnl=str(internal_cash_to_usd(vpp.state.pnl)),
+        pnl=str(vpp.state.pnl),
         cumulative_energy_bought_kwh=vpp.state.cumulative_energy_bought_kwh,
         cumulative_energy_sold_kwh=vpp.state.cumulative_energy_sold_kwh,
         imbalance_unserved_load_kwh=imbalance_totals["unserved_load_kwh"],
         imbalance_spilled_generation_kwh=imbalance_totals["spilled_generation_kwh"],
-        imbalance_settlement_cash=str(
-            internal_cash_to_usd(Decimal(str(imbalance_totals["settlement_cash"])))
-        ),
+        imbalance_settlement_cash=str(Decimal(str(imbalance_totals["settlement_cash"]))),
         soc_kwh=vpp.battery.soc_kwh,
         soc_frac=vpp.battery.soc_frac,
         recent_trades=[_managed_trade_out(t) for t in vpp.recent_trades[:25]],
@@ -319,10 +317,7 @@ async def get_my_managed_vpp_performance(
 
 
 def _managed_trade_out(record: dict) -> ManagedTradeOut:
-    # Trade `price`/`raw_lmp` stay in $/MWh; only the settled `cash` total is
-    # converted from internal units to USD for display (see market.units).
-    out = {**record, "cash": str(internal_cash_to_usd(Decimal(str(record["cash"]))))}
-    return ManagedTradeOut(**out)
+    return ManagedTradeOut(**record)
 
 
 class ModelsOut(BaseModel):
@@ -690,7 +685,9 @@ async def update_managed_vpp(
     # Validate everything BEFORE touching the live agent, so a bad patch can't strand it.
     try:
         parsed = validate_vpp_params(new_params)
-        validate_managed_agent_params(row.name, new_agent_params, algorithm, llm_enabled=llm_enabled)
+        validate_managed_agent_params(
+            row.name, new_agent_params, algorithm, llm_enabled=llm_enabled
+        )
     except ValidationError as e:
         detail = [
             {"loc": ["body", *err["loc"]], "msg": err["msg"], "type": err["type"]}
@@ -862,9 +859,7 @@ class GuidanceOut(BaseModel):
     applied_at: datetime
 
 
-async def _owned_managed_row(
-    session, user_id: int, managed_id: int
-) -> VPP:
+async def _owned_managed_row(session, user_id: int, managed_id: int) -> VPP:
     row = (
         await session.execute(
             select(VPP).where(
@@ -955,7 +950,12 @@ async def release_guidance(
 
 
 @router.post("", response_model=VPPOut, status_code=status.HTTP_201_CREATED)
-async def create_vpp(payload: VPPCreate, session: DbSession, user: CurrentUser) -> VPPOut:
+async def create_vpp(
+    payload: VPPCreate,
+    session: DbSession,
+    user: CurrentUser,
+    sim: SimulatorDep,
+) -> VPPOut:
     # Same validation path as the built-in roster (simulator/agent_spec.py) —
     # internal and external participants share one params schema.
     # ValueError also covers the unknown-keys rejection; the detail mirrors
@@ -987,6 +987,12 @@ async def create_vpp(payload: VPPCreate, session: DbSession, user: CurrentUser) 
         await session.flush()
     except Exception as e:
         raise HTTPException(status.HTTP_409_CONFLICT, f"name conflict: {e}") from e
+    async with sim._lock:
+        sim.register_external_vpp(
+            vpp_id=vpp.id,
+            name=vpp.name,
+            params=VPPParams.from_dict(parsed),
+        )
     return VPPOut(
         id=vpp.id,
         name=vpp.name,
@@ -998,14 +1004,27 @@ async def create_vpp(payload: VPPCreate, session: DbSession, user: CurrentUser) 
 
 
 @router.delete("/{vpp_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def deactivate_vpp(vpp_id: int, session: DbSession, user: CurrentUser) -> None:
+async def deactivate_vpp(
+    vpp_id: int,
+    session: DbSession,
+    user: CurrentUser,
+    sim: SimulatorDep,
+) -> None:
     # Passive (order-driven) VPPs only; managed agents go through DELETE /vpps/managed/{id}.
-    stmt = select(VPP).where(
-        VPP.id == vpp_id, VPP.owner_id == user.id, VPP.is_managed.is_(False)
-    )
+    stmt = select(VPP).where(VPP.id == vpp_id, VPP.owner_id == user.id, VPP.is_managed.is_(False))
     vpp = (await session.execute(stmt)).scalar_one_or_none()
     if vpp is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "VPP not found")
+    runtime = sim.vpps.get(vpp_id)
+    if runtime is not None:
+        async with sim._lock:
+            sim.gateway.cancel_all(
+                vpp_id,
+                sim_ts=sim.clock.now_sim(),
+                wall_ts=datetime.now(UTC),
+            )
+            sim.gateway.participants.pop(vpp_id, None)
+            sim.vpps.pop(vpp_id, None)
     vpp.is_active = False
     return None
 

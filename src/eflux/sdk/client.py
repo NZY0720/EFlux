@@ -1,14 +1,16 @@
 """EFlux Python SDK — a thin async client for external (Tier A1) agents.
 
-Wraps auth, public market-data reads, VPP management, and the Agent Protocol v1 order
+Wraps auth, public market-data reads, VPP management, and the Agent Protocol v2 order
 endpoints so an agent author can write a `read → decide → submit_batch` loop without
 hand-rolling HTTP. See docs/AGENT_SPEC.md §5.
 
     async with EFluxClient("http://localhost:8000") as c:
         await c.login_dev("me@example.com")          # or EFluxClient(token=API_KEY)
         vpp = await c.create_vpp("my-bot", {"pv_kw_peak": 4.0, "battery_kwh": 10.0})
-        snap = await c.market_snapshot()
-        await c.submit_batch([Order(vpp["id"], "sell", 55.0, 1.0, client_ref="a")])
+        product = (await c.products())[0]
+        await c.submit_batch([
+            Order(vpp["id"], "sell", 55.0, 1.0, product["product_id"], "balance")
+        ])
 """
 
 from __future__ import annotations
@@ -37,16 +39,36 @@ class Order:
     side: str  # "buy" | "sell"
     price: float | str | Decimal
     qty: float | str | Decimal
+    product_id: str
+    purpose: str
+    time_in_force: str = "good_til_gate"
+    ttl_sec: float | None = None
     client_ref: str | None = None
 
 
 def _order_json(o: Order | dict) -> dict[str, Any]:
     if isinstance(o, Order):
-        vpp_id, side, price, qty, ref = o.vpp_id, o.side, o.price, o.qty, o.client_ref
+        vpp_id, side, price, qty = o.vpp_id, o.side, o.price, o.qty
+        product_id, purpose = o.product_id, o.purpose
+        time_in_force, ttl_sec, ref = o.time_in_force, o.ttl_sec, o.client_ref
     else:
-        vpp_id, side, price, qty = o["vpp_id"], o["side"], o["price"], o["qty"]
+        vpp_id, side, price = o["vpp_id"], o["side"], o["price"]
+        qty = o["qty_kwh"] if "qty_kwh" in o else o["qty"]
+        product_id, purpose = o["product_id"], o["purpose"]
+        time_in_force = o.get("time_in_force", "good_til_gate")
+        ttl_sec = o.get("ttl_sec")
         ref = o.get("client_ref")
-    body: dict[str, Any] = {"vpp_id": vpp_id, "side": side, "price": str(price), "qty": str(qty)}
+    body: dict[str, Any] = {
+        "vpp_id": vpp_id,
+        "side": side,
+        "price": str(price),
+        "qty_kwh": str(qty),
+        "product_id": product_id,
+        "purpose": purpose,
+        "time_in_force": time_in_force,
+    }
+    if ttl_sec is not None:
+        body["ttl_sec"] = ttl_sec
     if ref is not None:
         body["client_ref"] = ref
     return body
@@ -216,6 +238,9 @@ class EFluxClient:
     async def market_snapshot(self, depth: int = 10) -> dict:
         return await self._request("GET", "/market/snapshot", params={"depth": depth})
 
+    async def products(self) -> list[dict]:
+        return await self._request("GET", "/market/products")
+
     async def recent_trades(self, limit: int = 200) -> list[dict]:
         return await self._request("GET", "/market/trades", params={"limit": limit})
 
@@ -225,18 +250,35 @@ class EFluxClient:
     async def supply_curve(self) -> dict:
         return await self._request("GET", "/market/supply_curve")
 
-    # --- orders (Agent Protocol v1) ---
+    # --- orders (Agent Protocol v2) ---
 
     async def open_orders(self, vpp_id: int) -> list[dict]:
         """This VPP's resting orders — reconcile without scraping the whole market."""
         return await self._request("GET", "/orders/open", params={"vpp_id": vpp_id})
 
     async def submit_order(
-        self, vpp_id: int, side: str, price: float | str | Decimal, qty: float | str | Decimal
+        self,
+        vpp_id: int,
+        side: str,
+        price: float | str | Decimal,
+        qty: float | str | Decimal,
+        *,
+        product_id: str,
+        purpose: str,
+        time_in_force: str = "good_til_gate",
+        ttl_sec: float | None = None,
     ) -> dict:
-        return await self._request(
-            "POST", "/orders", json={"vpp_id": vpp_id, "side": side, "price": str(price), "qty": str(qty)}
+        order = Order(
+            vpp_id,
+            side,
+            price,
+            qty,
+            product_id,
+            purpose,
+            time_in_force,
+            ttl_sec,
         )
+        return await self._request("POST", "/orders", json=_order_json(order))
 
     async def cancel(self, order_id: int) -> None:
         await self._request("POST", "/orders/cancel", json={"order_id": order_id})
@@ -249,15 +291,17 @@ class EFluxClient:
         idempotency_key: str | None = None,
         deadline: Any = None,
     ) -> dict:
-        """Agent Protocol v1 batch: submit orders + cancels in one call. Returns the
+        """Agent Protocol v2 batch: submit orders + cancels in one call. Returns the
         per-item result envelope (see docs/AGENT_SPEC.md §5)."""
         payload: dict[str, Any] = {
-            "protocol_version": 1,
+            "protocol_version": 2,
             "orders": [_order_json(o) for o in (orders or [])],
             "cancels": list(cancels or []),
         }
         if idempotency_key is not None:
             payload["idempotency_key"] = idempotency_key
         if deadline is not None:
-            payload["deadline"] = deadline.isoformat() if hasattr(deadline, "isoformat") else deadline
+            payload["deadline"] = (
+                deadline.isoformat() if hasattr(deadline, "isoformat") else deadline
+            )
         return await self._request("POST", "/orders/batch", json=payload)

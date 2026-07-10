@@ -49,6 +49,7 @@ from eflux.market.metering import IntervalMeterBook
 from eflux.market.product_engine import ProductMatchingEngine, ProductOrderEvent, ProductTrade
 from eflux.market.products import (
     DeliveryInterval,
+    TimeInForce,
     delivery_horizon,
     delivery_interval_containing,
 )
@@ -189,6 +190,11 @@ class Simulator:
         self.session_id: int | None = None
         self._stats_task: asyncio.Task | None = None
         self._last_stats_wall: float = 0.0
+        self._audit_buffer: deque[dict] = deque()
+        self._audit_sequence = 0
+        self._last_audited_ledger_entry_id = 0
+        self._audit_task: asyncio.Task | None = None
+        self._last_audit_wall = 0.0
         # "p2p" = peer-to-peer CDA (agents trade each other; CAISO is reference-only).
         # "realprice" = pure price-taking against the live CAISO price (orders settle
         # vs the grid, no peer matching). Selected per launch via EFLUX_MARKET_MODE.
@@ -267,6 +273,13 @@ class Simulator:
     def _publish_product_event(self, event) -> None:
         if isinstance(event, ProductTrade):
             interval = event.interval
+            self._append_audit(
+                kind="trade",
+                interval=interval,
+                sim_ts=event.sim_ts,
+                reference_id=str(event.trade_id),
+                payload=self._product_trade_payload(event),
+            )
             self._publish_event(
                 TradeEvent(
                     trade_id=event.trade_id,
@@ -290,6 +303,22 @@ class Simulator:
             from eflux.market.events import OrderEvent
 
             interval = event.interval
+            self._append_audit(
+                kind=event.kind,
+                interval=interval,
+                sim_ts=event.sim_ts,
+                participant_id=event.vpp_id,
+                reference_id=str(event.order_id),
+                payload={
+                    "order_id": event.order_id,
+                    "vpp_id": event.vpp_id,
+                    "side": event.side,
+                    "purpose": event.purpose.value,
+                    "price": str(event.price),
+                    "qty_kwh": str(event.qty),
+                    "remaining_qty_kwh": str(event.remaining_qty),
+                },
+            )
             self._publish_event(
                 OrderEvent(
                     kind=EventKind(event.kind),
@@ -740,6 +769,9 @@ class Simulator:
         qty: Decimal,
         interval: DeliveryInterval | None = None,
         purpose: OrderPurpose = OrderPurpose.BALANCE,
+        time_in_force: TimeInForce = TimeInForce.GOOD_TIL_GATE,
+        ttl_sec: float | None = None,
+        client_ref: str | None = None,
     ) -> ExternalSubmitResult:
         """Entry point for a single SDK-submitted order. Honors the realtime-only constraint."""
         if not self.clock.is_realtime:
@@ -754,6 +786,9 @@ class Simulator:
                 qty=qty,
                 interval=interval,
                 purpose=purpose,
+                time_in_force=time_in_force,
+                ttl_sec=ttl_sec,
+                client_ref=client_ref,
                 now_sim=self.clock.now_sim(),
                 now_wall=datetime.now(UTC),
             )
@@ -796,6 +831,9 @@ class Simulator:
                             qty=spec["qty"],
                             interval=spec.get("interval"),
                             purpose=OrderPurpose(spec.get("purpose", "balance")),
+                            time_in_force=TimeInForce(spec.get("time_in_force", "good_til_gate")),
+                            ttl_sec=spec.get("ttl_sec"),
+                            client_ref=spec.get("client_ref"),
                             now_sim=now_sim,
                             now_wall=now_wall,
                         ),
@@ -821,6 +859,9 @@ class Simulator:
         qty: Decimal,
         interval: DeliveryInterval | None,
         purpose: OrderPurpose,
+        time_in_force: TimeInForce,
+        ttl_sec: float | None,
+        client_ref: str | None,
         now_sim,
         now_wall,
     ) -> ExternalSubmitResult:
@@ -856,7 +897,13 @@ class Simulator:
             qty_kwh=qty,
             interval=product,
             purpose=purpose,
-            ttl_sec=self.order_ttl_sec or get_settings().agent_decision_interval_sec,
+            time_in_force=time_in_force,
+            ttl_sec=(
+                ttl_sec
+                if ttl_sec is not None
+                else self.order_ttl_sec or get_settings().agent_decision_interval_sec
+            ),
+            client_ref=client_ref,
         )
         execution = self.gateway.execute_decision(
             participant_id=vpp_id,
@@ -928,6 +975,10 @@ class Simulator:
             self._forecast_bootstrap_task.cancel()
             await asyncio.gather(self._forecast_bootstrap_task, return_exceptions=True)
             self._forecast_bootstrap_task = None
+        if self._audit_task is not None:
+            await asyncio.gather(self._audit_task, return_exceptions=True)
+            self._audit_task = None
+        await self._persist_audit_rows(self._drain_audit_buffer())
         self._save_forecast_state()
         if self._ppo_renew_task is not None:
             self._ppo_renew_task.cancel()
@@ -1620,7 +1671,8 @@ class Simulator:
 
         # Per-market checkpoint: retrain the checkpoint this market's PPO agents loaded, against
         # this market's own structure, so a p2p renew never overwrites the realprice prior.
-        checkpoint = str(PROJECT_ROOT / "checkpoints" / f"bc_primitive_{self.market_mode}.pt")
+        suffix = "realprice_grid" if self.market_mode == "realprice" else "p2p"
+        checkpoint = str(PROJECT_ROOT / "checkpoints" / f"bc_primitive_{suffix}_v4.pt")
         self._ppo_renew_task = asyncio.create_task(
             self._run_ppo_renew(
                 days=days, episodes=episodes, epochs=epochs, checkpoint_path=checkpoint
@@ -1761,6 +1813,7 @@ class Simulator:
         holding self._lock; the DB write runs in a spawned task. At most one write is
         in flight — if the previous one hasn't finished, this sample is dropped, never
         queued (drop-don't-block, same shape as _maybe_chat)."""
+        self._maybe_persist_audit()
         if self.session_id is None:
             return
         settings = get_settings()
@@ -1781,11 +1834,97 @@ class Simulator:
             return
         self._stats_task = loop.create_task(self._persist_stat_rows(rows))
 
+    def _append_audit(
+        self,
+        *,
+        kind: str,
+        sim_ts: datetime,
+        payload: dict,
+        interval: DeliveryInterval | None = None,
+        participant_id: int | None = None,
+        reference_id: str | None = None,
+    ) -> None:
+        self._audit_sequence += 1
+        self._audit_buffer.append(
+            {
+                "sequence_no": self._audit_sequence,
+                "kind": kind,
+                "interval_id": None if interval is None else interval.interval_id,
+                "participant_id": participant_id,
+                "reference_id": reference_id,
+                "sim_ts": sim_ts.astimezone(UTC),
+                "wall_ts": datetime.now(UTC),
+                "payload": payload,
+            }
+        )
+
+    def _audit_new_ledger_entries(self) -> None:
+        for entry in self.gateway.ledger.entries:
+            if entry.entry_id <= self._last_audited_ledger_entry_id:
+                continue
+            interval = None
+            if entry.interval_id is not None:
+                try:
+                    interval = self.engine.interval(entry.interval_id)
+                except KeyError:
+                    interval = None
+            self._append_audit(
+                kind="ledger.entry",
+                interval=interval,
+                sim_ts=entry.occurred_at,
+                participant_id=entry.participant_id,
+                reference_id=entry.reference_id,
+                payload={
+                    "entry_id": entry.entry_id,
+                    "category": entry.category.value,
+                    "amount_usd": str(entry.amount_usd),
+                    "detail": entry.detail,
+                },
+            )
+            self._last_audited_ledger_entry_id = entry.entry_id
+
+    def _maybe_persist_audit(self) -> None:
+        if self.session_id is None or not self._audit_buffer:
+            return
+        now = time.monotonic()
+        if self._last_audit_wall and now - self._last_audit_wall < 5.0:
+            return
+        if self._audit_task is not None and not self._audit_task.done():
+            return
+        rows = self._drain_audit_buffer()
+        if not rows:
+            return
+        self._last_audit_wall = now
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._audit_buffer.extendleft(reversed(rows))
+            return
+        self._audit_task = loop.create_task(self._persist_audit_rows(rows))
+
+    def _drain_audit_buffer(self) -> list[dict]:
+        rows = list(self._audit_buffer)
+        self._audit_buffer.clear()
+        return rows
+
+    async def _persist_audit_rows(self, rows: list[dict]) -> None:
+        if not rows or self.session_id is None:
+            return
+        from eflux.db.models import MarketAuditEvent
+        from eflux.db.session import get_sessionmaker
+
+        try:
+            async with get_sessionmaker()() as session:
+                session.add_all(MarketAuditEvent(session_id=self.session_id, **row) for row in rows)
+                await session.commit()
+        except Exception:
+            self._audit_buffer.extendleft(reversed(rows))
+            log.exception("Market audit persist failed (%d rows requeued)", len(rows))
+
     def _collect_stat_rows(self, tick_no: int, sim_ts: datetime) -> list[dict]:
         """One stat dict per live VPP — the durable leaderboard sample. Synchronous by
         design: it runs between awaits on the event loop, so it reads a tick-coherent
         view of every agent without taking self._lock."""
-        from eflux.market.units import internal_cash_to_usd
         from eflux.stats.categories import agent_category, is_llm_vpp
 
         wall_ts = datetime.now(UTC)
@@ -1808,7 +1947,7 @@ class Simulator:
                     "tick_no": tick_no,
                     "sim_ts": sim_ts,
                     "wall_ts": wall_ts,
-                    "pnl_usd": internal_cash_to_usd(vpp.state.pnl),
+                    "pnl_usd": vpp.state.pnl,
                     "soc_kwh": vpp.battery.soc_kwh,
                     "soc_frac": vpp.battery.soc_frac,
                     "energy_bought_kwh": vpp.state.cumulative_energy_bought_kwh,
@@ -2104,6 +2243,28 @@ class Simulator:
                     occurred_at=sim_ts,
                 )
                 position = self.gateway.participants[vpp.vpp_id].positions[iid]
+                self._append_audit(
+                    kind="delivery.settled",
+                    interval=interval,
+                    sim_ts=sim_ts,
+                    participant_id=vpp.vpp_id,
+                    reference_id=iid,
+                    payload={
+                        "renewable_generation_kwh": position.renewable_generation_kwh,
+                        "uncontrolled_load_kwh": position.load_demand_kwh,
+                        "flexible_load_kwh": position.flexible_load_demand_kwh,
+                        "battery_charge_terminal_kwh": position.battery_charge_terminal_kwh,
+                        "battery_discharge_terminal_kwh": position.battery_discharge_terminal_kwh,
+                        "dispatchable_generation_kwh": position.dispatchable_generation_kwh,
+                        "contracted_buy_kwh": position.contracted_buy_kwh,
+                        "contracted_sell_kwh": position.contracted_sell_kwh,
+                        "physical_net_injection_kwh": position.physical_net_injection_kwh,
+                        "contracted_net_injection_kwh": position.contracted_net_injection_kwh,
+                        "imbalance_kwh": position.imbalance_kwh,
+                        "ending_soc_kwh": vpp.battery.soc_kwh,
+                        "economic_delta_usd": str(result.economic_delta_usd),
+                    },
+                )
                 totals = self.imbalance_totals_by_vpp.setdefault(
                     vpp.vpp_id,
                     {
@@ -2120,6 +2281,7 @@ class Simulator:
                 vpp.state.soc_kwh = vpp.battery.soc_kwh
                 vpp.state.pending_net_kwh = 0.0
                 vpp.state.pnl = self.gateway.ledger.balance(vpp.vpp_id)
+            self._audit_new_ledger_entries()
             self._settled_intervals.add(iid)
 
     def _settlement_prices(self, interval: DeliveryInterval) -> SettlementPrices:
@@ -2169,6 +2331,7 @@ class Simulator:
                     },
                 )
                 vpp.state.pnl = self.gateway.ledger.balance(participant_id)
+        self._audit_new_ledger_entries()
 
     @staticmethod
     def _product_trade_payload(trade: ProductTrade) -> dict[str, object]:

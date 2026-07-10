@@ -183,7 +183,7 @@ class Settings(BaseSettings):
     ppo_encoding_version: int = 2
     # Warm-start checkpoint used for API-provisioned managed hybrid/PPO agents. Missing
     # files already fall back to a fresh online policy with a warning in the executor builder.
-    managed_ppo_checkpoint: str = "checkpoints/bc_primitive_p2p_v3.pt"
+    managed_ppo_checkpoint: str = "checkpoints/bc_primitive_p2p_v4.pt"
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

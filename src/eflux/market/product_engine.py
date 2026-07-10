@@ -87,6 +87,12 @@ class ProductMatchingEngine:
     def last_price(self, interval_id: str) -> Decimal | None:
         return self._last_price.get(interval_id)
 
+    def interval(self, interval_id: str) -> DeliveryInterval:
+        try:
+            return self._intervals[interval_id]
+        except KeyError as exc:
+            raise KeyError(f"unknown delivery product {interval_id}") from exc
+
     @property
     def latest_price(self) -> Decimal | None:
         return self._latest_price

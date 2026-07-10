@@ -42,7 +42,7 @@ vpps:
     seed: 205
     params: { pv_kw_peak: 3.5, battery_kwh: 10.0, battery_kw_max: 3.0, load_kw_base: 2.5, load_profile: residential, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v3.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v4.pt }
   # --- ev load ---
   - name: consumer-ev-truthful
     agent: truthful
@@ -69,7 +69,7 @@ vpps:
     seed: 210
     params: { pv_kw_peak: 0.0, battery_kwh: 60.0, battery_kw_max: 11.0, load_kw_base: 11.0, load_profile: ev, load_elasticity: 0.8, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v3.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v4.pt }
 
   # ===================== PROVIDER (2 archetypes x 5 strategies) =====================
   # --- pv generation ---
@@ -94,7 +94,7 @@ vpps:
     seed: 215
     params: { pv_kw_peak: 9.0, battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 0.0, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v3.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v4.pt }
   # --- wind generation ---
   - name: provider-wind-truthful
     agent: truthful
@@ -117,7 +117,7 @@ vpps:
     seed: 220
     params: { pv_kw_peak: 0.0, wind_kw_rated: 12.0, wind_mean_speed: 9.0, battery_kwh: 10.0, battery_kw_max: 4.0, load_kw_base: 0.0, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v3.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v4.pt }
 
   # ===================== VPP — non-LLM prosumers (5 strategies) =====================
   - name: vpp-truthful
@@ -145,7 +145,7 @@ vpps:
     seed: 225
     params: { pv_kw_peak: 5.0, battery_kwh: 16.0, battery_kw_max: 5.0, load_kw_base: 3.5, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v3.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v4.pt }
 
   # ===================== VPP — LLM strategists (4 heterogeneous, each mirrored) =====================
   - name: vpp-llm-solar-prosumer
@@ -153,7 +153,7 @@ vpps:
     seed: 226
     params: { pv_kw_peak: 9.0, battery_kwh: 18.0, battery_kw_max: 5.0, load_kw_base: 1.5, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v3.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v4.pt }
     persona:
       name: solar-prosumer
       prompt: >-
@@ -166,7 +166,7 @@ vpps:
     agent: hybrid
     seed: 227
     params: { pv_kw_peak: 0.0, wind_kw_rated: 10.0, wind_mean_speed: 9.0, battery_kwh: 12.0, battery_kw_max: 4.0, load_kw_base: 0.6, markup_floor: 0.4 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v3.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v4.pt }
     persona:
       name: conservative-wind-farmer
       prompt: >-
@@ -180,7 +180,7 @@ vpps:
     seed: 228
     params: { pv_kw_peak: 3.0, battery_kwh: 22.0, battery_kw_max: 6.0, load_kw_base: 3.0, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v3.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v4.pt }
     persona:
       name: balanced-market-maker
       prompt: >-
@@ -194,7 +194,7 @@ vpps:
     seed: 229
     params: { pv_kw_peak: 0.0, battery_kwh: 12.0, battery_kw_max: 4.0, load_kw_base: 6.0, load_profile: commercial, markup_floor: 0.4 }
     agent_params: { demand_beta: 0.5 }
-    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v3.pt }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v4.pt }
     persona:
       name: cost-minimizing-buyer
       prompt: >-

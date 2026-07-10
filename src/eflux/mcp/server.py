@@ -1,4 +1,4 @@
-"""EFlux MCP server — exposes the Agent Protocol v1 gateway as MCP tools, so an LLM host
+"""EFlux MCP server — exposes the Agent Protocol v2 gateway as MCP tools, so an LLM host
 (e.g. Claude Desktop) can read the market and trade through the same SDK/API as any other
 external agent (Tier A1). Thin wrappers over ``eflux.sdk.EFluxClient``.
 
@@ -44,6 +44,12 @@ async def get_market_snapshot(depth: int = 10) -> dict:
 
 
 @mcp.tool()
+async def list_delivery_products() -> list:
+    """Tradable delivery products with product ids, gate closures, and per-book prices."""
+    return await (await _client_get()).products()
+
+
+@mcp.tool()
 async def get_recent_trades(limit: int = 40) -> list:
     """Recent market-wide trades (the tape) — who traded with whom, and at what price."""
     return await (await _client_get()).recent_trades(limit)
@@ -75,8 +81,8 @@ async def get_open_orders(vpp_id: int) -> list:
 async def submit_orders_batch(
     orders: list[dict], cancels: list[int] | None = None, idempotency_key: str | None = None
 ) -> dict:
-    """Submit and cancel a batch of orders (Agent Protocol v1). Each order is
-    {vpp_id, side: "buy"|"sell", price, qty, client_ref?}. Returns per-item results."""
+    """Submit/cancel Agent Protocol v2 orders. Each order requires vpp_id,
+    side, price, qty_kwh, product_id, purpose, and may include TIF/TTL/client_ref."""
     return await (await _client_get()).submit_batch(
         orders=orders, cancels=cancels, idempotency_key=idempotency_key
     )

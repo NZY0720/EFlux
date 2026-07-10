@@ -13,7 +13,6 @@ from eflux.api.deps import AdminUser, CurrentUser, DbSession, SimulatorDep
 from eflux.data.electricity_market import ExternalMarketQuote
 from eflux.db.models import VPP
 from eflux.market.events import ExternalTradeEvent, TradeEvent
-from eflux.market.units import internal_cash_to_usd
 from eflux.stats.categories import agent_category, is_llm_vpp
 
 router = APIRouter(prefix="/market", tags=["market"])
@@ -89,6 +88,50 @@ class MarketSnapshot(BaseModel):
     data_source: DataSourceStatus
     external_market: ExternalMarketOut
     balance: MarketBalanceOut
+    product_id: str
+    delivery_start: datetime
+    delivery_end: datetime
+    gate_closure: datetime
+
+
+class DeliveryProductOut(BaseModel):
+    product_id: str
+    market: str
+    delivery_start: datetime
+    delivery_end: datetime
+    gate_closure: datetime
+    opens_at: datetime
+    is_open: bool
+    is_closed: bool
+    best_bid: str | None
+    best_ask: str | None
+    last_price: str | None
+
+
+@router.get("/products", response_model=list[DeliveryProductOut])
+async def products(sim: SimulatorDep) -> list[DeliveryProductOut]:
+    sim_ts = sim.clock.now_sim()
+    async with sim._lock:
+        visible = sim._ensure_products(sim_ts)
+        out: list[DeliveryProductOut] = []
+        for product in visible:
+            snapshot = sim.engine.snapshot(product.interval_id, depth_levels=1)
+            out.append(
+                DeliveryProductOut(
+                    product_id=product.interval_id,
+                    market=product.market,
+                    delivery_start=product.start,
+                    delivery_end=product.end,
+                    gate_closure=product.gate_closure,
+                    opens_at=product.opens_at,
+                    is_open=product.is_trading_open(sim_ts),
+                    is_closed=snapshot["is_closed"],
+                    best_bid=snapshot["best_bid"],
+                    best_ask=snapshot["best_ask"],
+                    last_price=snapshot["last_price"],
+                )
+            )
+        return out
 
 
 @router.get("/participants", response_model=list[ParticipantOut])
@@ -113,13 +156,20 @@ def recent_trades(sim: SimulatorDep, limit: int = 200) -> list[TradeEvent | Exte
 
 
 @router.get("/snapshot", response_model=MarketSnapshot)
-async def snapshot(sim: SimulatorDep, depth: int = 10) -> MarketSnapshot:
+async def snapshot(
+    sim: SimulatorDep, depth: int = 10, product_id: str | None = None
+) -> MarketSnapshot:
     # async + sim._lock: book reads must not interleave with the tick loop's
     # matching/expiry. As a sync route this ran on a threadpool thread, where
     # the asyncio lock offers no protection — a level deleted mid-walk turned
     # into IndexError 500s.
     async with sim._lock:
-        s = sim.engine.snapshot(depth_levels=depth)
+        visible = sim._ensure_products(sim.clock.now_sim())
+        try:
+            product = visible[0] if product_id is None else sim.engine.interval(product_id)
+        except KeyError as exc:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+        s = sim.engine.snapshot(product.interval_id, depth_levels=depth)
         balance = sim.market_balance()
     sim_time = sim.clock.now_sim()
     quote = sim.external_market_quote()
@@ -141,6 +191,10 @@ async def snapshot(sim: SimulatorDep, depth: int = 10) -> MarketSnapshot:
         data_source=sim.data_source_status(),
         external_market=_external_market_out(quote),
         balance=balance,
+        product_id=product.interval_id,
+        delivery_start=product.start,
+        delivery_end=product.end,
+        gate_closure=product.gate_closure,
     )
 
 
@@ -185,30 +239,37 @@ class SupplyCurveOut(BaseModel):
 
 
 @router.get("/supply_curve", response_model=SupplyCurveOut)
-async def supply_curve(sim: SimulatorDep) -> SupplyCurveOut:
+async def supply_curve(sim: SimulatorDep, product_id: str | None = None) -> SupplyCurveOut:
     """Resting orders with per-VPP attribution, best price first on each side.
 
     This is the merit-order view: walking the asks cheapest-first shows which
     generation category sets the price at each cumulative quantity.
     """
 
-    def walk(side: str) -> list[SupplyCurveOrder]:
-        out: list[SupplyCurveOrder] = []
-        for o in sim.engine.book.iter_orders(side):
-            vpp = sim.vpps.get(o.vpp_id)
-            out.append(
-                SupplyCurveOrder(
-                    price=str(o.price),
-                    qty=str(o.remaining_qty),
-                    category=agent_category(vpp) if vpp else "external",
-                    vpp_name=vpp.name if vpp else None,
-                )
-            )
-        return out
-
-    # Walking the book's deques must not interleave with matching/expiry —
-    # async + the sim lock keeps this on the event loop, race-free.
+    # Product registration and walking the book's deques must not interleave
+    # with matching/expiry.  Keep the complete snapshot under one lock.
     async with sim._lock:
+        product = sim._ensure_products(sim.clock.now_sim())[0]
+        if product_id is not None:
+            try:
+                product = sim.engine.interval(product_id)
+            except KeyError as exc:
+                raise HTTPException(status.HTTP_404_NOT_FOUND, str(exc)) from exc
+
+        def walk(side: str) -> list[SupplyCurveOrder]:
+            out: list[SupplyCurveOrder] = []
+            for o in sim.engine.iter_orders(product.interval_id, side):
+                vpp = sim.vpps.get(o.vpp_id)
+                out.append(
+                    SupplyCurveOrder(
+                        price=str(o.price),
+                        qty=str(o.remaining_qty),
+                        category=agent_category(vpp) if vpp else "external",
+                        vpp_name=vpp.name if vpp else None,
+                    )
+                )
+            return out
+
         return SupplyCurveOut(sim_ts=sim.clock.now_sim(), asks=walk("sell"), bids=walk("buy"))
 
 
@@ -290,7 +351,7 @@ def _market_agents_out(sim) -> list[AgentOut]:
                 load_kw_base=p.load_kw_base,
                 gas_kw_max=p.gas_kw_max,
                 gas_cost_per_mwh=p.gas_cost_per_mwh,
-                pnl=str(internal_cash_to_usd(vpp.state.pnl)),
+                pnl=str(vpp.state.pnl),
                 soc_kwh=vpp.battery.soc_kwh,
                 soc_frac=vpp.battery.soc_frac,
                 pv_kw=vpp.state.pv_kw,

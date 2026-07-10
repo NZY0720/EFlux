@@ -11,6 +11,7 @@ from eflux.agents.decision import AgentDecision, OrderRequest
 from eflux.bridge.bus import InMemoryBus
 from eflux.market.delivery import OrderPurpose
 from eflux.market.products import delivery_interval_containing
+from eflux.market.replay import replay_and_verify
 from eflux.simulator.runner import Simulator
 from eflux.vpp.base import VPPParams
 
@@ -112,6 +113,11 @@ def test_runner_meter_and_interval_settlement_reconcile_contracts():
     assert buyer_position.imbalance_kwh == pytest.approx(0.0)
     assert sim.gateway.ledger.balance(seller.vpp_id) == Decimal("0.030000")
     assert sim.gateway.ledger.balance(buyer.vpp_id) == Decimal("-0.030000")
+    report = replay_and_verify(list(sim._audit_buffer))
+    assert report.ok, report.errors
+    assert report.trade_count == 1
+    # The first call also closes the currently-delivering bootstrap interval.
+    assert report.delivery_count == 4
 
 
 def test_physics_step_integrates_base_resources_without_implicit_battery_dispatch():

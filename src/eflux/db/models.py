@@ -129,7 +129,9 @@ class VPP(Base):
     #    "load_kw_base": 3.0, "load_elasticity": 0.2, ...}
     params: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
-    is_external: Mapped[bool] = mapped_column(default=False, nullable=False)  # external SDK vs built-in
+    is_external: Mapped[bool] = mapped_column(
+        default=False, nullable=False
+    )  # external SDK vs built-in
     # Platform-driven managed agent (Tier 0 of docs/EXTERNAL_PARTICIPATION.md): the simulator
     # runs a HybridPolicyAgent for the user. managed_config carries the non-DER bits needed to
     # re-instantiate it on restart: {"persona": str|None, "agent_params": {...}, "seed": int|None}.
@@ -151,9 +153,7 @@ class Order(Base):
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    vpp_id: Mapped[int] = mapped_column(
-        ForeignKey("vpps.id", ondelete="CASCADE"), nullable=False
-    )
+    vpp_id: Mapped[int] = mapped_column(ForeignKey("vpps.id", ondelete="CASCADE"), nullable=False)
     side: Mapped[OrderSide] = mapped_column(Enum(OrderSide), nullable=False)
     # Price in currency units per MWh (or chosen unit). Use Numeric for precision.
     price: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
@@ -470,3 +470,29 @@ class Trade(Base):
     wall_ts: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+
+
+class MarketAuditEvent(Base):
+    """Append-only V2 audit stream for deterministic replay and investigation."""
+
+    __tablename__ = "market_audit_events"
+    __table_args__ = (
+        UniqueConstraint("session_id", "sequence_no", name="uq_market_audit_sequence"),
+        Index("ix_market_audit_interval", "session_id", "interval_id", "sequence_no"),
+        Index("ix_market_audit_participant", "session_id", "participant_id", "sequence_no"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    session_id: Mapped[int] = mapped_column(
+        ForeignKey("market_sessions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    sequence_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    kind: Mapped[str] = mapped_column(String(48), nullable=False)
+    interval_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    participant_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reference_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    sim_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    wall_ts: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
