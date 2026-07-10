@@ -262,6 +262,10 @@ export interface MarketAgent {
   llm_health_state: "live" | "degraded" | "offline" | null;
   /** The strategist's LLM model (null for non-LLM agents or unconfigured LLM). */
   llm_model?: string | null;
+  /** Endowment-derived behaviour. This is distinct from resources owned. */
+  archetype: string;
+  /** Owned assets with nonzero nameplate capacity. */
+  resources: string[];
   pv_kw_peak: number;
   wind_kw_rated: number;
   battery_kwh: number;
@@ -280,6 +284,8 @@ export interface MarketAgent {
   energy_sold_kwh: number;
   trade_count: number;
   recent_trade_count: number;
+  /** Simulated minutes this VPP has been observed in the live market. */
+  observation_min: number;
   fallback_count?: number;
   veto_hold_count?: number;
   risk_rejections?: number;
@@ -287,6 +293,12 @@ export interface MarketAgent {
   guidance_change_rate?: number | null;
   mode_override_rate?: number | null;
   avg_price_dev_bps?: number | null;
+}
+
+export interface ArenaPayload {
+  min_trades: number;
+  min_observation_min: number;
+  agents: MarketAgent[];
 }
 
 export interface MarketReflection {

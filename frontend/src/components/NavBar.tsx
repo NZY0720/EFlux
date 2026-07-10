@@ -97,7 +97,7 @@ export default function NavBar() {
   };
   const closeExploreOnEscape = (event: KeyboardEvent<HTMLButtonElement>) => { if (event.key === "Escape") setExploreOpen(false); };
 
-  return <nav className="sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-elevated)_72%,transparent)] px-4 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-2xl backdrop-saturate-150 md:px-6">
+  return <nav className="eflux-nav sticky top-0 z-20 border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--bg-elevated)_72%,transparent)] px-4 py-2.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] backdrop-blur-2xl backdrop-saturate-150 md:px-6">
     <div className="flex items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-3">
         <Link to="/" className="flex shrink-0 items-center gap-2 pr-1"><BrandLogo size={30} /><span className="eflux-wordmark text-lg font-bold">EFlux</span></Link>

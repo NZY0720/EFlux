@@ -45,3 +45,24 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Typecheck + build
         run: pnpm build
+
+  openapi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - name: Sync backend environment
+        run: UV_PROJECT_ENVIRONMENT=.env uv sync --frozen --extra dev
+      - name: Regenerate OpenAPI TypeScript artifact
+        run: pnpm -C frontend generate:api
+      - name: Fail on OpenAPI artifact drift
+        run: git diff --exit-code -- docs/openapi.json frontend/src/api/schema.gen.ts

@@ -142,11 +142,17 @@ class Settings(BaseSettings):
     stats_snapshot_sec: float = 30.0
     # Snapshots older than this are pruned at startup (0 disables pruning).
     stats_retention_days: int = 14
+    # Arena comparisons stay hidden until both sides have enough actual market
+    # participation and simulated observation time to support a meaningful claim.
+    arena_min_trades: int = 10
+    arena_min_observation_min: int = 30
     # Where the backtest runner writes run artifacts (manifest, metrics CSVs, charts);
     # the /benchmarks API serves them read-only. Relative paths resolve to PROJECT_ROOT.
     backtest_artifacts_dir: str = "artifacts/backtests"
     # Dedicated official-evaluation worker queue poll cadence (wall seconds).
     evaluation_poll_sec: float = 5.0
+    # `tasks.sh run` starts a local queue worker unless this is explicitly disabled.
+    evaluation_worker_autostart: bool = True
 
     llm_provider: str = "opencode"
     llm_key_file: str = "key.txt"

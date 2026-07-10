@@ -221,6 +221,9 @@ class AgentOut(BaseModel):
     mirror_of: str | None = None
     llm_health_state: str | None  # only for LLM-managed agents
     llm_model: str | None = None  # the strategist's model (LLM agents only) — arena display
+    # Behavioural classification is intentionally separate from owned assets.
+    archetype: str
+    resources: list[str]
     # Endowment (static)
     pv_kw_peak: float
     wind_kw_rated: float
@@ -241,6 +244,7 @@ class AgentOut(BaseModel):
     energy_sold_kwh: float
     trade_count: int
     recent_trade_count: int
+    observation_min: float
     fallback_count: int = 0
     veto_hold_count: int = 0
     risk_rejections: int = 0
@@ -250,16 +254,13 @@ class AgentOut(BaseModel):
     avg_price_dev_bps: float | None = None
 
 
-@router.get("/agents", response_model=list[AgentOut])
-async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
-    """Live roster of every built-in VPP: who they are, what they own, and how
-    they are doing right now. Public — this is the market's cast of characters.
-
-    async (event loop, not threadpool) so each agent's row is a consistent
-    tick-coherent read instead of mixing fields from two ticks."""
+def _market_agents_out(sim) -> list[AgentOut]:
+    """Build one tick-coherent roster snapshot for participants and the Arena."""
+    from eflux.agents.character import derive_character, endowment_resources
     from eflux.api.routers.vpps import _llm_health
 
     out: list[AgentOut] = []
+    now_sim = sim.clock.now_sim()
     for vpp in sim.vpps.values():
         health_state: str | None = None
         if vpp.is_my_vpp:
@@ -280,6 +281,8 @@ async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
                 mirror_of=vpp.mirror_of,
                 llm_health_state=health_state,
                 llm_model=getattr(client, "model", None),
+                archetype=derive_character(p).archetype,
+                resources=endowment_resources(p),
                 pv_kw_peak=p.pv_kw_peak,
                 wind_kw_rated=p.wind_kw_rated,
                 battery_kwh=p.battery_kwh,
@@ -298,6 +301,10 @@ async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
                 energy_sold_kwh=vpp.state.cumulative_energy_sold_kwh,
                 trade_count=vpp.trade_count,
                 recent_trade_count=len(vpp.recent_trades),
+                observation_min=max(
+                    0.0,
+                    (now_sim - (vpp.observed_since_sim or vpp.state.sim_ts)).total_seconds() / 60.0,
+                ),
                 fallback_count=sim.fallback_invocations_by_vpp.get(vpp.vpp_id, 0),
                 veto_hold_count=sim.veto_holds_by_vpp.get(vpp.vpp_id, 0),
                 risk_rejections=sim.risk_rejections_by_vpp.get(vpp.vpp_id, 0),
@@ -308,6 +315,37 @@ async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
             )
         )
     return out
+
+
+@router.get("/agents", response_model=list[AgentOut])
+async def market_agents(sim: SimulatorDep) -> list[AgentOut]:
+    """Live roster of every built-in VPP: who they are, what they own, and how
+    they are doing right now. Public — this is the market's cast of characters.
+
+    async (event loop, not threadpool) so each agent's row is a consistent
+    tick-coherent read instead of mixing fields from two ticks."""
+    return _market_agents_out(sim)
+
+
+class ArenaOut(BaseModel):
+    """Evidence thresholds and contestants used by the model Arena."""
+
+    min_trades: int
+    min_observation_min: int
+    agents: list[AgentOut]
+
+
+@router.get("/arena", response_model=ArenaOut)
+async def arena(sim: SimulatorDep) -> ArenaOut:
+    """Arena-specific roster payload with the live evidence contract exposed."""
+    from eflux.config import get_settings
+
+    settings = get_settings()
+    return ArenaOut(
+        min_trades=settings.arena_min_trades,
+        min_observation_min=settings.arena_min_observation_min,
+        agents=_market_agents_out(sim),
+    )
 
 
 class MarketReflectionOut(BaseModel):

@@ -12,6 +12,7 @@ const Arena = lazy(() => import("./pages/Arena"));
 const Benchmarks = lazy(() => import("./pages/Benchmarks"));
 const Competitions = lazy(() => import("./pages/Competitions"));
 const CompetitionDetail = lazy(() => import("./pages/CompetitionDetail"));
+const CompetitionSubmit = lazy(() => import("./pages/CompetitionSubmit"));
 const ForecastHub = lazy(() => import("./pages/ForecastHub"));
 const Leaderboard = lazy(() => import("./pages/Leaderboard"));
 const Login = lazy(() => import("./pages/Login"));
@@ -24,6 +25,7 @@ const Participants = lazy(() => import("./pages/Participants"));
 const ProveOut = lazy(() => import("./pages/ProveOut"));
 const ProveOutRun = lazy(() => import("./pages/ProveOutRun"));
 const WelcomePage = lazy(() => import("./pages/WelcomePage"));
+const SubmissionStatus = lazy(() => import("./pages/SubmissionStatus"));
 
 function RouteFallback() {
   return (
@@ -61,6 +63,8 @@ function Shell() {
             <Route path="/benchmarks/:runId" element={<Benchmarks />} />
             <Route path="/competitions" element={<Competitions />} />
             <Route path="/competitions/:slug" element={<CompetitionDetail />} />
+            <Route path="/competitions/:slug/submit" element={<RequireAuth><CompetitionSubmit /></RequireAuth>} />
+            <Route path="/submissions/:id" element={<RequireAuth><SubmissionStatus /></RequireAuth>} />
             <Route path="/forecasts" element={<ForecastHub />} />
             <Route path="/prove-out" element={<RequireAuth><ProveOut /></RequireAuth>} />
             <Route path="/prove-out/runs/:id" element={<RequireAuth><ProveOutRun /></RequireAuth>} />

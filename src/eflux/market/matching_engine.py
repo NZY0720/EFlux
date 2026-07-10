@@ -39,6 +39,11 @@ class MatchingEngine:
         self._next_order_id += 1
         return oid
 
+    @property
+    def trade_count(self) -> int:
+        """Total trades ever matched — a freshness signal for last_price consumers."""
+        return self._next_trade_id - 1
+
     def _alloc_trade_id(self) -> int:
         tid = self._next_trade_id
         self._next_trade_id += 1

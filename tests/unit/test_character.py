@@ -10,6 +10,7 @@ from eflux.agents.character import (
     NEUTRAL_CHARACTER,
     Character,
     derive_character,
+    endowment_resources,
     endowment_summary,
 )
 from eflux.agents.hybrid.agent import StrategyAgent
@@ -65,6 +66,14 @@ def test_public_views_json_serializable():
     summary = endowment_summary(_params(battery_kwh=60.0, pv_kw_peak=2.0, load_kw_base=11.0))
     json.dumps(summary)
     assert summary["battery_kwh"] == 60.0
+
+
+def test_resources_list_assets_without_changing_behavioural_archetype():
+    # A load-heavy factory may own a little PV. Its resources should say so,
+    # while its archetype remains consumer rather than being called Solar.
+    params = _params(pv_kw_peak=1.0, battery_kwh=0.0, load_kw_base=10.0)
+    assert derive_character(params).archetype == "consumer"
+    assert endowment_resources(params) == ["solar", "load"]
 
 
 def test_strategist_message_carries_endowment_and_character():

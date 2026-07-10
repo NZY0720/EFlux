@@ -35,6 +35,10 @@ interface Props {
   /** Real participant roster (name + category) to project onto nodes. */
   roster?: { name: string; category: string }[];
   className?: string;
+  /** Scales the ambient constellation without removing the live-grid interaction. */
+  density?: number;
+  /** Probability of omitting an ambient node from the left-side hero copy zone. */
+  copyClearance?: number;
 }
 
 type Cat = "solar" | "wind" | "battery_load" | "llm" | "gas";
@@ -105,19 +109,20 @@ function catColor(cat: Cat): string {
   return CATEGORY_META[cat]?.color ?? "#94a3b8";
 }
 
-function buildScene(rng: () => number) {
+function buildScene(rng: () => number, density = 1, copyClearance = 0) {
   const nodes: Node[] = [];
-  const total = CAT_ORDER.reduce((s, c) => s + CAT_WEIGHTS[c], 0);
   const minDist = 0.085;
   for (const cat of CAT_ORDER) {
-    for (let i = 0; i < CAT_WEIGHTS[cat]; i++) {
+    const count = Math.max(1, Math.round(CAT_WEIGHTS[cat] * density));
+    for (let i = 0; i < count; i++) {
       // Rejection-sample positions so nodes never clump unreadably.
       let x = 0.5;
       let y = 0.5;
       for (let attempt = 0; attempt < 40; attempt++) {
         x = 0.03 + rng() * 0.94;
         y = 0.06 + rng() * 0.88;
-        if (nodes.every((n) => Math.hypot(n.x - x, n.y - y) > minDist)) break;
+        const inCopyZone = x < 0.5 && y > 0.16 && y < 0.84;
+        if ((!inCopyZone || rng() > copyClearance) && nodes.every((n) => Math.hypot(n.x - x, n.y - y) > minDist)) break;
       }
       const big = cat === "llm" || cat === "gas";
       nodes.push({
@@ -156,8 +161,8 @@ function buildScene(rng: () => number) {
     addEdge(i, ranked[0].j);
     addEdge(i, ranked[1].j);
   });
-  for (let k = 0; k < 7; k++) {
-    addEdge(Math.floor(rng() * total), Math.floor(rng() * total), true);
+  for (let k = 0; k < Math.max(3, Math.round(7 * density)); k++) {
+    addEdge(Math.floor(rng() * nodes.length), Math.floor(rng() * nodes.length), true);
   }
   return { nodes, edges };
 }
@@ -189,12 +194,12 @@ function curvePoint(
 }
 
 const GridCanvas = forwardRef<GridCanvasHandle, Props>(function GridCanvas(
-  { roster, className },
+  { roster, className, density = 1, copyClearance = 0 },
   ref,
 ) {
   const wrapRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const sceneRef = useRef(buildScene(mulberry32(20260702)));
+  const sceneRef = useRef(buildScene(mulberry32(20260702), density, copyClearance));
   const pulsesRef = useRef<Pulse[]>([]);
   const ripplesRef = useRef<Ripple[]>([]);
   const bubblesRef = useRef<Bubble[]>([]);

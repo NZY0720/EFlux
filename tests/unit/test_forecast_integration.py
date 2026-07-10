@@ -404,3 +404,30 @@ def test_history_endpoint_is_session_scoped_on_fresh_boot():
     app.state.forecast_service = ForecastService()
 
     assert TestClient(app).get("/forecasts/history").json() == []
+
+
+def test_profile_observes_only_fresh_prints(monkeypatch, tmp_path):
+    from decimal import Decimal
+
+    monkeypatch.setenv("EFLUX_FORECAST_STATE_DIR", str(tmp_path))
+    get_settings.cache_clear()
+    sim = Simulator(bus=InMemoryBus())
+    sim._forecast_p2p_profile = HourlyEwmaProfile(alpha=0.05, min_obs=5)
+    service = ForecastService()
+    start = datetime(2026, 2, 1, 0, 0, tzinfo=UTC)
+    service.warm_start(series={"price_real": [(start, 50.0)], "price_p2p": [(start, 18.0)]})
+    sim.forecast_service = service
+
+    sim.engine.last_price = Decimal("18.5")
+    sim.engine._next_trade_id = 2  # one trade has printed
+    sim._refresh_forecast_once()
+    sim._refresh_forecast_once()  # echo refresh — same trade_count, no new print
+
+    assert sum(sim._forecast_p2p_profile.counts.values()) == 1
+
+    sim.engine._next_trade_id = 3  # a second trade printed
+    sim.engine.last_price = Decimal("19.0")
+    sim._refresh_forecast_once()
+
+    assert sum(sim._forecast_p2p_profile.counts.values()) == 2
+    get_settings.cache_clear()

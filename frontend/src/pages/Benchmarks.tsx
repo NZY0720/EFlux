@@ -114,7 +114,7 @@ function RunList() {
                     src={benchmarkChartUrl(run.run_id, "overview_leaderboard.svg")}
                     alt="run leaderboard"
                     loading="lazy"
-                    className="mt-3 w-full rounded-md border border-[var(--border)] bg-white"
+                    className="mt-3 w-full rounded-md border border-[var(--border)] bg-[var(--bg-elevated)]"
                   />
                 )}
               </DashboardCard>
@@ -256,7 +256,7 @@ function RunDetail({ runId }: { runId: string }) {
                       src={benchmarkChartUrl(runId, c)}
                       alt={c}
                       loading="lazy"
-                      className="w-full rounded-md border border-[var(--border)] bg-white"
+                      className="w-full rounded-md border border-[var(--border)] bg-[var(--bg-elevated)]"
                     />
                     <figcaption className="mt-1 text-center font-mono text-[10px] text-[var(--text-subtle)]">{c}</figcaption>
                   </figure>

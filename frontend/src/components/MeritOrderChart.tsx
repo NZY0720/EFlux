@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchSupplyCurve } from "../api/client";
 import type { SupplyCurve } from "../api/types";
 import { CATEGORY_ORDER, categoryMeta } from "../lib/categories";
+import { formatPrice, formatQuantity } from "../lib/format";
 import { EmptyState } from "./DashboardCard";
 import { chartAxis, chartLegend, chartTooltip, useChartTheme } from "./chartTheme";
 
@@ -146,9 +147,9 @@ export default function MeritOrderChart() {
         const v = p.value as number[];
         if (v.length >= 4) {
           const qty = v[1] - v[0];
-          return `${v[3]}<br/>${p.seriesName} · ${qty.toFixed(3)} kWh @ ${v[2].toFixed(2)} $/MWh`;
+          return `${v[3]}<br/>${p.seriesName} · ${formatQuantity(qty)} kWh @ ${formatPrice(v[2])} $/MWh`;
         }
-        return `Demand · ${v[1].toFixed(2)} $/MWh at ${v[0].toFixed(3)} kWh`;
+        return `Demand · ${formatPrice(v[1])} $/MWh at ${formatQuantity(v[0])} kWh`;
       },
     },
     series: [

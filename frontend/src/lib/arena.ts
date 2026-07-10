@@ -1,7 +1,9 @@
 // Arena helpers: cohort grouping + reflection lookup shared by the Arena page and
 // the LLM/PPO influence panel.
 
-import type { MarketAgent, MarketReflection } from "../api/types";
+import type { ArenaPayload, MarketAgent, MarketReflection } from "../api/types";
+
+export type ArenaRules = Omit<ArenaPayload, "agents">;
 
 /**
  * Endowment signature for fair head-to-head grouping — agents with the same DER
@@ -25,4 +27,26 @@ export function latestReflectionByAgent(entries: MarketReflection[]): Map<string
     if (!out.has(r.vpp_name)) out.set(r.vpp_name, r);
   }
   return out;
+}
+
+/** Evidence must clear both thresholds before a contestant can be compared. */
+export function hasArenaEvidence(agent: MarketAgent, rules: ArenaRules | null): boolean {
+  return Boolean(
+    rules &&
+      agent.trade_count >= rules.min_trades &&
+      agent.observation_min >= rules.min_observation_min,
+  );
+}
+
+/** A comparison is honest only when both sides have a sufficient sample. */
+export function comparisonReady(contenders: MarketAgent[], rules: ArenaRules | null): boolean {
+  return contenders.length >= 2 && contenders.every((agent) => hasArenaEvidence(agent, rules));
+}
+
+export function evidenceProgress(agent: MarketAgent, rules: ArenaRules | null): string {
+  if (!rules) return "Collecting market evidence";
+  return `${Math.min(agent.trade_count, rules.min_trades)}/${rules.min_trades} trades · ${Math.min(
+    Math.floor(agent.observation_min),
+    rules.min_observation_min,
+  )}/${rules.min_observation_min} min`;
 }

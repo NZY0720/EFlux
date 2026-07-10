@@ -1,70 +1,60 @@
-import { ChartCandlestick, ListChecks, MessagesSquare, Scale, Zap } from "lucide-react";
+import { ChartCandlestick, Zap } from "lucide-react";
 
-import Chatroom from "../components/Chatroom";
 import { CardTitle, DashboardCard, StatusPill } from "../components/DashboardCard";
 import DataSourceBanner from "../components/DataSourceBanner";
 import IntroStrip from "../components/IntroStrip";
 import KpiBar from "../components/KpiBar";
+import MarketActivityRail from "../components/MarketActivityRail";
 import MeritOrderChart from "../components/MeritOrderChart";
-import OrderBookDepth from "../components/OrderBookDepth";
 import PriceChart from "../components/PriceChart";
 import RenewPpoButton from "../components/RenewPpoButton";
-import TradeTape from "../components/TradeTape";
 import { useMarket } from "../state/marketStream";
 
-/**
- * P2P market dashboard: peer-to-peer continuous double auction. The story is
- * local price discovery and liquidity — who supplies at what price, the live
- * order book, and the emergent P2P price. CAISO is drawn only as a reference.
- */
+/** P2P market: discovery and order flow lead; supporting details follow. */
 export default function P2PMarketOverview() {
-  // Stream + snapshot live in MarketStreamProvider (App level), so navigating
-  // away and back keeps the accumulated chart/tape history.
   const { recent, snapshot } = useMarket();
+  const provenanceTone = snapshot?.data_provenance === "real" ? "success" : snapshot?.data_provenance === "cached" ? "amber" : "muted";
 
   return (
-    <div className="mx-auto w-full max-w-[1800px] space-y-6 px-4 py-5 md:p-6">
+    <div className="mx-auto w-full max-w-[1800px] space-y-4 px-4 py-5 md:p-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-[var(--text)]">Live P2P market</h1>
+          <p className="mt-1 text-sm text-[var(--text-muted)]">Local price discovery and liquidity, in real time.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <StatusPill tone="accent">P2P market</StatusPill>
+          {snapshot && <StatusPill tone={provenanceTone}>data: {snapshot.data_provenance}</StatusPill>}
+        </div>
+      </div>
+
+      <KpiBar compact snapshot={snapshot} builtinVpps={snapshot?.num_builtin_vpps ?? 0} />
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="min-w-0 space-y-4 lg:col-span-2">
+          <DashboardCard>
+            <CardTitle icon={ChartCandlestick}>Merit order - supply and demand</CardTitle>
+            <MeritOrderChart />
+          </DashboardCard>
+          <DashboardCard>
+            <CardTitle icon={Zap}>Price trend</CardTitle>
+            <PriceChart
+              variant="p2p"
+              events={recent}
+              initialPrice={snapshot?.last_price !== null && snapshot?.last_price !== undefined ? Number(snapshot.last_price) : null}
+            />
+          </DashboardCard>
+        </div>
+        <aside className="min-w-0" aria-label="P2P market activity">
+          <MarketActivityRail snapshot={snapshot} events={recent} variant="p2p" />
+        </aside>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1fr)_auto] xl:items-start">
+        <DataSourceBanner dataSource={snapshot?.data_source} showExternalPrice={false} />
+        <div className="xl:pt-3"><RenewPpoButton /></div>
+      </div>
       <IntroStrip variant="p2p" />
-      <div className="flex justify-end gap-2">
-        <StatusPill tone="accent">P2P market</StatusPill>
-        {snapshot && <StatusPill tone={snapshot.data_provenance === "real" ? "success" : snapshot.data_provenance === "cached" ? "amber" : "muted"}>data: {snapshot.data_provenance}</StatusPill>}
-      </div>
-      <KpiBar snapshot={snapshot} builtinVpps={snapshot?.num_builtin_vpps ?? 0} />
-      <DataSourceBanner dataSource={snapshot?.data_source} showExternalPrice={false} />
-      <div className="flex justify-end">
-        <RenewPpoButton />
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <DashboardCard className="lg:col-span-2">
-          <CardTitle icon={ChartCandlestick}>Merit order - who supplies at what price</CardTitle>
-          <MeritOrderChart />
-        </DashboardCard>
-        <DashboardCard>
-          <CardTitle icon={MessagesSquare}>Agent chatroom</CardTitle>
-          <Chatroom />
-        </DashboardCard>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <DashboardCard>
-          <CardTitle icon={Zap}>Price - emergent local P2P price</CardTitle>
-          <PriceChart
-            variant="p2p"
-            events={recent}
-            initialPrice={snapshot?.last_price ? Number(snapshot.last_price) : null}
-          />
-        </DashboardCard>
-        <DashboardCard>
-          <CardTitle icon={Scale}>Order book depth</CardTitle>
-          <OrderBookDepth snapshot={snapshot} />
-        </DashboardCard>
-      </div>
-
-      <DashboardCard>
-        <CardTitle icon={ListChecks}>Recent trades (peer-to-peer)</CardTitle>
-        <TradeTape events={recent} />
-      </DashboardCard>
     </div>
   );
 }

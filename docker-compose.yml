@@ -1,28 +1,24 @@
-# One-command demo: docker compose up --build → http://localhost:8080
-#
-# Optional services (off by default — the app falls back gracefully without them):
-#   docker compose --profile redis up      # durable event bus via Redis Streams
-#   docker compose --profile postgres up   # users/VPPs in Postgres instead of SQLite
-# When enabling a profile, also uncomment the matching EFLUX_* vars below.
-
+# Production-shaped local deployment: Postgres holds durable application data and
+# Redis backs cross-process event delivery. `tasks.sh` intentionally remains
+# SQLite + in-memory bus for zero-setup development.
 services:
   backend:
     build:
       context: .
       target: backend
     environment:
-      EFLUX_ENV: dev # dev keeps create_all + magic-link tokens echoed in the response
+      EFLUX_ENV: prod
       EFLUX_CORS_ORIGINS: http://localhost:8080
-      # EFLUX_BUS_BACKEND: redis
-      # EFLUX_REDIS_URL: redis://redis:6379/0
-      # EFLUX_DB_URL: postgresql+asyncpg://eflux:eflux@postgres:5432/eflux
-      # LLM reflection (optional): mount a key and set the endpoint to bring
-      # the my-llm-vpp agent fully online inside the container.
-      # EFLUX_REFLECTIVE_ENABLED: "true"
-      # EFLUX_LLM_BASE_URL: https://...
-      # EFLUX_LLM_MODEL: ...
-    # volumes:
-    #   - ./key.txt:/app/key.txt:ro
+      EFLUX_DB_URL: postgresql+asyncpg://eflux:eflux@postgres:5432/eflux
+      EFLUX_AUTO_CREATE_SCHEMA: "false"
+      EFLUX_BUS_BACKEND: redis
+      EFLUX_REDIS_URL: redis://redis:6379/0
+    command: ["sh", "-c", "alembic upgrade head && exec uvicorn eflux.api.main:app --host 0.0.0.0 --port 8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     expose:
       - "8000"
 
@@ -33,20 +29,37 @@ services:
     ports:
       - "8080:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_started
 
   redis:
     image: redis:7-alpine
-    profiles: ["redis"]
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
     expose:
       - "6379"
 
   postgres:
     image: postgres:16-alpine
-    profiles: ["postgres"]
     environment:
       POSTGRES_USER: eflux
       POSTGRES_PASSWORD: eflux
       POSTGRES_DB: eflux
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
     expose:
       - "5432"
+
+volumes:
+  postgres-data:

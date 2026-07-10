@@ -3,7 +3,7 @@ reflection feed, and the runtime speed control."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
@@ -45,6 +45,58 @@ async def test_agents_roster_is_public_and_complete(client):
     mirrors = [a for a in agents if a["mirror_of"] is not None]
     assert len(mirrors) == 6
     assert all(a["name"] == f"{a['mirror_of']}-ppo-mirror" for a in mirrors)
+
+
+@pytest.mark.asyncio
+async def test_agent_summary_separates_archetype_from_battery_solar_resources(client):
+    from eflux.agents.character import derive_character
+    from eflux.vpp.base import VPPParams
+
+    agents = (await client.get("/market/agents")).json()
+    fixture = next(agent for agent in agents if agent["battery_kwh"] > 0 and agent["pv_kw_peak"] > 0)
+    params = VPPParams(
+        pv_kw_peak=fixture["pv_kw_peak"],
+        wind_kw_rated=fixture["wind_kw_rated"],
+        battery_kwh=fixture["battery_kwh"],
+        battery_kw_max=fixture["battery_kw_max"],
+        load_kw_base=fixture["load_kw_base"],
+        gas_kw_max=fixture["gas_kw_max"],
+        gas_cost_per_kwh=fixture["gas_cost_per_kwh"],
+    )
+
+    assert fixture["archetype"] == derive_character(params).archetype
+    assert "solar" in fixture["resources"]
+    assert "battery" in fixture["resources"]
+
+
+@pytest.mark.asyncio
+async def test_arena_payload_exposes_evidence_for_client_threshold_gate(db_session):
+    from httpx import ASGITransport, AsyncClient
+
+    from eflux.api.main import create_app
+
+    app = create_app()
+    async with app.router.lifespan_context(app):
+        sim = app.state.simulator
+        vpp = next(vpp for vpp in sim.vpps.values() if vpp.is_my_vpp)
+        now = sim.clock.now_sim()
+        vpp.trade_count = 9
+        vpp.observed_since_sim = now - timedelta(minutes=29)
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as ac:
+            below = (await ac.get("/market/arena")).json()
+            vpp.trade_count = 10
+            vpp.observed_since_sim = now - timedelta(minutes=30)
+            above = (await ac.get("/market/arena")).json()
+
+    assert below["min_trades"] == 10
+    assert below["min_observation_min"] == 30
+    below_agent = next(agent for agent in below["agents"] if agent["id"] == vpp.vpp_id)
+    assert below_agent["trade_count"] == 9
+    assert 28.9 <= below_agent["observation_min"] < 30
+    above_agent = next(agent for agent in above["agents"] if agent["id"] == vpp.vpp_id)
+    assert above_agent["trade_count"] == 10
+    assert above_agent["observation_min"] >= 30
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "generate:api": "../tasks.sh openapi && python3 ../scripts/generate_openapi_ts.py",
     "preview": "vite preview"
   },
   "dependencies": {

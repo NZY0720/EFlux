@@ -127,6 +127,9 @@ class SimulatorVPP:
     open_order_ids: list[int] = field(default_factory=list)
     recent_trades: list[dict] = field(default_factory=list)
     trade_count: int = 0
+    # Simulated time at which this VPP joined the live roster. Arena evidence
+    # uses this rather than wall time, so speed changes do not alter eligibility.
+    observed_since_sim: datetime | None = None
 
 
 class Simulator:
@@ -213,6 +216,7 @@ class Simulator:
         # Rolling own-market hourly clearing profile anchoring price_p2p (never
         # CAISO DAM — grid settlement runs structurally above P2P clearing).
         self._forecast_p2p_profile = self._load_forecast_p2p_profile()
+        self._forecast_p2p_seen_trade_count = 0
         # Background "renew PPOs" (retrain on latest real data + hot-reload) state.
         self._ppo_renew_task: asyncio.Task | None = None
         self._ppo_renew: PpoRenewStatus = {
@@ -304,6 +308,7 @@ class Simulator:
             ),
             wind=wind,
             rng=random.Random(seed),
+            observed_since_sim=self.clock.now_sim(),
         )
         self.vpps[vpp_id] = vpp
         log.info("Added built-in VPP id=%d name=%s", vpp_id, name)
@@ -1092,7 +1097,13 @@ class Simulator:
             self._forecast_last_price["price_real"] = real_obs
         if p2p_obs is not None:
             self._forecast_last_price["price_p2p"] = p2p_obs
-            self._forecast_p2p_profile.observe(sim_ts, p2p_obs)
+            trade_count = self.engine.trade_count
+            if trade_count != self._forecast_p2p_seen_trade_count:
+                # Only FRESH prints train the own-market profile: last_price
+                # echoes one trade on every refresh until the next print, which
+                # inflated an hour bucket with 42 copies of a single trade.
+                self._forecast_p2p_seen_trade_count = trade_count
+                self._forecast_p2p_profile.observe(sim_ts, p2p_obs)
         service.observe(
             sim_ts,
             price_real=real_obs,

@@ -126,3 +126,16 @@ def endowment_summary(params: object) -> dict:
         "load_kw_base": g("load_kw_base"),
         "gas_kw_max": g("gas_kw_max"),
     }
+
+
+def endowment_resources(params: object) -> list[str]:
+    """Owned resource labels for public roster surfaces, in a stable display order."""
+    summary = endowment_summary(params)
+    resources = (
+        ("solar", summary["pv_kw_peak"]),
+        ("battery", summary["battery_kwh"]),
+        ("wind", summary["wind_kw_rated"]),
+        ("gas", summary["gas_kw_max"]),
+        ("load", summary["load_kw_base"]),
+    )
+    return [name for name, capacity in resources if capacity > 0.0]

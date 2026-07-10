@@ -60,6 +60,18 @@ EOF
     ;;
 
   run)
+    if [[ "${EFLUX_EVAL_WORKER_AUTOSTART:-true}" != "false" ]]; then
+      mkdir -p .run
+      worker_pid_file=".run/eval-worker.pid"
+      if [[ -f "$worker_pid_file" ]] && ! kill -0 "$(cat "$worker_pid_file")" 2>/dev/null; then
+        rm -f "$worker_pid_file"
+      fi
+      if [[ ! -f "$worker_pid_file" ]]; then
+        "$PY" -m eflux.evaluation.worker >.run/eval-worker.log 2>&1 &
+        echo $! > "$worker_pid_file"
+        echo "Started evaluation worker (pid=$(cat "$worker_pid_file"))"
+      fi
+    fi
     exec "$PY" -m uvicorn eflux.api.main:app --host 127.0.0.1 --port 8000
     ;;
 

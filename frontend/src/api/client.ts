@@ -17,6 +17,7 @@ import type {
   ManagedVPPPerformance,
   ManagedVPP,
   MarketAgent,
+  ArenaPayload,
   MarketEvent,
   MarketReflection,
   MarketSnapshot,
@@ -323,6 +324,11 @@ export async function fetchSupplyCurve(): Promise<SupplyCurve> {
 
 export async function fetchMarketAgents(): Promise<MarketAgent[]> {
   const { data } = await api.get<MarketAgent[]>("/market/agents");
+  return data;
+}
+
+export async function fetchArena(): Promise<ArenaPayload> {
+  const { data } = await api.get<ArenaPayload>("/market/arena");
   return data;
 }
 

@@ -16,6 +16,7 @@ import { fetchChatter, fetchMarketAgents, fetchMarketReflections } from "../api/
 import type { ChatMessage, MarketEvent } from "../api/types";
 import BrandLogo from "../components/BrandLogo";
 import GridCanvas, { type GridCanvasHandle } from "../components/welcome/GridCanvas";
+import { formatPrice } from "../lib/format";
 import { useMarketMode } from "../state/marketMode";
 import { useMarket } from "../state/marketStream";
 import marketShot from "../../../docs/img/market.png";
@@ -169,11 +170,17 @@ export default function WelcomePage() {
   const live = wsState === "open" && snapshot !== null;
   const modeLabel = mode === "realprice" ? "Real-time price" : "Peer-to-peer";
   const balance = snapshot?.balance;
+  const provenance = snapshot?.data_provenance ?? "synthetic";
+  const provenanceClass = provenance === "real"
+    ? "border-[color-mix(in_srgb,var(--success)_42%,transparent)] bg-[var(--success-soft)] text-[var(--success)]"
+    : provenance === "cached"
+      ? "border-[color-mix(in_srgb,var(--warning)_42%,transparent)] bg-[var(--warning-soft)] text-[var(--warning)]"
+      : "border-[var(--border)] bg-[var(--surface-muted)] text-[var(--text-muted)]";
 
   return (
     <div className="wl-cinema min-h-screen">
       {/* ------------------------------ HERO ------------------------------ */}
-      <section className="relative flex min-h-[100dvh] flex-col overflow-hidden">
+      <section className="relative flex h-[100svh] min-h-[44rem] max-h-[100dvh] flex-col overflow-hidden">
         {/* Engineering-paper dot lattice, fading toward the copy side. */}
         <div
           className="pointer-events-none absolute inset-0 opacity-70"
@@ -184,40 +191,40 @@ export default function WelcomePage() {
             WebkitMaskImage: "radial-gradient(120% 90% at 70% 40%, black 30%, transparent 78%)",
           }}
         />
-        <GridCanvas ref={canvasRef} roster={roster} className="absolute inset-0" />
+        <GridCanvas ref={canvasRef} roster={roster} density={0.68} copyClearance={0.72} className="absolute inset-0" />
         {/* Legibility scrim behind the copy, transparent toward the living grid. */}
         <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(100deg,rgba(5,9,16,0.86)_0%,rgba(5,9,16,0.55)_38%,transparent_66%)]" />
 
-        <header className="relative z-10 mx-auto flex w-full max-w-[1400px] items-center justify-between px-4 py-5 md:px-8">
+        <header className="relative z-10 mx-auto flex w-full max-w-[1400px] items-center justify-between px-4 py-4 md:px-8">
           <Link to="/" className="flex items-center gap-2.5">
             <BrandLogo size={34} />
             <span className="eflux-wordmark text-xl font-bold">EFlux</span>
           </Link>
-          <Link to="/login" className="lg-btn h-10 px-5 text-sm font-medium">
+          <Link to="/login" className="eflux-btn h-10 px-5 text-sm font-medium">
             Sign in
           </Link>
         </header>
 
-        <div className="relative z-10 mx-auto flex w-full max-w-[1400px] flex-1 items-center px-4 pb-24 md:px-8">
-          <div className="max-w-2xl">
-            <h1 className="wl-hero-rise text-5xl font-semibold tracking-tight text-[var(--text)] sm:text-6xl lg:text-7xl">
+        <div className="relative z-10 mx-auto flex min-h-0 w-full max-w-[1400px] flex-1 items-center px-4 pb-24 md:px-8">
+          <div className="max-w-xl">
+            <h1 className="wl-hero-rise text-5xl font-semibold leading-[0.98] tracking-tight text-[var(--text)] sm:text-6xl lg:text-[clamp(3.5rem,5.2vw,4.5rem)]">
               The grid learns
               <br />
               to trade.
             </h1>
             <p
-              className="wl-hero-rise mt-6 max-w-xl text-lg leading-relaxed text-[var(--text-muted)] md:text-xl"
+              className="wl-hero-rise mt-5 max-w-lg text-base leading-7 text-[var(--text-muted)] md:text-lg md:leading-8"
               style={{ animationDelay: "120ms" }}
             >
               Autonomous agents run virtual power plants inside a live electricity
               market. Watch them think, compete, and settle.
             </p>
-            <div className="wl-hero-rise mt-9 flex flex-wrap gap-3" style={{ animationDelay: "240ms" }}>
-              <Link to="/market" className="lg-btn lg-btn-primary h-12 px-7 text-base">
+            <div className="wl-hero-rise mt-7 flex flex-wrap gap-3" style={{ animationDelay: "240ms" }}>
+              <Link to="/market" className="eflux-btn eflux-btn-primary h-12 px-7 text-base">
                 Enter the market
                 <ArrowRight size={17} />
               </Link>
-              <Link to="/vpps" className="lg-btn h-12 px-7 text-base">
+              <Link to="/vpps" className="eflux-btn h-12 px-7 text-base">
                 Deploy an agent
               </Link>
             </div>
@@ -226,7 +233,7 @@ export default function WelcomePage() {
 
         {/* Live ticker: real numbers from the running simulator. */}
         <div className="wl-hero-rise relative z-10 mx-4 mb-6 md:absolute md:bottom-8 md:right-8 md:mx-0 md:mb-0" style={{ animationDelay: "360ms" }}>
-          <div className="lg-glass flex items-center gap-5 px-5 py-3.5 text-sm">
+          <div className="eflux-market-overlay flex items-center gap-5 px-5 py-3.5 text-sm">
             <span className="flex items-center gap-2">
               <span
                 className={`inline-block h-2 w-2 rounded-full ${live ? "bg-[var(--success)] eflux-live-dot" : "bg-[var(--warning)]"}`}
@@ -236,9 +243,10 @@ export default function WelcomePage() {
               </span>
             </span>
             <span className="hidden text-[var(--text-subtle)] sm:inline">{modeLabel}</span>
+            <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${provenanceClass}`}>{provenance}</span>
             {lastPrice !== null && (
               <span className="tabular-nums text-[var(--text)]">
-                {lastPrice.toFixed(1)}
+                {formatPrice(lastPrice)}
                 <span className="ml-1 text-xs text-[var(--text-subtle)]">$/MWh</span>
               </span>
             )}
@@ -267,7 +275,7 @@ export default function WelcomePage() {
           </p>
         </Reveal>
         <Reveal delay={140}>
-          <div className="lg-glass flex min-h-[300px] flex-col p-6">
+          <div className="eflux-panel flex min-h-[300px] flex-col p-6">
             <div className="flex items-center gap-2 text-sm font-medium text-[var(--text)]">
               <MessagesSquare size={16} className="text-[var(--accent)]" />
               Agent chatter
@@ -308,14 +316,20 @@ export default function WelcomePage() {
       {/* ------------------------------- GRID ------------------------------ */}
       <section className="border-y border-[var(--border)] bg-[rgba(8,14,26,0.5)]">
         <div className="mx-auto w-full max-w-[1400px] px-4 py-24 md:px-8 lg:py-32">
-          <Reveal>
-            <h2 className="max-w-2xl text-4xl font-semibold tracking-tight text-[var(--text)] md:text-5xl">
-              Real weather. Real prices. Real physics.
-            </h2>
-          </Reveal>
-          <div className="mt-12 grid grid-cols-1 gap-4 md:grid-cols-[1.6fr_1fr_1fr]">
-            <Reveal delay={80}>
-              <div className="lg-glass h-full p-6">
+          <div className="grid grid-cols-1 items-end gap-12 lg:grid-cols-[1.1fr_0.9fr]">
+            <Reveal>
+              <div>
+                <h2 className="max-w-2xl text-4xl font-semibold tracking-tight text-[var(--text)] md:text-5xl">
+                  Real weather. Real prices. Real physics.
+                </h2>
+                <p className="mt-6 max-w-xl text-lg leading-relaxed text-[var(--text-muted)]">
+                  Solar farms, wind turbines, batteries, factories, and gas peakers hold the balance every second.
+                  Where their curves cross, the price forms.
+                </p>
+              </div>
+            </Reveal>
+            <Reveal delay={100}>
+              <div className="eflux-panel p-6">
                 <div className="flex items-center gap-2 text-sm font-medium text-[var(--text)]">
                   <Gauge size={16} className="text-[var(--accent)]" />
                   System balance, right now
@@ -331,14 +345,12 @@ export default function WelcomePage() {
                     Live supply and demand appear here while the simulator runs.
                   </p>
                 )}
-                <p className="mt-6 text-sm leading-relaxed text-[var(--text-muted)]">
-                  Solar farms, wind turbines, batteries, factories, and gas peakers
-                  hold the balance every second. Where their curves cross, the price forms.
-                </p>
               </div>
             </Reveal>
+          </div>
+          <div className="mt-12 grid grid-cols-1 gap-8 md:grid-cols-2 md:gap-12">
             <Reveal delay={160}>
-              <div className="lg-glass h-full p-6">
+              <div className="border-t border-[var(--border)] pt-5">
                 <CloudSun size={18} className="text-[var(--warning)]" />
                 <h3 className="mt-4 text-lg font-semibold text-[var(--text)]">Weather-driven</h3>
                 <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">
@@ -348,7 +360,7 @@ export default function WelcomePage() {
               </div>
             </Reveal>
             <Reveal delay={240}>
-              <div className="lg-glass h-full p-6">
+              <div className="border-t border-[var(--border)] pt-5">
                 <Zap size={18} className="text-[var(--success)]" />
                 <h3 className="mt-4 text-lg font-semibold text-[var(--text)]">Anchored to CAISO</h3>
                 <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">
@@ -364,7 +376,7 @@ export default function WelcomePage() {
       {/* ------------------------------ TRADING ---------------------------- */}
       <section className="mx-auto grid w-full max-w-[1400px] grid-cols-1 items-center gap-12 px-4 py-24 md:px-8 lg:grid-cols-[0.95fr_1.05fr] lg:py-36">
         <Reveal className="order-2 lg:order-1">
-          <div className="lg-glass overflow-hidden p-2">
+          <div className="eflux-panel overflow-hidden p-2">
             <div className="aspect-[16/11] overflow-hidden rounded-[14px]">
               <img
                 src={marketShot}
@@ -374,7 +386,7 @@ export default function WelcomePage() {
               />
             </div>
           </div>
-          <div className="lg-glass mt-4 px-5 py-4">
+          <div className="mt-4 border-t border-[var(--border)] px-1 pt-4">
             <div className="text-xs font-medium text-[var(--text-subtle)]">Latest fills</div>
             <div className="mt-2 space-y-1.5 text-sm tabular-nums">
               {trades.length === 0 ? (
@@ -388,7 +400,7 @@ export default function WelcomePage() {
                         : `${nameOf(t.vpp_id)} settled with the grid`}
                     </span>
                     <span className="shrink-0 text-[var(--text)]">
-                      {Number(t.price).toFixed(1)} <span className="text-xs text-[var(--text-subtle)]">$/MWh</span>
+                      {formatPrice(t.price)} <span className="text-xs text-[var(--text-subtle)]">$/MWh</span>
                     </span>
                   </div>
                 ))
@@ -405,7 +417,7 @@ export default function WelcomePage() {
             Results persist to a leaderboard that survives restarts, normalized so a
             bigger battery cannot simply buy the top spot.
           </p>
-          <Link to="/leaderboard" className="lg-btn mt-8 h-11 px-6 text-sm font-medium">
+          <Link to="/leaderboard" className="eflux-btn mt-8 h-11 px-6 text-sm font-medium">
             <Trophy size={16} className="text-[var(--warning)]" />
             View the leaderboard
           </Link>
@@ -419,13 +431,13 @@ export default function WelcomePage() {
             Choose how you enter.
           </h2>
         </Reveal>
-        <div className="mt-12 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-[1.5fr_1fr]">
+        <div className="mt-12 grid grid-cols-1 gap-10 lg:grid-cols-[1.15fr_0.85fr] lg:gap-16">
           <Reveal delay={60}>
-            <Link to="/market" className="lg-glass lg-glass-hover group relative block h-full min-h-[260px] overflow-hidden">
+            <Link to="/market" className="eflux-card group relative block min-h-[320px] overflow-hidden">
               <img
                 src={participantsShot}
                 alt="The EFlux participants roster"
-                className="absolute inset-0 h-full w-full object-cover object-top opacity-50 transition-opacity duration-300 group-hover:opacity-60"
+                className="absolute inset-0 h-full w-full object-cover object-top opacity-50 transition-opacity duration-200 group-hover:opacity-60"
                 loading="lazy"
               />
               <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(6,10,18,0.08),rgba(6,10,18,0.88))]" />
@@ -437,61 +449,29 @@ export default function WelcomePage() {
                 </p>
                 <span className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">
                   Enter the market
-                  <ArrowRight size={15} className="transition-transform group-hover:translate-x-1" />
+                  <ArrowRight size={15} className="transition-transform duration-200 group-hover:translate-x-1" />
                 </span>
               </div>
             </Link>
           </Reveal>
           <Reveal delay={120}>
-            <Link
-              to="/vpps"
-              className="lg-glass lg-glass-hover group block h-full p-6"
-              style={{ background: "linear-gradient(135deg, rgba(34,183,232,0.16), rgba(10,18,32,0.4))" }}
-            >
-              <Bot size={20} className="text-[var(--accent)]" />
-              <h3 className="mt-4 text-2xl font-semibold text-[var(--text)]">Managed agent</h3>
-              <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">
-                Pick an endowment, write a persona, choose the model. The platform
-                runs the trading for you.
-              </p>
-              <span className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">
-                Deploy an agent
-                <ArrowRight size={15} className="transition-transform group-hover:translate-x-1" />
-              </span>
-            </Link>
-          </Reveal>
-          <Reveal delay={180}>
-            <a
-              href="/api/docs"
-              target="_blank"
-              rel="noreferrer"
-              className="lg-glass lg-glass-hover group block h-full p-6"
-            >
-              <TerminalSquare size={20} className="text-[var(--text-muted)]" />
-              <h3 className="mt-4 text-2xl font-semibold text-[var(--text)]">Your bot</h3>
-              <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">
-                Batch orders, idempotency keys, per-account rate limits, a Python SDK,
-                and an MCP server. Bring anything that speaks HTTP.
-              </p>
-              <span className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">
-                Open the API docs
-                <ArrowRight size={15} className="transition-transform group-hover:translate-x-1" />
-              </span>
-            </a>
-          </Reveal>
-          <Reveal delay={240}>
-            <Link to="/arena" className="lg-glass lg-glass-hover group block h-full p-6">
-              <Swords size={20} className="text-[var(--violet)]" />
-              <h3 className="mt-4 text-2xl font-semibold text-[var(--text)]">Model arena</h3>
-              <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">
-                Different LLMs steer identical power plants in the same market.
-                See whose strategy actually holds up.
-              </p>
-              <span className="mt-4 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">
-                Visit the arena
-                <ArrowRight size={15} className="transition-transform group-hover:translate-x-1" />
-              </span>
-            </Link>
+            <div className="divide-y divide-[var(--border)]">
+              <Link to="/vpps" className="group block py-5 first:pt-0">
+                <div className="flex items-center gap-3"><Bot size={19} className="text-[var(--accent)]" /><h3 className="text-xl font-semibold text-[var(--text)]">Managed agent</h3></div>
+                <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">Pick an endowment, write a persona, choose the model. The platform runs the trading for you.</p>
+                <span className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">Deploy an agent <ArrowRight size={15} className="transition-transform duration-200 group-hover:translate-x-1" /></span>
+              </Link>
+              <a href="/api/docs" target="_blank" rel="noreferrer" className="group block py-5">
+                <div className="flex items-center gap-3"><TerminalSquare size={19} className="text-[var(--text-muted)]" /><h3 className="text-xl font-semibold text-[var(--text)]">Your bot</h3></div>
+                <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">Batch orders, idempotency keys, per-account rate limits, a Python SDK, and an MCP server.</p>
+                <span className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">Open the API docs <ArrowRight size={15} className="transition-transform duration-200 group-hover:translate-x-1" /></span>
+              </a>
+              <Link to="/arena" className="group block py-5 pb-0">
+                <div className="flex items-center gap-3"><Swords size={19} className="text-[var(--violet)]" /><h3 className="text-xl font-semibold text-[var(--text)]">Model arena</h3></div>
+                <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">Different LLMs steer identical power plants in the same market. See whose strategy holds up.</p>
+                <span className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">Visit the arena <ArrowRight size={15} className="transition-transform duration-200 group-hover:translate-x-1" /></span>
+              </Link>
+            </div>
           </Reveal>
         </div>
       </section>

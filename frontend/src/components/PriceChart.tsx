@@ -377,7 +377,7 @@ export default function PriceChart({
   const hasCandles = candles.length > 0;
 
   const segBtn = (active: boolean) =>
-    `px-2.5 py-1 text-xs font-medium transition-colors ${
+    `px-2.5 py-1 text-xs font-medium transition-colors duration-200 ${
       active ? "bg-[var(--accent-strong)] text-[var(--accent-contrast)]" : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
     }`;
 
@@ -388,7 +388,7 @@ export default function PriceChart({
           type="button"
           onClick={resetZoom}
           title="Restore auto-follow (live view)"
-          className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+          className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors duration-200 ${
             autoFollow
               ? "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
               : "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent)] hover:bg-[var(--surface-hover)]"

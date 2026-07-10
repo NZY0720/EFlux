@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
-import { fetchMarketAgents } from "../api/client";
-import type { MarketAgent } from "../api/types";
+import { fetchArena } from "../api/client";
+import type { ArenaPayload, MarketAgent } from "../api/types";
 
 export interface PnlPoint {
   t: number; // wall-clock ms
@@ -13,6 +13,8 @@ export interface StrategyPnl {
   agents: MarketAgent[];
   /** Per-agent cumulative-PnL time series, accumulated client-side. */
   history: Record<string, PnlPoint[]>;
+  /** Arena evidence contract from the server. Null only before the first response. */
+  arena: Omit<ArenaPayload, "agents"> | null;
 }
 
 // Retain the full session's PnL history (~28h at a 2s cadence) so the equity
@@ -20,24 +22,25 @@ export interface StrategyPnl {
 const MAX_POINTS = 50_000;
 
 /**
- * Polls GET /market/agents and accumulates each agent's PnL over time on the
+ * Polls GET /market/arena and accumulates each agent's PnL over time on the
  * client (the backend exposes a point-in-time PnL but no history). Powers the
  * Real-Time dashboard's strategy leaderboard and equity curves.
  */
 export function useStrategyPnl(intervalMs = 2000): StrategyPnl {
   const [agents, setAgents] = useState<MarketAgent[]>([]);
   const [history, setHistory] = useState<Record<string, PnlPoint[]>>({});
+  const [arena, setArena] = useState<Omit<ArenaPayload, "agents"> | null>(null);
   const histRef = useRef<Record<string, PnlPoint[]>>({});
 
   useEffect(() => {
     let cancelled = false;
     const tick = async () => {
       try {
-        const data = await fetchMarketAgents();
+        const data = await fetchArena();
         if (cancelled) return;
         const now = Date.now();
         const next: Record<string, PnlPoint[]> = { ...histRef.current };
-        for (const a of data) {
+        for (const a of data.agents) {
           const pnl = Number(a.pnl);
           if (!Number.isFinite(pnl)) continue;
           const prev = next[a.name] ?? [];
@@ -45,7 +48,8 @@ export function useStrategyPnl(intervalMs = 2000): StrategyPnl {
         }
         histRef.current = next;
         setHistory(next);
-        setAgents(data);
+        setAgents(data.agents);
+        setArena({ min_trades: data.min_trades, min_observation_min: data.min_observation_min });
       } catch {
         /* transient backend hiccup — keep the last good data */
       }
@@ -58,5 +62,5 @@ export function useStrategyPnl(intervalMs = 2000): StrategyPnl {
     };
   }, [intervalMs]);
 
-  return { agents, history };
+  return { agents, history, arena };
 }
