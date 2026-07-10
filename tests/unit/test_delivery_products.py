@@ -8,6 +8,7 @@ from eflux.market.delivery import DeliveryPosition
 from eflux.market.products import (
     DeliveryInterval,
     average_power_kw_from_energy,
+    delivery_horizon,
     energy_kwh_from_average_power,
     next_delivery_interval,
 )
@@ -38,6 +39,13 @@ def test_next_product_targets_a_complete_future_interval():
     assert product.gate_closure == product.start
     assert product.is_trading_open(datetime(2026, 7, 11, 12, 3, 20, tzinfo=UTC))
     assert not product.is_trading_open(product.start)
+
+
+def test_delivery_horizon_contains_consecutive_complete_products():
+    products = delivery_horizon(datetime(2026, 7, 11, 12, 3, 20, tzinfo=UTC), count=3)
+    assert [product.start.minute for product in products] == [5, 10, 15]
+    assert all(product.duration_sec == 300 for product in products)
+    assert products[0].end == products[1].start
 
 
 def test_interval_rejects_gate_closure_after_delivery_starts():

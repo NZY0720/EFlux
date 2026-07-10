@@ -142,3 +142,35 @@ def next_delivery_interval(
         gate_closure=start,
         opens_at=start - timedelta(seconds=trading_horizon_sec),
     )
+
+
+def delivery_horizon(
+    at: datetime,
+    *,
+    count: int = 6,
+    market: str = "p2p",
+    interval_sec: int = DEFAULT_DELIVERY_INTERVAL_SEC,
+    trading_horizon_sec: int = DEFAULT_TRADING_HORIZON_SEC,
+) -> tuple[DeliveryInterval, ...]:
+    """Return consecutive complete products starting with the next interval."""
+
+    if count <= 0:
+        raise ValueError("count must be positive")
+    first = next_delivery_interval(
+        at,
+        market=market,
+        interval_sec=interval_sec,
+        trading_horizon_sec=trading_horizon_sec,
+    )
+    duration = timedelta(seconds=interval_sec)
+    window = timedelta(seconds=trading_horizon_sec)
+    return tuple(
+        DeliveryInterval(
+            market=market,
+            start=first.start + i * duration,
+            end=first.end + i * duration,
+            gate_closure=first.start + i * duration,
+            opens_at=first.start + i * duration - window,
+        )
+        for i in range(count)
+    )

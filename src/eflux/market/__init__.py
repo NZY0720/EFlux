@@ -1,19 +1,33 @@
-from eflux.market.delivery import DeliveryPosition, OrderPurpose
-from eflux.market.gateway import TradingGatewayV2
-from eflux.market.ledger import EconomicLedger, LedgerCategory
-from eflux.market.product_engine import ProductMatchingEngine
-from eflux.market.products import DeliveryInterval, TimeInForce
-from eflux.market.settlement import SettlementPrices, SettlementResult
+"""Public market V2 surface, loaded lazily to keep submodules acyclic."""
 
-__all__ = [
-    "DeliveryInterval",
-    "DeliveryPosition",
-    "EconomicLedger",
-    "LedgerCategory",
-    "OrderPurpose",
-    "ProductMatchingEngine",
-    "SettlementPrices",
-    "SettlementResult",
-    "TimeInForce",
-    "TradingGatewayV2",
-]
+from __future__ import annotations
+
+from importlib import import_module
+
+_EXPORTS = {
+    "DecisionRound": ("eflux.market.scheduler", "DecisionRound"),
+    "DeliveryInterval": ("eflux.market.products", "DeliveryInterval"),
+    "DeliveryPosition": ("eflux.market.delivery", "DeliveryPosition"),
+    "EconomicLedger": ("eflux.market.ledger", "EconomicLedger"),
+    "FairDecisionScheduler": ("eflux.market.scheduler", "FairDecisionScheduler"),
+    "LedgerCategory": ("eflux.market.ledger", "LedgerCategory"),
+    "OrderPurpose": ("eflux.market.delivery", "OrderPurpose"),
+    "ProductMatchingEngine": ("eflux.market.product_engine", "ProductMatchingEngine"),
+    "SettlementPrices": ("eflux.market.settlement", "SettlementPrices"),
+    "SettlementResult": ("eflux.market.settlement", "SettlementResult"),
+    "TimeInForce": ("eflux.market.products", "TimeInForce"),
+    "TradingGatewayV2": ("eflux.market.gateway", "TradingGatewayV2"),
+    "delivery_horizon": ("eflux.market.products", "delivery_horizon"),
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str):
+    try:
+        module_name, attribute = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(name) from exc
+    value = getattr(import_module(module_name), attribute)
+    globals()[name] = value
+    return value
