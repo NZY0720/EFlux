@@ -30,7 +30,10 @@ def test_derive_character_archetypes():
     assert derive_character(_params(gas_kw_max=20.0)).archetype == "dispatchable"
     assert derive_character(_params(battery_kwh=60.0, load_kw_base=11.0)).archetype == "arbitrageur"
     assert derive_character(_params(pv_kw_peak=9.0, load_kw_base=0.0)).archetype == "producer"
-    assert derive_character(_params(pv_kw_peak=0.0, load_kw_base=6.0, battery_kwh=8.0)).archetype == "consumer"
+    assert (
+        derive_character(_params(pv_kw_peak=0.0, load_kw_base=6.0, battery_kwh=8.0)).archetype
+        == "consumer"
+    )
     # roughly balanced endowment → neutral identity
     assert derive_character(_params(pv_kw_peak=4.0, load_kw_base=3.5, battery_kwh=8.0)).is_neutral()
 
@@ -81,8 +84,13 @@ def test_strategist_message_carries_endowment_and_character():
         recent_pnl=[], soc_frac=0.5, best_bid=48.0, best_ask=52.0, last_price=50.0
     )
     enriched = build_strategist_user_message(
-        recent_pnl=[], soc_frac=0.5, best_bid=48.0, best_ask=52.0, last_price=50.0,
-        endowment={"battery_kwh": 30.0}, character={"archetype": "arbitrageur"},
+        recent_pnl=[],
+        soc_frac=0.5,
+        best_bid=48.0,
+        best_ask=52.0,
+        last_price=50.0,
+        endowment={"battery_kwh": 30.0},
+        character={"archetype": "arbitrageur"},
     )
     assert "endowment" not in json.loads(base)
     data = json.loads(enriched)
@@ -129,11 +137,15 @@ def test_strategy_agent_character_changes_orders():
     consumer = derive_character(params)
     assert not consumer.is_neutral()
 
-    neutral_orders = StrategyAgent(price_ref=Decimal("50")).decide(_deficit_ctx(params))
-    consumer_orders = StrategyAgent(price_ref=Decimal("50"), character=consumer).decide(_deficit_ctx(params))
+    neutral_orders = StrategyAgent(price_ref=Decimal("50")).decide(_deficit_ctx(params)).orders
+    consumer_orders = (
+        StrategyAgent(price_ref=Decimal("50"), character=consumer)
+        .decide(_deficit_ctx(params))
+        .orders
+    )
 
     assert neutral_orders and consumer_orders
-    n_qty = sum(float(o.qty) for o in neutral_orders)
-    c_qty = sum(float(o.qty) for o in consumer_orders)
+    n_qty = sum(float(o.qty_kwh) for o in neutral_orders)
+    c_qty = sum(float(o.qty_kwh) for o in consumer_orders)
     # the cautious consumer character scales the covered quantity down
     assert c_qty < n_qty

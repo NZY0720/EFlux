@@ -69,7 +69,9 @@ def test_prompts_describe_binding_extreme_regime_levers():
     p2p = build_strategist_system_prompt(market_mode="p2p")
     realprice = build_strategist_system_prompt(market_mode="realprice")
     for prompt in (p2p, realprice):
-        assert '"halt":         <bool; BINDING: stop trading and hold' in prompt
+        assert '"halt":         <bool; BINDING: place no new orders' in prompt
+        assert "does NOT itself charge the battery" in prompt
+        assert "never stores energy by itself" in prompt
         assert "Read `regime_note` in the input and act on extremes" in prompt
     # passive_only is a book-market lever: BINDING maker-only in p2p, inert in realprice.
     assert '"passive_only": <bool; BINDING: maker-only, never cross the spread' in p2p
@@ -222,7 +224,9 @@ def test_apply_guidance_mode_pin_is_binding_and_wins_over_halt_and_avoid():
 
 def test_apply_guidance_vetoes_avoided_mode():
     a = StrategyAction(mode=StrategyMode.AGGRESSIVE_TAKER, qty_fraction=1.0)
-    out = apply_guidance(a, StrategyGuidance(avoid_modes=(StrategyMode.AGGRESSIVE_TAKER,), risk_budget=1.0))
+    out = apply_guidance(
+        a, StrategyGuidance(avoid_modes=(StrategyMode.AGGRESSIVE_TAKER,), risk_budget=1.0)
+    )
 
     assert out.mode is StrategyMode.HOLD_ENERGY
     assert out.qty_fraction == 1.0
@@ -239,25 +243,29 @@ def test_parse_meta_control_extracts_and_clamps():
                        "entropy_coef": 0.2, "kl_target": 0.001, "mode_reg_coef": 2.0}}"""
     m = parse_meta_control(raw)
     assert m.w_soc_mult == 2.0 and m.w_imbalance_mult == 0.5  # clamped to [0.5,2]
-    assert m.lr == 1e-3 and m.entropy_coef == 0.05            # clamped to ceilings
-    assert m.kl_target == 0.005 and m.mode_reg_coef == 1.0    # clamped to bounds
+    assert m.lr == 1e-3 and m.entropy_coef == 0.05  # clamped to ceilings
+    assert m.kl_target == 0.005 and m.mode_reg_coef == 1.0  # clamped to bounds
 
 
 def test_parse_meta_control_defaults_when_absent_or_garbage():
     assert parse_meta_control('{"risk_budget": 0.7}') == MetaControl()  # no meta block
-    assert parse_meta_control("not json at all") == MetaControl()       # tolerant, no raise
+    assert parse_meta_control("not json at all") == MetaControl()  # tolerant, no raise
 
 
 @pytest.mark.asyncio
 async def test_llm_strategist_refresh_parses_and_caches():
     class FakeClient:
         async def chat(self, messages, *, temperature=0.2):
-            return ('{"risk_budget": 0.3, "soc_target": 0.45, "avoid_modes": ["aggressive_taker"],'
-                    ' "meta_control": {"w_soc_mult": 1.5}}')
+            return (
+                '{"risk_budget": 0.3, "soc_target": 0.45, "avoid_modes": ["aggressive_taker"],'
+                ' "meta_control": {"w_soc_mult": 1.5}}'
+            )
 
     s = LLMStrategist(client=FakeClient())
     assert s.current_guidance() is None and s.current_meta() is None
-    g = await s.arefresh(recent_pnl=[1.0, -0.5], soc_frac=0.5, best_bid=49.0, best_ask=51.0, last_price=50.0)
+    g = await s.arefresh(
+        recent_pnl=[1.0, -0.5], soc_frac=0.5, best_bid=49.0, best_ask=51.0, last_price=50.0
+    )
     assert g.risk_budget == 0.3
     assert s.current_guidance() is g
     assert s.current_meta().w_soc_mult == 1.5  # meta cached alongside guidance

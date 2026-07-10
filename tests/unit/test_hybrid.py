@@ -18,68 +18,81 @@ from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
 
 
-def _make_ctx(*, pv_kw: float, load_kw: float, soc_kwh: float = 5.0, markup_floor: float = 0.1) -> AgentContext:
+def _make_ctx(
+    *, pv_kw: float, load_kw: float, soc_kwh: float = 5.0, markup_floor: float = 0.1
+) -> AgentContext:
     params = VPPParams(markup_floor=markup_floor)
     state = VPPState(sim_ts=datetime.now(UTC), soc_kwh=soc_kwh, pv_kw=pv_kw, load_kw=load_kw)
     state.update_net()
     state.pending_net_kwh = state.net_kw * 1.0
     market = MarketSnapshot(
-        sim_ts=state.sim_ts, best_bid=Decimal("48"), best_ask=Decimal("52"),
-        last_price=Decimal("50"), mid_price=Decimal("50"),
+        sim_ts=state.sim_ts,
+        best_bid=Decimal("48"),
+        best_ask=Decimal("52"),
+        last_price=Decimal("50"),
+        mid_price=Decimal("50"),
     )
     return AgentContext(
-        vpp_id=1, params=params, state=state,
+        vpp_id=1,
+        params=params,
+        state=state,
         pv=PV(kw_peak=params.pv_kw_peak),
-        battery=Battery(capacity_kwh=params.battery_kwh, max_power_kw=params.battery_kw_max, soc_kwh=soc_kwh),
+        battery=Battery(
+            capacity_kwh=params.battery_kwh, max_power_kw=params.battery_kw_max, soc_kwh=soc_kwh
+        ),
         load=FlexibleLoad(base_kw=params.load_kw_base),
-        market=market, rng=random.Random(0), tick_duration_h=1.0,
+        market=market,
+        rng=random.Random(0),
+        tick_duration_h=1.0,
     )
 
 
 def test_hybrid_without_strategist_matches_scripted_strategy():
     # No guidance → behaves like the scripted StrategyAgent (a sell of the surplus).
-    intents = HybridPolicyAgent(price_ref=Decimal("50.0")).decide(_make_ctx(pv_kw=5.0, load_kw=1.0))
-    assert len(intents) == 1 and intents[0].side == "sell"
-    assert intents[0].qty == Decimal("4.0000")
+    decision = HybridPolicyAgent(price_ref=Decimal("50.0")).decide(
+        _make_ctx(pv_kw=5.0, load_kw=1.0)
+    )
+    assert len(decision.orders) == 1 and decision.orders[0].side == "sell"
+    assert decision.orders[0].qty_kwh == Decimal("4.0000")
 
 
 def test_hybrid_guidance_scales_order_size():
     ctx = _make_ctx(pv_kw=5.0, load_kw=1.0)
-    guided = HybridPolicyAgent(
+    decision = HybridPolicyAgent(
         price_ref=Decimal("50.0"),
         strategist=StaticStrategist(StrategyGuidance(risk_budget=0.5)),
     ).decide(ctx)
     # risk_budget 0.5 halves the quoted quantity (soft prior), same side/price.
-    assert guided[0].side == "sell" and guided[0].qty == Decimal("2.0000")
+    assert decision.orders[0].side == "sell"
+    assert decision.orders[0].qty_kwh == Decimal("2.0000")
 
 
 def test_hybrid_guidance_can_bias_preferred_primitive():
     ctx = _make_ctx(pv_kw=5.0, load_kw=1.0)
-    intents = HybridPolicyAgent(
+    decision = HybridPolicyAgent(
         price_ref=Decimal("50.0"),
-        strategist=StaticStrategist(
-            StrategyGuidance(preferred_modes=(StrategyMode.LADDER_SELL,))
-        ),
+        strategist=StaticStrategist(StrategyGuidance(preferred_modes=(StrategyMode.LADDER_SELL,))),
     ).decide(ctx)
 
-    assert len(intents) == 3
-    assert {i.side for i in intents} == {"sell"}
-    assert sum(i.qty for i in intents) == Decimal("3.9999")
+    assert len(decision.orders) == 3
+    assert {order.side for order in decision.orders} == {"sell"}
+    assert sum(order.qty_kwh for order in decision.orders) == Decimal("3.9999")
 
 
 def test_hybrid_guidance_mode_pin_flows_into_compiled_orders():
     ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, soc_kwh=5.0)
-    intents = HybridPolicyAgent(
+    decision = HybridPolicyAgent(
         price_ref=Decimal("50.0"),
         strategist=StaticStrategist(
             StrategyGuidance(mode_pin=StrategyMode.BATTERY_ARBITRAGE, soc_target=0.4)
         ),
     ).decide(ctx)
 
-    assert len(intents) == 1
-    assert intents[0].side == "sell"
-    assert intents[0].dispatched is True
-    assert intents[0].qty == Decimal("1.0000")
+    assert len(decision.orders) == 1
+    assert decision.orders[0].side == "sell"
+    assert decision.orders[0].purpose.value == "battery"
+    # Default 3 kW inverter over a five-minute product can deliver 0.25 kWh.
+    assert decision.orders[0].qty_kwh == Decimal("0.2500")
 
 
 def test_hybrid_influence_stats_count_guidance_changes():
@@ -195,9 +208,11 @@ def test_hybrid_sync_context_with_llm_strategist_does_not_crash():
         async def chat(self, messages, *, temperature=0.2):
             return "{}"
 
-    agent = HybridPolicyAgent(strategist=LLMStrategist(client=FakeClient()), refresh_every_n_ticks=1)
-    intents = agent.decide(_make_ctx(pv_kw=5.0, load_kw=1.0))
-    assert len(intents) == 1  # decided fine; no background task scheduled without a loop
+    agent = HybridPolicyAgent(
+        strategist=LLMStrategist(client=FakeClient()), refresh_every_n_ticks=1
+    )
+    decision = agent.decide(_make_ctx(pv_kw=5.0, load_kw=1.0))
+    assert len(decision.orders) == 1  # decided fine; no background task scheduled without a loop
     assert agent._reflection_task is None
 
 
@@ -209,7 +224,9 @@ async def test_hybrid_schedules_offline_refresh_under_running_loop():
         async def chat(self, messages, *, temperature=0.2):
             return '{"risk_budget": 0.5, "soc_target": 0.6}'
 
-    agent = HybridPolicyAgent(strategist=LLMStrategist(client=FakeClient()), refresh_every_n_ticks=1)
+    agent = HybridPolicyAgent(
+        strategist=LLMStrategist(client=FakeClient()), refresh_every_n_ticks=1
+    )
     agent.decide(_make_ctx(pv_kw=5.0, load_kw=1.0))  # tick 1 → schedules a refresh
     assert agent._reflection_task is not None
     await agent._reflection_task  # let the off-path refresh complete

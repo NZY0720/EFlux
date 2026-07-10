@@ -23,6 +23,7 @@ from dataclasses import fields as dataclass_fields
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
+from eflux.agents.reflective.llm_client import LLMBudgetExceeded
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 
 log = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ class StrategyGuidance:
     preferred_modes: tuple[StrategyMode, ...] = ()
     avoid_modes: tuple[StrategyMode, ...] = ()
     mode_pin: StrategyMode | None = None  # binding primitive override for the next window
-    halt: bool = False  # binding curtail/self-store: no orders, surplus buffers into SOC
+    halt: bool = False  # binding no-new-orders; never implies physical battery charging
     passive_only: bool = False  # binding maker-only execution: never cross
     risk_budget: float = 1.0  # [0,1.5] — scales order size / aggressiveness
     price_bias_bps: float = 0.0  # [-200,200] — shifts quotes off fair value
@@ -109,7 +110,9 @@ def compact_forecast_for_strategist(forecast: object | None) -> dict | None:
         return None
     out: dict[str, dict[str, float | None]] = {}
     for target in _FORECAST_TARGETS:
-        series = forecast.get(target) if isinstance(forecast, dict) else getattr(forecast, target, None)
+        series = (
+            forecast.get(target) if isinstance(forecast, dict) else getattr(forecast, target, None)
+        )
         if series is None:
             continue
         horizons: dict[str, float | None] = {}
@@ -141,14 +144,14 @@ class MetaControl:
 
     # Reward-weight multipliers — WHAT the learner optimizes (applied on the policy).
     w_imbalance_mult: float = 1.0  # [0.5, 2.0]
-    w_soc_mult: float = 1.0        # [0.5, 2.0]
-    w_degrade_mult: float = 1.0    # [0.5, 2.0]
+    w_soc_mult: float = 1.0  # [0.5, 2.0]
+    w_degrade_mult: float = 1.0  # [0.5, 2.0]
     # Optimizer levers — HOW the learner updates.
-    lr: float = 3e-4               # [1e-5, 1e-3]
-    entropy_coef: float = 0.01     # [0, 0.05]
-    kl_target: float = 0.02        # [0.005, 0.05]
+    lr: float = 3e-4  # [1e-5, 1e-3]
+    entropy_coef: float = 0.01  # [0, 0.05]
+    kl_target: float = 0.02  # [0.005, 0.05]
     # Pull the policy's mode distribution toward preferred/avoid modes.
-    mode_reg_coef: float = 0.0     # [0, 1.0]
+    mode_reg_coef: float = 0.0  # [0, 1.0]
 
     def clamped(self) -> MetaControl:
         return MetaControl(
@@ -203,7 +206,7 @@ Return ONLY a JSON object (no markdown, no commentary):
     "preferred_modes": [<primitive names to favour>],
     "avoid_modes":     [<primitive names to discourage>],
     "mode_pin":        <primitive name or null; BINDING next-window override; use sparingly>,
-    "halt":         <bool; BINDING: stop trading and hold — surplus buffers into the battery. Use in oversupply/illiquidity>,
+    "halt":         <bool; BINDING: place no new orders. This does NOT itself charge the battery>,
     "passive_only": <bool; BINDING: maker-only, never cross the spread. Use when liquidity is thin>,
     "risk_budget":     <float in [0,1.5]; 1 = full size, >1 = press harder, <1 = cautious>,
     "price_bias_bps":  <float in [-200,200]; shifts quotes off fair value; positive = quote higher>,
@@ -221,13 +224,18 @@ Return ONLY a JSON object (no markdown, no commentary):
     }
   }
 Read `regime_note` in the input and act on extremes with the BINDING levers, not just soft advice:
-- Heavy oversupply / price collapsed near zero: do NOT keep dumping surplus. Set "halt": true (or "mode_pin": "hold_energy") to store it in the battery, add "liquidate_surplus" to "avoid_modes", lower "risk_budget", and set "meta_control".w_soc_mult below 1 so charging is not penalized.
+- Heavy oversupply / price collapsed near zero: do NOT keep dumping surplus. Prefer an explicit battery-charging primitive when SOC/power headroom exists. Use "halt" only to stop new orders when the physical position remains safe; it never stores energy by itself. Add "liquidate_surplus" to "avoid_modes", lower "risk_budget", and set "meta_control".w_soc_mult below 1 so charging is not penalized.
 - Thin/illiquid book: set "passive_only": true (p2p: prefer "passive_market_make").
 - Scarcity (bids elevated, few/no asks): press with "risk_budget" > 1 and prefer "aggressive_taker" / "cover_deficit".
 
 A `forecast` block may be present with 5m/1h/12h grid price, peer price, and irradiance.
 Act on it: charge or hold_energy ahead of forecast price spikes, be patient selling into a
 rising forecast, and press or de-risk ahead of a forecast collapse.
+
+A `performance_window` may contain recent real-USD PnL deltas, fills, rejection deltas,
+realized absolute imbalance, residual contract exposure, SOC, and open-order counts.
+Use changes across the window—not just the latest cumulative PnL—to diagnose whether the
+previous guidance improved execution. Avoid increasing risk after worsening imbalance or rejects.
 
 If the policy is learning well, omit "meta_control" or leave it at the defaults.
 mode_pin, halt, passive_only, and avoid_modes are BINDING; the other fields are soft, clamped priors — the tactical policy may override those, and out-of-range knobs are clipped. Stay within bounds."""
@@ -259,7 +267,7 @@ Return ONLY a JSON object (no markdown, no commentary):
     "preferred_modes": [<primitive names to favour>],
     "avoid_modes":     [<primitive names to discourage>],
     "mode_pin":        <primitive name or null; BINDING next-window override; use sparingly>,
-    "halt":         <bool; BINDING: stop trading and hold — surplus buffers into the battery. Use when the grid price collapses>,
+    "halt":         <bool; BINDING: place no new orders. This does NOT itself charge the battery>,
     "passive_only": <bool; no effect in this market (there is no book to quote into); leave false>,
     "risk_budget":     <float in [0,1.5]; 1 = full size, >1 = press harder, <1 = cautious>,
     "price_bias_bps":  <float in [-200,200]; shifts quotes off fair value; positive = quote higher>,
@@ -277,13 +285,18 @@ Return ONLY a JSON object (no markdown, no commentary):
     }
   }
 Read `regime_note` in the input and act on extremes with the BINDING levers, not just soft advice:
-- Grid price collapsed near zero / heavy solar oversupply: do NOT keep dumping surplus. Set "halt": true (or "mode_pin": "hold_energy") to store it in the battery, add "liquidate_surplus" to "avoid_modes", lower "risk_budget", and set "meta_control".w_soc_mult below 1 so charging is not penalized.
+- Grid price collapsed near zero / heavy solar oversupply: do NOT keep dumping surplus. Prefer "grid_charge_on_dip" only when SOC/power headroom exists. Use "halt" only to stop new orders when the physical position remains safe; it never stores energy by itself. Add "liquidate_surplus" to "avoid_modes", lower "risk_budget", and set "meta_control".w_soc_mult below 1 so charging is not penalized.
 - Grid price spike / scarcity hours: press with "risk_budget" > 1, prefer "grid_discharge_on_peak" / "cover_deficit", and avoid charging into the spike.
 - Whipsawing grid price: favour "wait_for_better" and battery buffering over chasing every move.
 
 A `forecast` block may be present with 5m/1h/12h grid price, peer price, and irradiance.
 Act on it: charge or hold_energy ahead of forecast price spikes, be patient selling into a
 rising forecast, and press or de-risk ahead of a forecast collapse.
+
+A `performance_window` may contain recent real-USD PnL deltas, fills, rejection deltas,
+realized absolute imbalance, residual contract exposure, SOC, and open-order counts.
+Use changes across the window—not just the latest cumulative PnL—to diagnose whether the
+previous guidance improved execution. Avoid increasing risk after worsening imbalance or rejects.
 
 If the policy is learning well, omit "meta_control" or leave it at the defaults. The market
 input's best_bid/best_ask are null here (no order book) — that is normal, not an error.
@@ -323,7 +336,11 @@ def allowed_modes_for_market(market_mode: str) -> set[StrategyMode]:
 def build_strategist_system_prompt(
     persona_prompt: str | None = None, *, market_mode: str = "p2p"
 ) -> str:
-    base = REALPRICE_STRATEGIST_SYSTEM_PROMPT if market_mode == "realprice" else STRATEGIST_SYSTEM_PROMPT
+    base = (
+        REALPRICE_STRATEGIST_SYSTEM_PROMPT
+        if market_mode == "realprice"
+        else STRATEGIST_SYSTEM_PROMPT
+    )
     base = (
         f"{base}\nThe input includes an `endowment` block (your VPP's own battery/PV/load/gas "
         "sizes) and a `character` block (archetype, risk_appetite, SOC band). Tailor guidance to "
@@ -336,12 +353,22 @@ def build_strategist_system_prompt(
 
 
 def build_strategist_user_message(
-    *, recent_pnl: list[float], soc_frac: float, best_bid: float | None,
-    best_ask: float | None, last_price: float | None, regime_note: str = "",
-    market_mode: str = "p2p", grid_raw_lmp: float | None = None,
-    grid_import_price: float | None = None, grid_export_price: float | None = None,
-    grid_status: str | None = None, forecast: dict | None = None,
-    endowment: dict | None = None, character: dict | None = None,
+    *,
+    recent_pnl: list[float],
+    soc_frac: float,
+    best_bid: float | None,
+    best_ask: float | None,
+    last_price: float | None,
+    regime_note: str = "",
+    market_mode: str = "p2p",
+    grid_raw_lmp: float | None = None,
+    grid_import_price: float | None = None,
+    grid_export_price: float | None = None,
+    grid_status: str | None = None,
+    forecast: dict | None = None,
+    endowment: dict | None = None,
+    character: dict | None = None,
+    performance_window: list[dict] | None = None,
 ) -> str:
     payload = {
         "market_mode": market_mode,
@@ -356,8 +383,12 @@ def build_strategist_user_message(
         payload.update(
             {
                 "grid_raw_lmp": None if grid_raw_lmp is None else round(float(grid_raw_lmp), 4),
-                "grid_import_price": None if grid_import_price is None else round(float(grid_import_price), 4),
-                "grid_export_price": None if grid_export_price is None else round(float(grid_export_price), 4),
+                "grid_import_price": None
+                if grid_import_price is None
+                else round(float(grid_import_price), 4),
+                "grid_export_price": None
+                if grid_export_price is None
+                else round(float(grid_export_price), 4),
                 "grid_status": grid_status,
             }
         )
@@ -368,6 +399,10 @@ def build_strategist_user_message(
         payload["endowment"] = endowment
     if character:
         payload["character"] = character
+    if performance_window:
+        # The producer already rounds and bounds the schema; slicing here is a
+        # final prompt-size guard for third-party strategist callers.
+        payload["performance_window"] = performance_window[-20:]
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -439,7 +474,9 @@ def parse_guidance(content: str, *, market_mode: str = "p2p") -> StrategyGuidanc
             mode_pin=_parse_mode_pin(data.get("mode_pin")),
             halt=_parse_bool(data.get("halt"), d.halt),
             passive_only=_parse_bool(data.get("passive_only"), d.passive_only),
-            risk_budget=_clamp(data.get("risk_budget", d.risk_budget), 0.0, RISK_BUDGET_MAX, d.risk_budget),
+            risk_budget=_clamp(
+                data.get("risk_budget", d.risk_budget), 0.0, RISK_BUDGET_MAX, d.risk_budget
+            ),
             price_bias_bps=_clamp(
                 data.get("price_bias_bps", d.price_bias_bps),
                 -PRICE_BIAS_BPS_MAX,
@@ -472,7 +509,9 @@ def external_guidance_from_dict(
         mode_pin=_parse_mode_pin(data.get("mode_pin")),
         halt=_parse_bool(data.get("halt"), d.halt),
         passive_only=_parse_bool(data.get("passive_only"), d.passive_only),
-        risk_budget=_clamp(data.get("risk_budget", d.risk_budget), 0.0, RISK_BUDGET_MAX, d.risk_budget),
+        risk_budget=_clamp(
+            data.get("risk_budget", d.risk_budget), 0.0, RISK_BUDGET_MAX, d.risk_budget
+        ),
         price_bias_bps=_clamp(
             data.get("price_bias_bps", d.price_bias_bps),
             -PRICE_BIAS_BPS_MAX,
@@ -533,8 +572,7 @@ def apply_guidance(action: StrategyAction, guidance: StrategyGuidance | None) ->
 
 @runtime_checkable
 class Strategist(Protocol):
-    def current_guidance(self) -> StrategyGuidance | None:
-        ...
+    def current_guidance(self) -> StrategyGuidance | None: ...
 
 
 @dataclass
@@ -589,9 +627,7 @@ class ExternalStrategist:
     def current_meta(self) -> MetaControl | None:
         return self._meta
 
-    def set_guidance(
-        self, guidance: StrategyGuidance, meta: MetaControl | None = None
-    ) -> dict:
+    def set_guidance(self, guidance: StrategyGuidance, meta: MetaControl | None = None) -> dict:
         """Adopt externally supplied (already clamped/sanitized) guidance and record
         the audit entry. Returns the entry so the API can echo what was applied."""
         self._guidance = guidance
@@ -660,12 +696,23 @@ class LLMStrategist:
         return self._meta
 
     async def arefresh(
-        self, *, recent_pnl: list[float], soc_frac: float, best_bid: float | None,
-        best_ask: float | None, last_price: float | None, regime_note: str = "",
-        market_mode: str = "p2p", grid_raw_lmp: float | None = None,
-        grid_import_price: float | None = None, grid_export_price: float | None = None,
-        grid_status: str | None = None, forecast: dict | None = None,
-        endowment: dict | None = None, character: dict | None = None,
+        self,
+        *,
+        recent_pnl: list[float],
+        soc_frac: float,
+        best_bid: float | None,
+        best_ask: float | None,
+        last_price: float | None,
+        regime_note: str = "",
+        market_mode: str = "p2p",
+        grid_raw_lmp: float | None = None,
+        grid_import_price: float | None = None,
+        grid_export_price: float | None = None,
+        grid_status: str | None = None,
+        forecast: dict | None = None,
+        endowment: dict | None = None,
+        character: dict | None = None,
+        performance_window: list[dict] | None = None,
     ) -> StrategyGuidance | None:
         if self.llm_gate is not None:
             if self.llm_gate.locked():
@@ -687,6 +734,7 @@ class LLMStrategist:
                     forecast=forecast,
                     endowment=endowment,
                     character=character,
+                    performance_window=performance_window,
                 )
         return await self._refresh_once(
             recent_pnl=recent_pnl,
@@ -703,15 +751,27 @@ class LLMStrategist:
             forecast=forecast,
             endowment=endowment,
             character=character,
+            performance_window=performance_window,
         )
 
     async def _refresh_once(
-        self, *, recent_pnl: list[float], soc_frac: float, best_bid: float | None,
-        best_ask: float | None, last_price: float | None, regime_note: str = "",
-        market_mode: str = "p2p", grid_raw_lmp: float | None = None,
-        grid_import_price: float | None = None, grid_export_price: float | None = None,
-        grid_status: str | None = None, forecast: dict | None = None,
-        endowment: dict | None = None, character: dict | None = None,
+        self,
+        *,
+        recent_pnl: list[float],
+        soc_frac: float,
+        best_bid: float | None,
+        best_ask: float | None,
+        last_price: float | None,
+        regime_note: str = "",
+        market_mode: str = "p2p",
+        grid_raw_lmp: float | None = None,
+        grid_import_price: float | None = None,
+        grid_export_price: float | None = None,
+        grid_status: str | None = None,
+        forecast: dict | None = None,
+        endowment: dict | None = None,
+        character: dict | None = None,
+        performance_window: list[dict] | None = None,
     ) -> StrategyGuidance | None:
         messages = [
             {
@@ -720,14 +780,26 @@ class LLMStrategist:
                     self.persona_prompt, market_mode=market_mode
                 ),
             },
-            {"role": "user", "content": build_strategist_user_message(
-                recent_pnl=recent_pnl, soc_frac=soc_frac, best_bid=best_bid,
-                best_ask=best_ask, last_price=last_price, regime_note=regime_note,
-                market_mode=market_mode, grid_raw_lmp=grid_raw_lmp,
-                grid_import_price=grid_import_price, grid_export_price=grid_export_price,
-                grid_status=grid_status, forecast=forecast,
-                endowment=endowment, character=character,
-            )},
+            {
+                "role": "user",
+                "content": build_strategist_user_message(
+                    recent_pnl=recent_pnl,
+                    soc_frac=soc_frac,
+                    best_bid=best_bid,
+                    best_ask=best_ask,
+                    last_price=last_price,
+                    regime_note=regime_note,
+                    market_mode=market_mode,
+                    grid_raw_lmp=grid_raw_lmp,
+                    grid_import_price=grid_import_price,
+                    grid_export_price=grid_export_price,
+                    grid_status=grid_status,
+                    forecast=forecast,
+                    endowment=endowment,
+                    character=character,
+                    performance_window=performance_window,
+                ),
+            },
         ]
         try:
             content = await asyncio.wait_for(
@@ -744,6 +816,19 @@ class LLMStrategist:
             self.ok_count += 1
             self.last_ok_ts = datetime.now(UTC)
             self.reflection_log.append(self._entry(ok=True, guidance=guidance, meta=meta))
+        except LLMBudgetExceeded as e:
+            self.skipped_count += 1
+            self.reflection_log.append(
+                self._entry(
+                    ok=False,
+                    guidance=self._guidance,
+                    meta=self._meta,
+                    error=str(e),
+                )
+            )
+            if self.raise_errors:
+                raise
+            log.warning("strategist refresh skipped: %s", e)
         except Exception as e:  # network error or unparseable response — keep prior
             self.fail_count += 1
             self.reflection_log.append(
@@ -755,7 +840,9 @@ class LLMStrategist:
                 )
             )
             if self.raise_errors:
-                log.error("strategist refresh failed (%s); raising in strict mode", type(e).__name__)
+                log.error(
+                    "strategist refresh failed (%s); raising in strict mode", type(e).__name__
+                )
                 raise
             log.warning("strategist refresh failed (%s); keeping prior guidance", type(e).__name__)
         return self._guidance
@@ -787,5 +874,6 @@ class LLMStrategist:
             "rationale": guidance.execution_style or "strategy guidance",
             "lesson": guidance.lesson,
             "meta_control": meta_dict,
+            "llm_usage": getattr(self.client, "usage", None),
             "error": None if error is None else error[:200],
         }

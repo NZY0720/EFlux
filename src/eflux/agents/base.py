@@ -153,6 +153,9 @@ class AgentContext:
     # this tick's gating runs). An online learner takes the tick-to-tick delta as
     # the invalid-order reward penalty; default 0.0 keeps existing agents/tests intact.
     risk_rejections_total: float = 0.0
+    # Cumulative absolute post-delivery imbalance (kWh) through the previous
+    # settled interval.  Slow strategists use the delta as realized feedback.
+    realized_imbalance_abs_kwh_total: float = 0.0
     # Latest platform forecast bundle. Phase-A only transports this signal; agents
     # ignore it until later phases opt in.
     forecast: ForecastBundle | None = None

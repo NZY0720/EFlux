@@ -2221,6 +2221,9 @@ class Simulator:
                 open_orders_net_kwh=self._open_balance_net(vpp.vpp_id, primary.interval_id),
                 open_orders=self._open_order_views(vpp.vpp_id, sim_ts),
                 risk_rejections_total=float(self.risk_rejections_by_vpp.get(vpp.vpp_id, 0)),
+                realized_imbalance_abs_kwh_total=float(
+                    self.imbalance_totals_by_vpp.get(vpp.vpp_id, {}).get("imbalance_kwh", 0.0)
+                ),
                 forecast=self._context_forecast(),
             )
 

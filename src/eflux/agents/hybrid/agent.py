@@ -14,6 +14,7 @@ dataclass with a `price_ref` field, so the scenario loader's cost diversificatio
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 from dataclasses import dataclass, field
 from decimal import Decimal
 
@@ -122,12 +123,20 @@ class HybridPolicyAgent(BaseAgent):
         self._price_dev_sum_bps = 0.0
         self._price_dev_n = 0
         self._last_fair: tuple[float, float] | None = None
+        self._performance_window: deque[dict] = deque(maxlen=20)
+        self._last_feedback_pnl_usd: float | None = None
+        self._last_feedback_rejections = 0.0
+        self._last_feedback_imbalance_kwh = 0.0
+        self._feedback_trade_count = 0
+        self._feedback_traded_kwh = 0.0
+        self._feedback_trade_cash_usd = 0.0
         # Named so the runner's existing _shutdown_reflections cancels it on stop.
         self._reflection_task: asyncio.Task | None = None
         # Off-tick PPO update future (online executor + async mode only).
         self._online_task: object | None = None
 
     def decide(self, ctx: AgentContext) -> AgentDecision:
+        self._capture_performance_feedback(ctx)
         self._maybe_refresh_guidance(ctx)
         guidance = self.strategist.current_guidance() if self.strategist is not None else None
         self._last_guidance = guidance
@@ -155,6 +164,12 @@ class HybridPolicyAgent(BaseAgent):
         fwd = getattr(self._executor, "record_trade", None)
         if callable(fwd):
             fwd(record)
+        try:
+            self._feedback_trade_count += 1
+            self._feedback_traded_kwh += abs(float(record.get("qty", 0.0)))
+            self._feedback_trade_cash_usd += float(record.get("cash_usd", 0.0))
+        except (TypeError, ValueError):
+            pass
         if self._last_fair is None:
             return
         fair_buy, fair_sell = self._last_fair
@@ -167,6 +182,45 @@ class HybridPolicyAgent(BaseAgent):
             return
         self._price_dev_sum_bps += dev_bps
         self._price_dev_n += 1
+
+    def _capture_performance_feedback(self, ctx: AgentContext) -> None:
+        """Snapshot the completed decision window for the slow strategist."""
+
+        pnl = float(ctx.state.pnl)
+        pnl_delta = (
+            0.0 if self._last_feedback_pnl_usd is None else pnl - self._last_feedback_pnl_usd
+        )
+        rejects = float(ctx.risk_rejections_total)
+        imbalance = float(ctx.realized_imbalance_abs_kwh_total)
+        projected = (
+            float(ctx.projected_net_kwh)
+            if ctx.projected_net_kwh is not None
+            else float(ctx.state.pending_net_kwh)
+        )
+        row = {
+            "sim_ts": ctx.state.sim_ts.isoformat(),
+            "pnl_usd": round(pnl, 6),
+            "pnl_delta_usd": round(pnl_delta, 6),
+            "trade_count": self._feedback_trade_count,
+            "traded_kwh": round(self._feedback_traded_kwh, 6),
+            "trade_cash_usd": round(self._feedback_trade_cash_usd, 6),
+            "rejection_delta": round(max(0.0, rejects - self._last_feedback_rejections), 3),
+            "realized_abs_imbalance_delta_kwh": round(
+                max(0.0, imbalance - self._last_feedback_imbalance_kwh), 6
+            ),
+            "projected_net_kwh": round(projected, 6),
+            "contracted_net_kwh": round(float(ctx.contracted_net_kwh), 6),
+            "residual_contract_exposure_kwh": round(projected - float(ctx.contracted_net_kwh), 6),
+            "soc_frac": round(float(ctx.battery.soc_frac), 4),
+            "open_orders": len(ctx.open_orders),
+        }
+        self._performance_window.append(row)
+        self._last_feedback_pnl_usd = pnl
+        self._last_feedback_rejections = rejects
+        self._last_feedback_imbalance_kwh = imbalance
+        self._feedback_trade_count = 0
+        self._feedback_traded_kwh = 0.0
+        self._feedback_trade_cash_usd = 0.0
 
     def _push_meta_and_modes(self, guidance: StrategyGuidance | None) -> None:
         """Steer an online PPO executor with the strategist's cached, clamped MetaControl
@@ -226,7 +280,7 @@ class HybridPolicyAgent(BaseAgent):
         grid = m.external_market
         self._reflection_task = loop.create_task(
             arefresh(
-                recent_pnl=[float(ctx.state.pnl)],
+                recent_pnl=[float(row["pnl_usd"]) for row in self._performance_window],
                 soc_frac=ctx.battery.soc_frac,
                 best_bid=float(m.best_bid) if m.best_bid is not None else None,
                 best_ask=float(m.best_ask) if m.best_ask is not None else None,
@@ -240,6 +294,7 @@ class HybridPolicyAgent(BaseAgent):
                 forecast=compact_forecast_for_strategist(ctx.forecast),
                 endowment=endowment_summary(ctx.params),
                 character=self.character.to_public(),
+                performance_window=list(self._performance_window),
             )
         )
 

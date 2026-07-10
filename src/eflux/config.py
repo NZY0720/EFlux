@@ -165,6 +165,12 @@ class Settings(BaseSettings):
     # Reasoning models can take >30s per completion; the old 30s default made
     # most reflections die with ReadTimeout.
     llm_timeout_sec: float = 120.0
+    # Shared hard ceiling across strategist/chat/model clients.  Rates are an
+    # explicit conservative estimate because OpenAI-compatible providers expose
+    # heterogeneous model catalogues and billing.
+    llm_budget_usd: float = 10.0
+    llm_input_cost_per_million_tokens: float = 3.0
+    llm_output_cost_per_million_tokens: float = 15.0
     # LLM-managed hybrid agents. Off by default so no key/base_url is needed for
     # default dev runs. The EFLUX_REFLECTIVE_* env names are kept for compatibility.
     reflective_enabled: bool = False
