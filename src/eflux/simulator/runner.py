@@ -72,6 +72,9 @@ CHAT_INTERVAL_TICKS = 15
 # mentioned), capped so the room can't devolve into an endless reply chain with no new topics.
 CHAT_REPLY_PROB = 0.45
 CHAT_MAX_REPLY_STREAK = 3
+# Reserved economic counterparty for imports/exports.  It is intentionally not
+# a SimulatorVPP and is never stepped, settled as a DER, or ranked.
+GRID_PARTICIPANT_ID = -10_000_000
 
 
 def _agent_chat_client(agent: BaseAgent):
@@ -256,6 +259,7 @@ class Simulator:
                 node=settings.external_market_node,
                 price=fallback_price,
                 detail="Waiting for first CAISO OASIS refresh.",
+                transaction_fee=Decimal(str(settings.external_market_transaction_fee)),
             )
         else:
             self.external_market_client = None
@@ -2060,6 +2064,66 @@ class Simulator:
             self.engine.register(product)
         return products
 
+    def _refresh_realprice_grid(
+        self, sim_ts: datetime, products: tuple[DeliveryInterval, ...]
+    ) -> None:
+        """Reprice deep external-grid liquidity through the normal V2 gateway.
+
+        The system counterparty is an infinite bus: it owns no DER and receives
+        no SOC/physical settlement.  Every participant fill still creates a
+        normal contract and two real-USD ledger entries.  Replacing both sides
+        each decision round makes quote changes atomic from agents' perspective.
+        """
+
+        if self.market_mode != "realprice":
+            return
+        if GRID_PARTICIPANT_ID not in self.gateway.participants:
+            self.gateway.register_system_participant(participant_id=GRID_PARTICIPANT_ID)
+
+        wall_ts = datetime.now(UTC)
+        self.gateway.cancel_all(GRID_PARTICIPANT_ID, sim_ts=sim_ts, wall_ts=wall_ts)
+        quote = self._external_market_quote
+        settings = get_settings()
+        can_trade_fallback = (
+            settings.external_market_enabled
+            and settings.realprice_fallback_trading_enabled
+            and quote.status == "synthetic"
+        )
+        if not (quote.external_trading_enabled or can_trade_fallback):
+            return
+
+        floor = self.gateway.limits.price_min
+        ceiling = self.gateway.limits.price_max
+        export_price = min(ceiling, max(floor, quote.export_price))
+        import_price = min(ceiling, max(floor, quote.import_price))
+        if import_price < export_price:
+            import_price = export_price
+        depth = self.gateway.limits.qty_max_kwh
+        requests = tuple(
+            OrderRequest(
+                side=side,
+                price=price,
+                qty_kwh=depth,
+                interval=product,
+                purpose=OrderPurpose.SYSTEM_GRID,
+                time_in_force=TimeInForce.GOOD_TIL_GATE,
+            )
+            for product in products
+            for side, price in (("buy", export_price), ("sell", import_price))
+        )
+        execution = self.gateway.execute_decision(
+            participant_id=GRID_PARTICIPANT_ID,
+            decision=AgentDecision(orders=requests),
+            sim_ts=sim_ts,
+            wall_ts=wall_ts,
+        )
+        if execution.rejected:
+            raise RuntimeError(
+                "grid liquidity rejected: "
+                + "; ".join(rejection.reason for rejection in execution.rejected)
+            )
+        self._record_product_trades(execution.trades)
+
     def _step_physics(
         self, vpp: SimulatorVPP, sim_ts: datetime, interval: DeliveryInterval
     ) -> None:
@@ -2108,6 +2172,7 @@ class Simulator:
         return primary.end
 
     def _run_decision_round(self, sim_ts: datetime, products: tuple[DeliveryInterval, ...]) -> None:
+        self._refresh_realprice_grid(sim_ts, products)
         primary = products[0]
         snapshot = self.engine.snapshot(primary.interval_id, depth_levels=5)
         market = MarketSnapshot.from_engine(

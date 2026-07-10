@@ -28,6 +28,10 @@ class OrderPurpose(StrEnum):
     BATTERY = "battery"
     DISPATCHABLE = "dispatchable"
     FLEX_LOAD = "flex_load"
+    # Reserved for the external infinite-bus liquidity provider.  It has no
+    # behind-the-meter SOC or generation schedule and is never available to
+    # ordinary internal/external VPPs.
+    SYSTEM_GRID = "system_grid"
 
 
 @dataclass(slots=True)

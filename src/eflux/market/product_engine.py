@@ -76,6 +76,7 @@ class ProductMatchingEngine:
         self._closed: set[str] = set()
         self._last_price: dict[str, Decimal] = {}
         self._latest_price: Decimal | None = None
+        self._liquidity_provider_ids: set[int] = set()
         self._trade_count = 0
         self._next_order_id = 1
         self._next_trade_id = 1
@@ -116,6 +117,16 @@ class ProductMatchingEngine:
             raise ValueError(f"conflicting definition for delivery product {iid}")
         self._intervals[iid] = interval
         self._books.setdefault(iid, OrderBook())
+
+    def register_liquidity_provider(self, participant_id: int) -> None:
+        """Mark a system counterparty allowed to trade real-price products.
+
+        A ``realprice`` product is a price-taking external-grid venue, not a
+        peer auction.  Ordinary participants may therefore match only against
+        one of these ids; P2P products retain normal peer matching.
+        """
+
+        self._liquidity_provider_ids.add(participant_id)
 
     def allocate_order_id(self) -> int:
         """Reserve a globally unique id before risk/resource reservation.
@@ -339,15 +350,16 @@ class ProductMatchingEngine:
             if taker.side == "sell" and taker.price > level.price:
                 break
             available += sum(
-                order.remaining_qty for order in level.orders if order.vpp_id != taker.vpp_id
+                order.remaining_qty
+                for order in level.orders
+                if self._eligible_counterparty(taker, order)
             )
             if available >= taker.qty:
                 return True
         return False
 
-    @staticmethod
     def _best_maker(
-        book: OrderBook, opposite_side: str, taker: ProductLimitOrder
+        self, book: OrderBook, opposite_side: str, taker: ProductLimitOrder
     ) -> ProductLimitOrder | None:
         for level in book._book(opposite_side).values():
             if taker.side == "buy" and taker.price < level.price:
@@ -355,9 +367,19 @@ class ProductMatchingEngine:
             if taker.side == "sell" and taker.price > level.price:
                 break
             for order in level.orders:
-                if order.vpp_id != taker.vpp_id:
+                if self._eligible_counterparty(taker, order):
                     return order  # type: ignore[return-value]
         return None
+
+    def _eligible_counterparty(self, taker: ProductLimitOrder, maker: ProductLimitOrder) -> bool:
+        if maker.vpp_id == taker.vpp_id:
+            return False
+        if taker.interval.market != "realprice":
+            return True
+        return (
+            taker.vpp_id in self._liquidity_provider_ids
+            or maker.vpp_id in self._liquidity_provider_ids
+        )
 
     @staticmethod
     def _order_event(

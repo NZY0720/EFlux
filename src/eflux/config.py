@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     external_market_node: str = "TH_SP15_GEN-APND"
     external_market_fallback_price: float = 50.0
     external_market_transaction_fee: float = 2.0
+    # Keep the real-price venue operational on the clearly labelled synthetic
+    # fallback while CAISO is temporarily unavailable.  Disabling the external
+    # market entirely still disables grid liquidity.
+    realprice_fallback_trading_enabled: bool = True
     imbalance_settlement_enabled: bool = True
     imbalance_penalty_mult: float = 2.0
     curtailment_price_per_mwh: float = 0.0

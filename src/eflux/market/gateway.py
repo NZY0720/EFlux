@@ -66,6 +66,7 @@ class ParticipantRuntimeV2:
     participant_id: int
     params: VPPParams
     battery: Battery
+    is_system: bool = False
     balance_reservations: BalanceReservationBook = field(default_factory=BalanceReservationBook)
     positions: dict[str, DeliveryPosition] = field(default_factory=dict)
     reserved_cash_by_order: dict[int, Decimal] = field(default_factory=dict)
@@ -126,6 +127,34 @@ class TradingGatewayV2:
             ),
         )
         self.participants[participant_id] = runtime
+        return runtime
+
+    def register_system_participant(
+        self, *, participant_id: int, params: VPPParams | None = None
+    ) -> ParticipantRuntimeV2:
+        """Register an infinite-bus counterparty without fake DER physics."""
+
+        if participant_id in self.participants:
+            raise ValueError(f"participant {participant_id} is already registered")
+        system_params = params or VPPParams(
+            pv_kw_peak=0.0,
+            battery_kwh=0.0,
+            battery_kw_max=0.0,
+            load_kw_base=0.0,
+        )
+        runtime = ParticipantRuntimeV2(
+            participant_id=participant_id,
+            params=system_params,
+            battery=Battery(
+                capacity_kwh=0.0,
+                max_power_kw=0.0,
+                eta_rt=system_params.battery_eta_rt,
+                soc_kwh=0.0,
+            ),
+            is_system=True,
+        )
+        self.participants[participant_id] = runtime
+        self.engine.register_liquidity_provider(participant_id)
         return runtime
 
     def set_balance_projection(
@@ -328,7 +357,10 @@ class TradingGatewayV2:
 
         # Simulate release + replacement against deep-copied resource books first.
         trial = copy.deepcopy(runtime)
-        self._release_unfilled(trial, old)
+        old_request = self._requests.get(old.order_id)
+        if old_request is None:
+            raise GatewayRejected("order metadata is unavailable")
+        self._release_request(trial, old.order_id, old_request)
         trial_id = self.engine.allocate_order_id()
         try:
             self._reserve(trial, trial_id, replacement.replacement)
@@ -387,8 +419,27 @@ class TradingGatewayV2:
 
         for trade in result.trades:
             self._apply_trade(trade)
-        if result.killed or request.time_in_force != TimeInForce.GOOD_TIL_GATE:
+        # Makers that were completely consumed are no longer in the venue.
+        # Their committed resource schedules remain in the reservation books,
+        # but the request/ownership metadata is no longer needed.
+        for filled_order_id in {
+            order_id
+            for trade in result.trades
+            for order_id in (trade.buy_order_id, trade.sell_order_id)
+            if order_id != oid
+        }:
+            if self.engine.get(filled_order_id) is None:
+                self._requests.pop(filled_order_id, None)
+                self._owners.pop(filled_order_id, None)
+        terminal_order = (
+            result.killed
+            or request.time_in_force != TimeInForce.GOOD_TIL_GATE
+            or result.order.remaining_qty <= 0
+        )
+        if terminal_order:
             self._release_request(runtime, oid, request)
+            self._requests.pop(oid, None)
+            self._owners.pop(oid, None)
         return oid, result.trades
 
     def _validate_static(
@@ -401,6 +452,10 @@ class TradingGatewayV2:
     ) -> None:
         lim = self.limits
         self.engine.register(request.interval)
+        if runtime.is_system and request.purpose != OrderPurpose.SYSTEM_GRID:
+            raise GatewayRejected("system participant orders require purpose=system_grid")
+        if not runtime.is_system and request.purpose == OrderPurpose.SYSTEM_GRID:
+            raise GatewayRejected("purpose=system_grid is reserved for the grid counterparty")
         if request.price < lim.price_min or request.price > lim.price_max:
             raise GatewayRejected(
                 f"price {request.price} outside [{lim.price_min}, {lim.price_max}]"
@@ -412,16 +467,20 @@ class TradingGatewayV2:
         open_count = len(self.engine.open_orders_for_vpp(runtime.participant_id))
         if open_count >= lim.max_open_orders and not replacing:
             raise GatewayRejected(f"exceeds {lim.max_open_orders} open orders")
-        needed = self._worst_case_cash_debit(request)
-        available = self.available_credit_usd(runtime.participant_id) + released_credit_usd
-        if needed > available:
-            raise GatewayRejected(
-                f"cash reservation {needed} USD exceeds available credit {available} USD"
-            )
+        if not runtime.is_system:
+            needed = self._worst_case_cash_debit(request)
+            available = self.available_credit_usd(runtime.participant_id) + released_credit_usd
+            if needed > available:
+                raise GatewayRejected(
+                    f"cash reservation {needed} USD exceeds available credit {available} USD"
+                )
 
     def _reserve(self, runtime: ParticipantRuntimeV2, order_id: int, request: OrderRequest) -> None:
         qty = float(request.qty_kwh)
-        if request.purpose == OrderPurpose.BALANCE:
+        if request.purpose == OrderPurpose.SYSTEM_GRID:
+            if not runtime.is_system:
+                raise ReservationRejected("system-grid liquidity is reserved")
+        elif request.purpose == OrderPurpose.BALANCE:
             runtime.balance_reservations.reserve(
                 order_id=order_id,
                 interval=request.interval,
@@ -445,7 +504,8 @@ class TradingGatewayV2:
             )
         else:
             raise ReservationRejected(f"unknown order purpose {request.purpose!r}")
-        runtime.reserved_cash_by_order[order_id] = self._worst_case_cash_debit(request)
+        if not runtime.is_system:
+            runtime.reserved_cash_by_order[order_id] = self._worst_case_cash_debit(request)
 
     def _apply_trade(self, trade: ProductTrade) -> None:
         for order_id, participant_id, side in (
@@ -455,8 +515,11 @@ class TradingGatewayV2:
             runtime = self._participant(participant_id)
             request = self._requests[order_id]
             self._commit_resource(runtime, order_id, request, float(trade.qty))
-            runtime.position(trade.interval).record_contract(side=side, qty_kwh=float(trade.qty))
-            self._consume_cash_reservation(runtime, order_id, request, trade.qty)
+            if not runtime.is_system:
+                runtime.position(trade.interval).record_contract(
+                    side=side, qty_kwh=float(trade.qty)
+                )
+                self._consume_cash_reservation(runtime, order_id, request, trade.qty)
         self.ledger.post_trade(
             buyer_id=trade.buy_vpp_id,
             seller_id=trade.sell_vpp_id,
@@ -474,7 +537,10 @@ class TradingGatewayV2:
         request: OrderRequest,
         qty: float,
     ) -> None:
-        if request.purpose == OrderPurpose.BALANCE:
+        if request.purpose == OrderPurpose.SYSTEM_GRID:
+            if not runtime.is_system:
+                raise GatewayRejected("system-grid fill reached a non-system participant")
+        elif request.purpose == OrderPurpose.BALANCE:
             runtime.balance_reservations.commit_fill(order_id, qty)
         elif request.purpose == OrderPurpose.BATTERY:
             runtime.battery_reservations.commit_fill(order_id, qty)
@@ -488,6 +554,8 @@ class TradingGatewayV2:
         if request is None:
             return
         self._release_request(runtime, order.order_id, request)
+        self._requests.pop(order.order_id, None)
+        self._owners.pop(order.order_id, None)
 
     def _release_request(
         self,
@@ -495,7 +563,9 @@ class TradingGatewayV2:
         order_id: int,
         request: OrderRequest,
     ) -> None:
-        if request.purpose == OrderPurpose.BALANCE:
+        if request.purpose == OrderPurpose.SYSTEM_GRID:
+            pass
+        elif request.purpose == OrderPurpose.BALANCE:
             runtime.balance_reservations.cancel_unfilled(order_id)
         elif request.purpose == OrderPurpose.BATTERY:
             runtime.battery_reservations.cancel_unfilled(order_id)
