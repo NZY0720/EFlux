@@ -66,4 +66,37 @@ def test_dispatchable_commitment_survives_cancel_of_unfilled_remainder():
     assert book.cancel_unfilled(1) == pytest.approx(0.3)
     projection = book.project()[0]
     assert reservation.committed_terminal_kwh == pytest.approx(0.2)
-    assert projection.contracted_terminal_kwh == pytest.approx(0.2)
+    assert projection.committed_terminal_kwh == pytest.approx(0.2)
+    assert projection.resting_terminal_kwh == pytest.approx(0.0)
+
+
+def test_later_dispatchable_quote_cannot_depend_on_optional_prior_ramp():
+    first = _interval(5)
+    second = _interval(10)
+    book = DispatchableReservationBook(
+        max_power_kw=10.0,
+        ramp_kw_per_min=1.0,
+        initial_power_kw=0.0,
+    )
+    # The first resting quote creates a reachable 0..5 kW envelope.  An 8 kW
+    # second-interval quote would be feasible only if the first quote filled.
+    book.reserve(order_id=1, interval=first, terminal_kwh=5.0 * 5.0 / 60.0)
+    with pytest.raises(ReservationRejected, match="ramp envelope"):
+        book.reserve(order_id=2, interval=second, terminal_kwh=8.0 * 5.0 / 60.0)
+
+
+def test_committed_prior_dispatch_may_back_later_ramp():
+    first = _interval(5)
+    second = _interval(10)
+    book = DispatchableReservationBook(
+        max_power_kw=10.0,
+        ramp_kw_per_min=1.0,
+        initial_power_kw=0.0,
+    )
+    first_energy = 5.0 * 5.0 / 60.0
+    book.reserve(order_id=1, interval=first, terminal_kwh=first_energy)
+    book.commit_fill(1, first_energy)
+    book.reserve(order_id=2, interval=second, terminal_kwh=8.0 * 5.0 / 60.0)
+    projections = book.project()
+    assert projections[0].average_power_min_kw == pytest.approx(5.0)
+    assert projections[0].average_power_max_kw == pytest.approx(5.0)

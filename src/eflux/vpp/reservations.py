@@ -2,9 +2,9 @@
 
 All quantities at the public boundary are terminal kWh.  Reservations translate
 them into cell-energy and shared-inverter constraints over complete delivery
-intervals.  Every resting order is assumed to fill; that conservative rule is
-what prevents several individually-valid quotes from collectively overselling
-SOC or interval power.
+intervals.  Resting orders are optional outcomes, so cross-interval validation
+tracks the full reachable SOC or power envelope.  This prevents a later quote
+from relying on an earlier quote that may never fill.
 """
 
 from __future__ import annotations
@@ -35,10 +35,14 @@ class BatteryOrderReservation:
 @dataclass(frozen=True, slots=True)
 class BatteryIntervalProjection:
     interval_id: str
-    starting_soc_kwh: float
-    ending_soc_kwh: float
-    charge_terminal_kwh: float
-    discharge_terminal_kwh: float
+    starting_soc_min_kwh: float
+    starting_soc_max_kwh: float
+    ending_soc_min_kwh: float
+    ending_soc_max_kwh: float
+    committed_charge_terminal_kwh: float
+    resting_charge_terminal_kwh: float
+    committed_discharge_terminal_kwh: float
+    resting_discharge_terminal_kwh: float
 
 
 class BatteryReservationBook:
@@ -132,6 +136,13 @@ class BatteryReservationBook:
         self.initial_soc_kwh = ending_soc_kwh
         self.project()
 
+    def committed_terminal_kwh(self, interval_id: str, side: str) -> float:
+        return sum(
+            reservation.committed_terminal_kwh
+            for reservation in self._orders.values()
+            if reservation.interval.interval_id == interval_id and reservation.side == side
+        )
+
     def project(self) -> tuple[BatteryIntervalProjection, ...]:
         grouped: dict[str, list[BatteryOrderReservation]] = {}
         intervals: dict[str, DeliveryInterval] = {}
@@ -140,49 +151,76 @@ class BatteryReservationBook:
             grouped.setdefault(iid, []).append(reservation)
             intervals[iid] = reservation.interval
 
-        soc = self.initial_soc_kwh
+        # Resting orders are optional outcomes. Track the full reachable SOC
+        # envelope so a later sell can never depend on an earlier buy that has
+        # not actually filled.
+        soc_min = self.initial_soc_kwh
+        soc_max = self.initial_soc_kwh
         projections: list[BatteryIntervalProjection] = []
         for iid in sorted(grouped, key=lambda key: intervals[key].start):
             interval = intervals[iid]
-            charge = sum(r.total_terminal_kwh for r in grouped[iid] if r.side == "buy")
-            discharge = sum(r.total_terminal_kwh for r in grouped[iid] if r.side == "sell")
+            committed_charge = sum(
+                r.committed_terminal_kwh for r in grouped[iid] if r.side == "buy"
+            )
+            resting_charge = sum(r.resting_terminal_kwh for r in grouped[iid] if r.side == "buy")
+            committed_discharge = sum(
+                r.committed_terminal_kwh for r in grouped[iid] if r.side == "sell"
+            )
+            resting_discharge = sum(
+                r.resting_terminal_kwh for r in grouped[iid] if r.side == "sell"
+            )
+            max_charge = committed_charge + resting_charge
+            max_discharge = committed_discharge + resting_discharge
             terminal_power_budget = energy_kwh_from_average_power(
                 self.max_power_kw, interval.duration_sec
             )
             # One bidirectional inverter cannot charge and discharge at full power
             # simultaneously. Reserve the gross terminal throughput, not the net.
-            if charge + discharge > terminal_power_budget + 1e-9:
+            if max_charge + max_discharge > terminal_power_budget + 1e-9:
                 raise ReservationRejected(
-                    f"interval {iid} gross battery energy {charge + discharge:.6f} kWh "
+                    f"interval {iid} gross battery energy "
+                    f"{max_charge + max_discharge:.6f} kWh "
                     f"exceeds {terminal_power_budget:.6f} kWh power budget"
                 )
-            cell_charge = charge * self.eta_charge
-            cell_discharge = discharge / self.eta_discharge
+            max_cell_charge = max_charge * self.eta_charge
+            max_cell_discharge = max_discharge / self.eta_discharge
+            committed_cell_charge = committed_charge * self.eta_charge
+            committed_cell_discharge = committed_discharge / self.eta_discharge
             # Worst-case intra-interval ordering: discharge can happen before charge,
             # or charge before discharge. Both sequences must be feasible.
-            if cell_discharge > soc + 1e-9:
+            if max_cell_discharge > soc_min + 1e-9:
                 raise ReservationRejected(
-                    f"interval {iid} discharge requires {cell_discharge:.6f} cell kWh; "
-                    f"only {soc:.6f} available"
+                    f"interval {iid} discharge requires {max_cell_discharge:.6f} cell kWh; "
+                    f"only worst-case {soc_min:.6f} available"
                 )
-            if cell_charge > self.capacity_kwh - soc + 1e-9:
+            if max_cell_charge > self.capacity_kwh - soc_max + 1e-9:
                 raise ReservationRejected(
-                    f"interval {iid} charge requires {cell_charge:.6f} cell kWh room; "
-                    f"only {self.capacity_kwh - soc:.6f} available"
+                    f"interval {iid} charge requires {max_cell_charge:.6f} cell kWh room; "
+                    f"only worst-case {self.capacity_kwh - soc_max:.6f} available"
                 )
-            end = soc + cell_charge - cell_discharge
-            if not -1e-9 <= end <= self.capacity_kwh + 1e-9:
-                raise ReservationRejected(f"interval {iid} ends at infeasible SOC {end:.6f}")
+            # Low envelope: optional discharges fill, optional charges do not.
+            end_min = soc_min + committed_cell_charge - max_cell_discharge
+            # High envelope: optional charges fill, optional discharges do not.
+            end_max = soc_max + max_cell_charge - committed_cell_discharge
+            if end_min < -1e-9 or end_max > self.capacity_kwh + 1e-9:
+                raise ReservationRejected(
+                    f"interval {iid} yields infeasible SOC envelope [{end_min:.6f}, {end_max:.6f}]"
+                )
             projections.append(
                 BatteryIntervalProjection(
                     interval_id=iid,
-                    starting_soc_kwh=soc,
-                    ending_soc_kwh=min(self.capacity_kwh, max(0.0, end)),
-                    charge_terminal_kwh=charge,
-                    discharge_terminal_kwh=discharge,
+                    starting_soc_min_kwh=soc_min,
+                    starting_soc_max_kwh=soc_max,
+                    ending_soc_min_kwh=max(0.0, end_min),
+                    ending_soc_max_kwh=min(self.capacity_kwh, end_max),
+                    committed_charge_terminal_kwh=committed_charge,
+                    resting_charge_terminal_kwh=resting_charge,
+                    committed_discharge_terminal_kwh=committed_discharge,
+                    resting_discharge_terminal_kwh=resting_discharge,
                 )
             )
-            soc = end
+            soc_min = end_min
+            soc_max = end_max
         return tuple(projections)
 
     @staticmethod
@@ -271,6 +309,13 @@ class BalanceReservationBook:
         }
         self._projected_net_kwh.pop(interval_id, None)
 
+    def committed_terminal_kwh(self, interval_id: str, side: str) -> float:
+        return sum(
+            reservation.committed_terminal_kwh
+            for reservation in self._orders.values()
+            if reservation.interval.interval_id == interval_id and reservation.side == side
+        )
+
     def _validate_interval(self, interval_id: str) -> None:
         projected = self._projected_net_kwh[interval_id]
         orders = [
@@ -293,9 +338,12 @@ class BalanceReservationBook:
 @dataclass(frozen=True, slots=True)
 class DispatchableIntervalProjection:
     interval_id: str
-    contracted_terminal_kwh: float
-    scheduled_terminal_kwh: float
-    average_power_kw: float
+    committed_terminal_kwh: float
+    resting_terminal_kwh: float
+    scheduled_committed_terminal_kwh: float
+    scheduled_max_terminal_kwh: float
+    average_power_min_kw: float
+    average_power_max_kw: float
 
 
 class DispatchableReservationBook:
@@ -358,6 +406,25 @@ class DispatchableReservationBook:
         self.initial_power_kw = ending_power_kw
         self.project()
 
+    def committed_terminal_kwh(self, interval_id: str) -> float:
+        return sum(
+            reservation.committed_terminal_kwh
+            for reservation in self._orders.values()
+            if reservation.interval.interval_id == interval_id
+        )
+
+    def scheduled_terminal_kwh(self, interval_id: str) -> float:
+        projection = next(
+            (item for item in self.project() if item.interval_id == interval_id), None
+        )
+        return 0.0 if projection is None else projection.scheduled_committed_terminal_kwh
+
+    def scheduled_power_kw(self, interval_id: str) -> float:
+        projection = next(
+            (item for item in self.project() if item.interval_id == interval_id), None
+        )
+        return 0.0 if projection is None else projection.average_power_min_kw
+
     def project(self) -> tuple[DispatchableIntervalProjection, ...]:
         grouped: dict[str, list[SimpleOrderReservation]] = {}
         intervals: dict[str, DeliveryInterval] = {}
@@ -365,21 +432,27 @@ class DispatchableReservationBook:
             iid = reservation.interval.interval_id
             grouped.setdefault(iid, []).append(reservation)
             intervals[iid] = reservation.interval
-        prior_power = self.initial_power_kw
+        prior_power_min = self.initial_power_kw
+        prior_power_max = self.initial_power_kw
         prior_interval: DeliveryInterval | None = None
         out: list[DispatchableIntervalProjection] = []
         for iid in sorted(grouped, key=lambda key: intervals[key].start):
             interval = intervals[iid]
-            contracted = sum(order.total_terminal_kwh for order in grouped[iid])
+            committed = sum(order.committed_terminal_kwh for order in grouped[iid])
+            resting = sum(order.resting_terminal_kwh for order in grouped[iid])
             min_energy = energy_kwh_from_average_power(self.min_power_kw, interval.duration_sec)
-            scheduled = max(contracted, min_energy) if contracted > 0.0 else 0.0
+            scheduled_committed = max(committed, min_energy) if committed > 0.0 else 0.0
+            scheduled_max = (
+                max(committed + resting, min_energy) if committed + resting > 0.0 else 0.0
+            )
             max_energy = energy_kwh_from_average_power(self.max_power_kw, interval.duration_sec)
-            if scheduled > max_energy + 1e-9:
+            if scheduled_max > max_energy + 1e-9:
                 raise ReservationRejected(
-                    f"dispatchable energy {scheduled:.6f} kWh exceeds interval capacity "
+                    f"dispatchable energy {scheduled_max:.6f} kWh exceeds interval capacity "
                     f"{max_energy:.6f} kWh"
                 )
-            power = scheduled * 3600.0 / interval.duration_sec
+            power_min = scheduled_committed * 3600.0 / interval.duration_sec
+            power_max = scheduled_max * 3600.0 / interval.duration_sec
             if self.ramp_kw_per_min is not None:
                 if prior_interval is None:
                     ramp_minutes = interval.duration_sec / 60.0
@@ -389,13 +462,29 @@ class DispatchableReservationBook:
                         (interval.start - prior_interval.start).total_seconds() / 60.0,
                     )
                 allowed = self.ramp_kw_per_min * ramp_minutes
-                if abs(power - prior_power) > allowed + 1e-9:
+                # Both resting-order outcomes must be deliverable: all optional
+                # orders can fill, or none can fill, independently per interval.
+                required = max(
+                    abs(power_max - prior_power_min),
+                    abs(prior_power_max - power_min),
+                )
+                if required > allowed + 1e-9:
                     raise ReservationRejected(
-                        f"dispatchable ramp {abs(power - prior_power):.6f} kW exceeds "
-                        f"{allowed:.6f} kW"
+                        f"dispatchable ramp envelope {required:.6f} kW exceeds {allowed:.6f} kW"
                     )
-            out.append(DispatchableIntervalProjection(iid, contracted, scheduled, power))
-            prior_power = power
+            out.append(
+                DispatchableIntervalProjection(
+                    interval_id=iid,
+                    committed_terminal_kwh=committed,
+                    resting_terminal_kwh=resting,
+                    scheduled_committed_terminal_kwh=scheduled_committed,
+                    scheduled_max_terminal_kwh=scheduled_max,
+                    average_power_min_kw=power_min,
+                    average_power_max_kw=power_max,
+                )
+            )
+            prior_power_min = power_min
+            prior_power_max = power_max
             prior_interval = interval
         return tuple(out)
 

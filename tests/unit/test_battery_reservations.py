@@ -60,12 +60,18 @@ def test_fill_becomes_commitment_and_cancel_releases_only_unfilled_part():
     assert len(book.orders) == 1
 
 
-def test_future_charge_can_back_a_later_discharge_but_not_beyond_projected_soc():
+def test_unfilled_future_charge_cannot_back_a_later_discharge():
     book = _book(soc=0.5, power=12.0)
     book.reserve(order_id=1, interval=_interval(5), side="buy", terminal_kwh=0.5)
-    book.reserve(order_id=2, interval=_interval(10), side="sell", terminal_kwh=0.9)
-    with pytest.raises(ReservationRejected, match="only"):
-        book.reserve(order_id=3, interval=_interval(10), side="sell", terminal_kwh=0.05)
+    with pytest.raises(ReservationRejected, match="worst-case"):
+        book.reserve(order_id=2, interval=_interval(10), side="sell", terminal_kwh=0.5)
+
+
+def test_committed_future_charge_can_back_a_later_discharge():
+    book = _book(soc=0.5, power=12.0)
+    book.reserve(order_id=1, interval=_interval(5), side="buy", terminal_kwh=0.5)
+    book.commit_fill(1, 0.5)
+    book.reserve(order_id=2, interval=_interval(10), side="sell", terminal_kwh=0.5)
 
 
 def test_settling_interval_removes_commitments_and_reanchors_soc():
