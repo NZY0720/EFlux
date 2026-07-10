@@ -69,6 +69,21 @@ def test_gas_revenue_at_marginal_cost_has_zero_economic_profit():
     assert ledger.balance(1) == Decimal("0.000000")
 
 
+def test_dispatchable_startup_cost_is_booked_separately():
+    ledger = EconomicLedger()
+    position = DeliveryPosition(_interval(), dispatchable_generation_kwh=1.0)
+    result = settle_delivery_position(
+        ledger,
+        participant_id=1,
+        position=position,
+        prices=SettlementPrices(Decimal("0"), Decimal("100")),
+        occurred_at=position.interval.end,
+        dispatchable_startup_cost_usd=Decimal("0.25"),
+    )
+    assert result.startup_cost_usd == Decimal("0.250000")
+    assert ledger.breakdown(1)[LedgerCategory.DISPATCHABLE_STARTUP] == Decimal("-0.250000")
+
+
 def test_degradation_and_unserved_load_are_explicit_economic_costs():
     ledger = EconomicLedger()
     position = DeliveryPosition(

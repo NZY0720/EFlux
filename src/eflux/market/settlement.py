@@ -41,6 +41,7 @@ class SettlementResult:
     imbalance_kwh: float
     imbalance_usd: Decimal
     fuel_cost_usd: Decimal
+    startup_cost_usd: Decimal
     degradation_cost_usd: Decimal
     curtailment_usd: Decimal
     unserved_load_cost_usd: Decimal
@@ -50,6 +51,7 @@ class SettlementResult:
         return (
             self.imbalance_usd
             - self.fuel_cost_usd
+            - self.startup_cost_usd
             - self.degradation_cost_usd
             + self.curtailment_usd
             - self.unserved_load_cost_usd
@@ -64,6 +66,7 @@ def settle_delivery_position(
     prices: SettlementPrices,
     occurred_at: datetime,
     fuel_cost_per_mwh: Decimal = Decimal("0"),
+    dispatchable_startup_cost_usd: Decimal = Decimal("0"),
     battery_degradation_cost_per_mwh_throughput: Decimal = Decimal("0"),
     battery_cell_throughput_kwh: Decimal = Decimal("0"),
 ) -> SettlementResult:
@@ -77,6 +80,7 @@ def settle_delivery_position(
     position.validate()
     for name, value in (
         ("fuel_cost_per_mwh", fuel_cost_per_mwh),
+        ("dispatchable_startup_cost_usd", dispatchable_startup_cost_usd),
         (
             "battery_degradation_cost_per_mwh_throughput",
             battery_degradation_cost_per_mwh_throughput,
@@ -95,6 +99,7 @@ def settle_delivery_position(
     fuel_cost = usd_for_energy(
         fuel_cost_per_mwh, Decimal(str(position.dispatchable_generation_kwh))
     )
+    startup_cost = dispatchable_startup_cost_usd.quantize(Decimal("0.000001"))
     degradation = usd_for_energy(
         battery_degradation_cost_per_mwh_throughput, battery_cell_throughput_kwh
     )
@@ -132,6 +137,15 @@ def settle_delivery_position(
             interval=interval,
             reference_id=iid,
         )
+    if startup_cost:
+        ledger.post(
+            participant_id=participant_id,
+            category=LedgerCategory.DISPATCHABLE_STARTUP,
+            amount_usd=-startup_cost,
+            occurred_at=occurred_at,
+            interval=interval,
+            reference_id=iid,
+        )
     if degradation:
         ledger.post(
             participant_id=participant_id,
@@ -165,6 +179,7 @@ def settle_delivery_position(
         imbalance_kwh=imbalance,
         imbalance_usd=imbalance_usd,
         fuel_cost_usd=fuel_cost,
+        startup_cost_usd=startup_cost,
         degradation_cost_usd=degradation,
         curtailment_usd=curtailment,
         unserved_load_cost_usd=unserved,

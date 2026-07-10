@@ -73,6 +73,13 @@ def test_interval_rejects_gate_closure_after_delivery_starts():
             1,
             0,
         ),
+        # A flexible-load buy becomes additional metered consumption.
+        (
+            DeliveryPosition(_interval(), flexible_load_demand_kwh=1, contracted_buy_kwh=1),
+            -1,
+            -1,
+            0,
+        ),
         # A 1 kWh sale backed by only 0.75 kWh physical delivery is 0.25 kWh short.
         (
             DeliveryPosition(_interval(), renewable_generation_kwh=0.75, contracted_sell_kwh=1),

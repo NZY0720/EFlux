@@ -42,6 +42,7 @@ class DeliveryPosition:
     battery_charge_terminal_kwh: float = 0.0
     battery_discharge_terminal_kwh: float = 0.0
     dispatchable_generation_kwh: float = 0.0
+    flexible_load_demand_kwh: float = 0.0
     contracted_buy_kwh: float = 0.0
     contracted_sell_kwh: float = 0.0
 
@@ -56,7 +57,11 @@ class DeliveryPosition:
 
     @property
     def served_load_kwh(self) -> float:
-        return self.load_demand_kwh - self.unserved_load_kwh
+        return self.total_load_demand_kwh - self.unserved_load_kwh
+
+    @property
+    def total_load_demand_kwh(self) -> float:
+        return self.load_demand_kwh + self.flexible_load_demand_kwh
 
     @property
     def delivered_renewable_kwh(self) -> float:
@@ -89,14 +94,15 @@ class DeliveryPosition:
             "battery_charge_terminal_kwh",
             "battery_discharge_terminal_kwh",
             "dispatchable_generation_kwh",
+            "flexible_load_demand_kwh",
             "contracted_buy_kwh",
             "contracted_sell_kwh",
         ):
             self._require_nonnegative(getattr(self, field), field)
         if self.curtailed_generation_kwh > self.renewable_generation_kwh + tolerance:
             raise ValueError("curtailed generation cannot exceed renewable generation")
-        if self.unserved_load_kwh > self.load_demand_kwh + tolerance:
-            raise ValueError("unserved load cannot exceed load demand")
+        if self.unserved_load_kwh > self.total_load_demand_kwh + tolerance:
+            raise ValueError("unserved load cannot exceed total load demand")
 
     @staticmethod
     def _require_nonnegative(value: float, field: str) -> None:

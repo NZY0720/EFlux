@@ -34,6 +34,7 @@ class LedgerCategory(StrEnum):
     TRANSACTION_FEE = "transaction_fee"
     MESSAGE_FEE = "message_fee"
     FUEL = "fuel"
+    DISPATCHABLE_STARTUP = "dispatchable_startup"
     BATTERY_DEGRADATION = "battery_degradation"
     IMBALANCE = "imbalance"
     CURTAILMENT = "curtailment"

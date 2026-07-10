@@ -62,6 +62,11 @@ carry one explicit purpose:
 - `dispatchable`: fuel-backed scheduled generation;
 - `flex_load`: explicitly scheduled flexible demand.
 
+`load_demand_kwh` is uncontrolled/base demand. A filled `flex_load` buy adds
+`flexible_load_demand_kwh` at the meter during delivery; it is not counted in
+the base load a second time. Resting flexible-load buys reserve interval-level
+controllable demand capacity, and only fills become physical consumption.
+
 ## Settlement timing
 
 Trading creates contractual positions but does not immediately mutate SOC.

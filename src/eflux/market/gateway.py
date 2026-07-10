@@ -27,6 +27,7 @@ from eflux.vpp.reservations import (
     BalanceReservationBook,
     BatteryReservationBook,
     DispatchableReservationBook,
+    FlexibleLoadReservationBook,
     ReservationRejected,
 )
 
@@ -71,6 +72,9 @@ class ParticipantRuntimeV2:
     current_dispatchable_power_kw: float = 0.0
     battery_reservations: BatteryReservationBook = field(init=False)
     dispatchable_reservations: DispatchableReservationBook = field(init=False)
+    flex_load_reservations: FlexibleLoadReservationBook = field(
+        default_factory=FlexibleLoadReservationBook
+    )
 
     def __post_init__(self) -> None:
         self.battery_reservations = BatteryReservationBook(
@@ -129,6 +133,13 @@ class TradingGatewayV2:
     ) -> None:
         self._participant(participant_id).balance_reservations.set_projection(
             interval, net_injection_kwh
+        )
+
+    def set_flex_load_capacity(
+        self, participant_id: int, interval: DeliveryInterval, terminal_kwh: float
+    ) -> None:
+        self._participant(participant_id).flex_load_reservations.set_capacity(
+            interval, terminal_kwh
         )
 
     def execute_decision(
@@ -234,6 +245,14 @@ class TradingGatewayV2:
         scheduled_gas = runtime.dispatchable_reservations.scheduled_terminal_kwh(iid)
         gas_power = runtime.dispatchable_reservations.scheduled_power_kw(iid)
         position.dispatchable_generation_kwh = scheduled_gas
+        position.flexible_load_demand_kwh = runtime.flex_load_reservations.committed_terminal_kwh(
+            iid
+        )
+        startup_cost = (
+            Decimal(str(runtime.params.gas_startup_cost_usd))
+            if gas_power > 1e-9 and runtime.current_dispatchable_power_kw <= 1e-9
+            else Decimal("0")
+        )
         result = settle_delivery_position(
             self.ledger,
             participant_id=participant_id,
@@ -241,6 +260,7 @@ class TradingGatewayV2:
             prices=prices,
             occurred_at=occurred_at,
             fuel_cost_per_mwh=Decimal(str(runtime.params.gas_cost_per_mwh)),
+            dispatchable_startup_cost_usd=startup_cost,
             battery_degradation_cost_per_mwh_throughput=Decimal(
                 str(runtime.params.battery_degradation_cost_per_mwh_throughput)
             ),
@@ -249,6 +269,7 @@ class TradingGatewayV2:
         runtime.battery_reservations.settle_interval(iid, ending_soc_kwh=runtime.battery.soc_kwh)
         runtime.dispatchable_reservations.settle_interval(iid, ending_power_kw=gas_power)
         runtime.balance_reservations.settle_interval(iid)
+        runtime.flex_load_reservations.settle_interval(iid)
         runtime.current_dispatchable_power_kw = gas_power
         self._drop_interval_orders(participant_id, iid)
         return result
@@ -394,8 +415,12 @@ class TradingGatewayV2:
             runtime.dispatchable_reservations.reserve(
                 order_id=order_id, interval=request.interval, terminal_kwh=qty
             )
+        elif request.purpose == OrderPurpose.FLEX_LOAD:
+            runtime.flex_load_reservations.reserve(
+                order_id=order_id, interval=request.interval, terminal_kwh=qty
+            )
         else:
-            raise ReservationRejected("flex-load reservation is not configured")
+            raise ReservationRejected(f"unknown order purpose {request.purpose!r}")
         runtime.reserved_cash_by_order[order_id] = self._worst_case_cash_debit(request)
 
     def _apply_trade(self, trade: ProductTrade) -> None:
@@ -431,6 +456,8 @@ class TradingGatewayV2:
             runtime.battery_reservations.commit_fill(order_id, qty)
         elif request.purpose == OrderPurpose.DISPATCHABLE:
             runtime.dispatchable_reservations.commit_fill(order_id, qty)
+        elif request.purpose == OrderPurpose.FLEX_LOAD:
+            runtime.flex_load_reservations.commit_fill(order_id, qty)
 
     def _release_unfilled(self, runtime: ParticipantRuntimeV2, order: ProductLimitOrder) -> None:
         request = self._requests.get(order.order_id)
@@ -450,6 +477,8 @@ class TradingGatewayV2:
             runtime.battery_reservations.cancel_unfilled(order_id)
         elif request.purpose == OrderPurpose.DISPATCHABLE:
             runtime.dispatchable_reservations.cancel_unfilled(order_id)
+        elif request.purpose == OrderPurpose.FLEX_LOAD:
+            runtime.flex_load_reservations.cancel_unfilled(order_id)
         runtime.reserved_cash_by_order.pop(order_id, None)
 
     def _consume_cash_reservation(

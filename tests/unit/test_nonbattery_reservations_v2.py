@@ -8,6 +8,7 @@ from eflux.market.products import DeliveryInterval
 from eflux.vpp.reservations import (
     BalanceReservationBook,
     DispatchableReservationBook,
+    FlexibleLoadReservationBook,
     ReservationRejected,
 )
 
@@ -35,6 +36,18 @@ def test_balance_side_must_match_projected_position():
     with pytest.raises(ReservationRejected, match="projected surplus"):
         book.reserve(order_id=1, interval=interval, side="sell", terminal_kwh=0.1)
     book.reserve(order_id=2, interval=interval, side="buy", terminal_kwh=1.0)
+
+
+def test_flexible_load_orders_share_explicit_controllable_capacity():
+    interval = _interval()
+    book = FlexibleLoadReservationBook()
+    book.set_capacity(interval, 0.5)
+    book.reserve(order_id=1, interval=interval, terminal_kwh=0.3)
+    with pytest.raises(ReservationRejected, match="controllable capacity"):
+        book.reserve(order_id=2, interval=interval, terminal_kwh=0.21)
+    book.commit_fill(1, 0.2)
+    assert book.cancel_unfilled(1) == pytest.approx(0.1)
+    assert book.committed_terminal_kwh(interval.interval_id) == pytest.approx(0.2)
 
 
 def test_dispatchable_orders_share_interval_capacity():

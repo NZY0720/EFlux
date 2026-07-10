@@ -259,3 +259,97 @@ def test_replace_reuses_credit_reserved_by_original_order():
     )
     assert replaced.accepted_order_ids
     assert not replaced.rejected
+
+
+def test_flexible_load_fill_becomes_physical_consumption():
+    gateway = _gateway()
+    interval = _interval()
+    gateway.set_balance_projection(1, interval, 0.5)
+    gateway.set_flex_load_capacity(2, interval, 0.5)
+    gateway.execute_decision(
+        participant_id=1,
+        decision=AgentDecision(orders=(_request(interval, side="sell", qty="0.5"),)),
+        sim_ts=NOW,
+        wall_ts=NOW,
+    )
+    bought = gateway.execute_decision(
+        participant_id=2,
+        decision=AgentDecision(
+            orders=(
+                _request(
+                    interval,
+                    side="buy",
+                    qty="0.5",
+                    purpose=OrderPurpose.FLEX_LOAD,
+                ),
+            )
+        ),
+        sim_ts=NOW,
+        wall_ts=NOW,
+    )
+    assert len(bought.trades) == 1
+    gateway.close_interval(interval, sim_ts=interval.start, wall_ts=interval.start)
+    gateway.record_meter_data(1, interval, renewable_generation_kwh=0.5)
+    gateway.record_meter_data(2, interval)
+    prices = SettlementPrices(Decimal("40"), Decimal("100"))
+    gateway.settle_participant(1, interval, prices=prices, occurred_at=interval.end)
+    result = gateway.settle_participant(2, interval, prices=prices, occurred_at=interval.end)
+    position = gateway.participants[2].positions[interval.interval_id]
+    assert position.flexible_load_demand_kwh == pytest.approx(0.5)
+    assert result.imbalance_kwh == pytest.approx(0.0)
+
+
+def test_gateway_charges_gas_startup_once_on_transition_from_off():
+    gateway = TradingGatewayV2()
+    gateway.register_participant(
+        participant_id=1,
+        params=VPPParams(
+            pv_kw_peak=0,
+            battery_kwh=0,
+            battery_kw_max=0,
+            load_kw_base=0,
+            gas_kw_max=12,
+            gas_cost_per_mwh=60,
+            gas_startup_cost_usd=0.25,
+        ),
+    )
+    gateway.register_participant(
+        participant_id=2,
+        params=VPPParams(
+            pv_kw_peak=0,
+            battery_kwh=0,
+            battery_kw_max=0,
+            load_kw_base=2,
+        ),
+    )
+    interval = _interval()
+    gateway.set_balance_projection(2, interval, -1.0)
+    gateway.execute_decision(
+        participant_id=1,
+        decision=AgentDecision(
+            orders=(
+                _request(
+                    interval,
+                    side="sell",
+                    price="60",
+                    purpose=OrderPurpose.DISPATCHABLE,
+                ),
+            )
+        ),
+        sim_ts=NOW,
+        wall_ts=NOW,
+    )
+    gateway.execute_decision(
+        participant_id=2,
+        decision=AgentDecision(orders=(_request(interval, side="buy", price="60"),)),
+        sim_ts=NOW,
+        wall_ts=NOW,
+    )
+    gateway.close_interval(interval, sim_ts=interval.start, wall_ts=interval.start)
+    gateway.settle_participant(
+        1,
+        interval,
+        prices=SettlementPrices(Decimal("40"), Decimal("100")),
+        occurred_at=interval.end,
+    )
+    assert gateway.ledger.breakdown(1)[LedgerCategory.DISPATCHABLE_STARTUP] == Decimal("-0.250000")

@@ -335,6 +335,86 @@ class BalanceReservationBook:
             )
 
 
+class FlexibleLoadReservationBook:
+    """Reserve controllable consumption for buy orders.
+
+    The capacity is terminal energy above the interval's uncontrolled base
+    load.  A fill converts that optional consumption into scheduled physical
+    demand; it is therefore deliberately separate from ``BalanceReservationBook``.
+    """
+
+    def __init__(self) -> None:
+        self._capacity_kwh: dict[str, float] = {}
+        self._orders: dict[int, SimpleOrderReservation] = {}
+
+    def set_capacity(self, interval: DeliveryInterval, terminal_kwh: float) -> None:
+        if not math.isfinite(terminal_kwh) or terminal_kwh < 0.0:
+            raise ValueError("terminal_kwh must be finite and non-negative")
+        old = self._capacity_kwh.get(interval.interval_id)
+        self._capacity_kwh[interval.interval_id] = terminal_kwh
+        try:
+            self._validate_interval(interval.interval_id)
+        except ReservationRejected:
+            if old is None:
+                del self._capacity_kwh[interval.interval_id]
+            else:
+                self._capacity_kwh[interval.interval_id] = old
+            raise
+
+    def reserve(
+        self, *, order_id: int, interval: DeliveryInterval, terminal_kwh: float
+    ) -> SimpleOrderReservation:
+        if order_id in self._orders:
+            raise ValueError(f"order {order_id} already has a flexible-load reservation")
+        BatteryReservationBook._require_positive(terminal_kwh, "terminal_kwh")
+        if interval.interval_id not in self._capacity_kwh:
+            raise ReservationRejected(
+                f"no flexible-load capacity for interval {interval.interval_id}"
+            )
+        reservation = SimpleOrderReservation(order_id, interval, "buy", terminal_kwh)
+        self._orders[order_id] = reservation
+        try:
+            self._validate_interval(interval.interval_id)
+        except ReservationRejected:
+            del self._orders[order_id]
+            raise
+        return reservation
+
+    def commit_fill(self, order_id: int, terminal_kwh: float) -> None:
+        _commit_simple_fill(self._orders, order_id, terminal_kwh)
+
+    def cancel_unfilled(self, order_id: int) -> float:
+        return _cancel_simple_unfilled(self._orders, order_id)
+
+    def settle_interval(self, interval_id: str) -> None:
+        self._orders = {
+            oid: order
+            for oid, order in self._orders.items()
+            if order.interval.interval_id != interval_id
+        }
+        self._capacity_kwh.pop(interval_id, None)
+
+    def committed_terminal_kwh(self, interval_id: str) -> float:
+        return sum(
+            order.committed_terminal_kwh
+            for order in self._orders.values()
+            if order.interval.interval_id == interval_id
+        )
+
+    def _validate_interval(self, interval_id: str) -> None:
+        reserved = sum(
+            order.total_terminal_kwh
+            for order in self._orders.values()
+            if order.interval.interval_id == interval_id
+        )
+        capacity = self._capacity_kwh[interval_id]
+        if reserved > capacity + 1e-9:
+            raise ReservationRejected(
+                f"flexible-load buys {reserved:.6f} kWh exceed controllable "
+                f"capacity {capacity:.6f} kWh"
+            )
+
+
 @dataclass(frozen=True, slots=True)
 class DispatchableIntervalProjection:
     interval_id: str
