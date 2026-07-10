@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from eflux.agents.base import AgentContext, BaseAgent
 from eflux.agents.decision import AgentDecision, OrderRequest
@@ -101,7 +101,7 @@ class TruthfulAgent(BaseAgent):
         purpose: OrderPurpose,
     ) -> None:
         price = Decimal(str(price_f)).quantize(Decimal("0.0001"))
-        qty = Decimal(str(qty_f)).quantize(Decimal("0.0001"))
+        qty = Decimal(str(qty_f)).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
         if price.is_finite() and qty >= self.min_qty:
             requests.append(
                 OrderRequest(
@@ -139,7 +139,7 @@ class TruthfulAgent(BaseAgent):
                 OrderRequest(
                     side=batt_side,
                     price=Decimal(str(batt_price)).quantize(Decimal("0.0001")),
-                    qty_kwh=Decimal(str(batt_qty)).quantize(Decimal("0.0001")),
+                    qty_kwh=Decimal(str(batt_qty)).quantize(Decimal("0.0001"), rounding=ROUND_DOWN),
                     interval=ctx.primary_interval,
                     purpose=OrderPurpose.BATTERY,
                     ttl_sec=ctx.decision_interval_sec,

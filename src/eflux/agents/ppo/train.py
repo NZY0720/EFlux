@@ -25,8 +25,8 @@ from datetime import date
 from pathlib import Path
 
 from eflux.agents.ppo.primitive_encoding import (
-    OBS_V1,
     OBS_V3,
+    OBS_V4,
     action_profile_for_market,
     primitive_modes_for,
 )
@@ -45,8 +45,8 @@ def run_training(
     market_mode: str = "p2p",
     start_date: date | None = None,
     end_date: date | None = None,
-    encoding_version: int = 1,
-    obs_version: int = OBS_V1,
+    encoding_version: int = 2,
+    obs_version: int = OBS_V4,
 ) -> dict:
     """Train a BC warm-start checkpoint and save it to `out_path`. Returns a metrics dict.
     Importable so the renew endpoint can run it in a background thread.
@@ -87,7 +87,11 @@ def run_training(
         # oracle/encoding and the saved checkpoint all use it (synthetic runs keep 50).
         from eflux.config import get_settings
 
-        if start_date is not None and end_date is not None and get_settings().price_ref_source != "static":
+        if (
+            start_date is not None
+            and end_date is not None
+            and get_settings().price_ref_source != "static"
+        ):
             set_price_ref_scale(float(data.price.mean()) if len(data.price) else 50.0)
         else:
             from eflux.data.caiso_reference import caiso_reference_price
@@ -100,8 +104,14 @@ def run_training(
         }
     log.info("PPO training: market_mode=%s, price_ref_scale=%.2f", market_mode, price_ref_scale())
 
-    log.info("Collecting demonstrations (%d episodes, seed=%d, real_data=%s)…", episodes, seed, real_data)
-    expert = BatteryAwareStrategyPolicy(use_forecast=True) if obs_version == OBS_V3 else BatteryAwareStrategyPolicy()
+    log.info(
+        "Collecting demonstrations (%d episodes, seed=%d, real_data=%s)…", episodes, seed, real_data
+    )
+    expert = (
+        BatteryAwareStrategyPolicy(use_forecast=True)
+        if obs_version in {OBS_V3, OBS_V4}
+        else BatteryAwareStrategyPolicy()
+    )
     obs, acts = collect_demonstrations(
         expert,
         n_episodes=episodes,
@@ -167,8 +177,16 @@ def run_training(
         "obs_version": obs_version,
         "out": out_path,
     }
-    log.info("BC mode accuracy: %.3f (trade-only %.3f)", metrics["mode_accuracy"], metrics["trade_mode_accuracy"])
-    log.info("Warm-start reward: cloned=%.2f vs random=%.2f", metrics["cloned_reward"], metrics["random_reward"])
+    log.info(
+        "BC mode accuracy: %.3f (trade-only %.3f)",
+        metrics["mode_accuracy"],
+        metrics["trade_mode_accuracy"],
+    )
+    log.info(
+        "Warm-start reward: cloned=%.2f vs random=%.2f",
+        metrics["cloned_reward"],
+        metrics["random_reward"],
+    )
 
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -185,27 +203,50 @@ def run_training(
 
 
 def main() -> int:
-    p = argparse.ArgumentParser(description="Train the live torch PPO policy (behavior-cloning warm-start).")
-    p.add_argument("--real-data", action="store_true", help="clone over ~1 month of real CAISO price + weather")
-    p.add_argument("--days", type=int, default=30, help="days of real data to fetch (with --real-data)")
-    p.add_argument("--start-date", type=date.fromisoformat, default=None, help="inclusive real-data start date (YYYY-MM-DD)")
-    p.add_argument("--end-date", type=date.fromisoformat, default=None, help="exclusive real-data end date (YYYY-MM-DD)")
+    p = argparse.ArgumentParser(
+        description="Train the live torch PPO policy (behavior-cloning warm-start)."
+    )
+    p.add_argument(
+        "--real-data", action="store_true", help="clone over ~1 month of real CAISO price + weather"
+    )
+    p.add_argument(
+        "--days", type=int, default=30, help="days of real data to fetch (with --real-data)"
+    )
+    p.add_argument(
+        "--start-date",
+        type=date.fromisoformat,
+        default=None,
+        help="inclusive real-data start date (YYYY-MM-DD)",
+    )
+    p.add_argument(
+        "--end-date",
+        type=date.fromisoformat,
+        default=None,
+        help="exclusive real-data end date (YYYY-MM-DD)",
+    )
     p.add_argument("--episodes", type=int, default=40, help="demonstration episodes")
     p.add_argument("--epochs", type=int, default=300, help="behavior-cloning epochs")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--encoding-version", type=int, choices=(1, 2), default=1)
-    p.add_argument("--obs-version", type=int, choices=(1, 3), default=OBS_V1)
+    p.add_argument("--encoding-version", type=int, choices=(1, 2), default=2)
+    p.add_argument("--obs-version", type=int, choices=(1, 3, 4), default=OBS_V4)
     p.add_argument(
         "--market-mode",
         choices=("p2p", "realprice"),
         default="p2p",
         help="train the env against this market's structure (peer book vs grid price-taker)",
     )
-    p.add_argument("--out", type=Path, default=Path("checkpoints/bc_primitive.pt"), help="checkpoint output (.pt)")
+    p.add_argument(
+        "--out",
+        type=Path,
+        default=Path("checkpoints/bc_primitive.pt"),
+        help="checkpoint output (.pt)",
+    )
     p.add_argument("--log-level", default="INFO")
     args = p.parse_args()
 
-    logging.basicConfig(level=args.log_level, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
+    logging.basicConfig(
+        level=args.log_level, format="%(asctime)s %(levelname)s %(name)s — %(message)s"
+    )
 
     try:
         run_training(
@@ -222,7 +263,10 @@ def main() -> int:
             obs_version=args.obs_version,
         )
     except ImportError as e:
-        print(f"PPO training requires the 'ai' (+ 'data' for --real-data) extras: {e}", file=sys.stderr)
+        print(
+            f"PPO training requires the 'ai' (+ 'data' for --real-data) extras: {e}",
+            file=sys.stderr,
+        )
         return 1
     return 0
 

@@ -13,7 +13,7 @@ proof that the structured language can encode the existing baseline (design note
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.strategy.schema import (
@@ -34,6 +34,11 @@ GRID_PRICE_MARGIN = 0.05
 
 def _q(x: float | Decimal) -> Decimal:
     return (x if isinstance(x, Decimal) else Decimal(str(x))).quantize(QUANT)
+
+
+def _qty(x: float | Decimal) -> Decimal:
+    value = x if isinstance(x, Decimal) else Decimal(str(x))
+    return value.quantize(QUANT, rounding=ROUND_DOWN)
 
 
 def _anchor(base: float | Decimal, action: StrategyAction) -> Decimal:
@@ -249,7 +254,7 @@ def _one(
         OrderSpec(
             side=side,
             price=price,
-            qty=_q(qty),
+            qty=_qty(qty),
             purpose=purpose,
             ttl_ticks=action.ttl_ticks,
         )
@@ -274,7 +279,7 @@ def _ladder(mode: StrategyMode, action: StrategyAction, valuation: ValuationSign
                 OrderSpec(
                     "sell" if sell else "buy",
                     price,
-                    _q(per),
+                    _qty(per),
                     purpose=purpose,
                     ttl_ticks=action.ttl_ticks,
                 )
@@ -299,7 +304,7 @@ def _market_make(
             OrderSpec(
                 "sell",
                 ask,
-                _q(sell_qty),
+                _qty(sell_qty),
                 purpose=OrderPurpose.BATTERY,
                 ttl_ticks=action.ttl_ticks,
             )
@@ -309,7 +314,7 @@ def _market_make(
             OrderSpec(
                 "buy",
                 bid,
-                _q(buy_qty),
+                _qty(buy_qty),
                 purpose=OrderPurpose.BATTERY,
                 ttl_ticks=action.ttl_ticks,
             )

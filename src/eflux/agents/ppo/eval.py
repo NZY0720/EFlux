@@ -54,19 +54,27 @@ def _make_online_agent(checkpoint: str, *, obs_version: int) -> StrategyAgent:
     policy = build_online_policy(checkpoint, learning=False, auto_update=False)
     policy.obs_version = obs_version
     policy.learner.net.obs_version = obs_version
-    return StrategyAgent(price_ref=Decimal(str(price_ref_scale())), demand_beta=EVAL_DEMAND_BETA, policy=policy)
+    return StrategyAgent(
+        price_ref=Decimal(str(price_ref_scale())), demand_beta=EVAL_DEMAND_BETA, policy=policy
+    )
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Evaluate a trained torch checkpoint vs the benchmark baselines.")
-    ap.add_argument("--checkpoint", required=True, help="path to the trained checkpoint (.pt state-dict)")
+    ap = argparse.ArgumentParser(
+        description="Evaluate a trained torch checkpoint vs the benchmark baselines."
+    )
+    ap.add_argument(
+        "--checkpoint", required=True, help="path to the trained checkpoint (.pt state-dict)"
+    )
     ap.add_argument("--ticks", type=int, default=144)
     ap.add_argument("--tick-minutes", type=float, default=10.0)
     args = ap.parse_args()
     tick_h = args.tick_minutes / 60.0
     obs_version = _checkpoint_obs_version(args.checkpoint)
 
-    rows = [score(name, make, n_ticks=args.ticks, tick_h=tick_h) for name, make in candidates().items()]
+    rows = [
+        score(name, make, n_ticks=args.ticks, tick_h=tick_h) for name, make in candidates().items()
+    ]
     rows.append(
         score(
             "ppo-online",

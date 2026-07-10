@@ -185,7 +185,12 @@ def load_real_market_data(
         log.info("Fetching CAISO LMP history %s..%s for %s", start_d, end_d, node)
         rows = CaisoOasisClient().fetch_lmp_history_sync(node=node, start=start, end=end)
         price = pd.Series(
-            {r.interval_start.astimezone(UTC).replace(minute=0, second=0, microsecond=0): float(r.price) for r in rows}
+            {
+                r.interval_start.astimezone(UTC).replace(minute=0, second=0, microsecond=0): float(
+                    r.price
+                )
+                for r in rows
+            }
         ).sort_index()
         if len(price):
             try:

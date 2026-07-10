@@ -136,6 +136,8 @@ class AgentContext:
     # Forecast uncontrolled net injection for the primary interval. Positive is
     # surplus, negative is deficit. None is allowed in isolated policy tests.
     projected_net_kwh: float | None = None
+    # Filled contractual net injection for the primary product (sell - buy).
+    contracted_net_kwh: float = 0.0
     # Current dispatchable output, used to value startup decisions.
     dispatchable_power_kw: float = 0.0
     # Signed energy this VPP has resting in non-dispatched book orders: sell

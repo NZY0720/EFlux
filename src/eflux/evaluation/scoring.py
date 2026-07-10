@@ -8,9 +8,10 @@ from decimal import Decimal
 from statistics import median
 from typing import Any
 
-from eflux.agents.base import BaseAgent, OrderIntent
+from eflux.agents.base import BaseAgent
 from eflux.agents.bench.run import BENCH_EPOCH, measure_episode, run_episode
 from eflux.agents.bench.scenarios import test_slot_params
+from eflux.agents.decision import AgentDecision
 from eflux.bridge.bus import InMemoryBus
 from eflux.simulator.agent_spec import validate_vpp_params
 from eflux.simulator.runner import Simulator
@@ -41,19 +42,17 @@ class _GuardedSubmissionAgent(BaseAgent):
             raise AttributeError(name)
         return getattr(self.agent, name)
 
-    def decide(self, ctx) -> list[OrderIntent]:
+    def decide(self, ctx) -> AgentDecision:
         if self.agent is None or self.failure_reason is not None:
-            return []
+            return AgentDecision.hold("submission is unavailable")
         try:
-            actions = self.agent.decide(ctx)
-            if not isinstance(actions, list) or not all(
-                isinstance(action, OrderIntent) for action in actions
-            ):
-                raise TypeError("agent returned actions outside the managed OrderIntent protocol")
-            return actions
+            decision = self.agent.decide(ctx)
+            if not isinstance(decision, AgentDecision):
+                raise TypeError("agent returned data outside the AgentDecision protocol")
+            return decision
         except Exception as exc:
             self.failure_reason = f"{type(exc).__name__}: {exc}"
-            return []
+            return AgentDecision.hold("submission decision failed")
 
 
 def _percentile(values: list[float], q: float) -> float:

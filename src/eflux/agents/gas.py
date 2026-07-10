@@ -11,7 +11,7 @@ whenever bids rise above gas marginal cost, gas supply gets dispatched
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from eflux.agents.base import AgentContext, BaseAgent
 from eflux.agents.decision import AgentDecision, OrderRequest
@@ -28,7 +28,7 @@ class GasGeneratorAgent(BaseAgent):
             return AgentDecision.hold("no dispatchable capacity")
 
         qty_f = cap_kw * ctx.primary_interval.duration_h
-        qty = Decimal(str(qty_f)).quantize(Decimal("0.0001"))
+        qty = Decimal(str(qty_f)).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
         if qty < self.min_qty:
             return AgentDecision.hold("dispatchable interval capacity below minimum quantity")
         price = Decimal(str(ctx.params.gas_cost_per_mwh))

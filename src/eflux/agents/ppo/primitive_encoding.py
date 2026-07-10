@@ -41,6 +41,7 @@ def set_price_ref_scale(value: float | None) -> None:
     global _scale
     _scale = float(value) if value and float(value) > 0 else PRICE_REF
 
+
 ACTION_PROFILE_P2P = "p2p"
 ACTION_PROFILE_REALPRICE_GRID = "realprice_grid"
 
@@ -66,15 +67,18 @@ N_PARAMS = 4  # aggressiveness, qty_fraction, price_offset_bps, soc_target
 ENCODING_V1 = 1
 ENCODING_V2 = 2
 ACTION_DIM_V1 = N_MODES + N_PARAMS
-ACTION_DIM = ACTION_DIM_V1
 ACTION_DIM_V2 = ACTION_DIM_V1 + 1
+ACTION_DIM = ACTION_DIM_V2
 LOG_MULT_MAX = math.log(2.5)
 OBS_V1 = 1
 OBS_V3 = 3
+OBS_V4 = 4
 N_FORECAST_CHANNELS = 6
+N_RUNTIME_CHANNELS = 9
 OBS_DIM_V1 = 18
 OBS_DIM = OBS_DIM_V1
 OBS_DIM_V3 = OBS_DIM_V1 + N_FORECAST_CHANNELS
+OBS_DIM_V4 = OBS_DIM_V3 + N_RUNTIME_CHANNELS
 
 
 def normalize_action_profile(action_profile: str | None) -> str:
@@ -95,7 +99,11 @@ def primitive_modes_for(
     *,
     action_profile: str | None = None,
 ) -> list[StrategyMode]:
-    profile = normalize_action_profile(action_profile) if action_profile else action_profile_for_market(market_mode)
+    profile = (
+        normalize_action_profile(action_profile)
+        if action_profile
+        else action_profile_for_market(market_mode)
+    )
     if profile == ACTION_PROFILE_REALPRICE_GRID:
         return PRIMITIVE_MODES_REALPRICE
     return PRIMITIVE_MODES_P2P
@@ -108,7 +116,11 @@ def action_dim(
     market_mode: str | None = None,
     action_profile: str | None = None,
 ) -> int:
-    mode_count = len(modes) if modes is not None else len(primitive_modes_for(market_mode, action_profile=action_profile))
+    mode_count = (
+        len(modes)
+        if modes is not None
+        else len(primitive_modes_for(market_mode, action_profile=action_profile))
+    )
     if version == ENCODING_V1:
         return mode_count + N_PARAMS
     if version == ENCODING_V2:
@@ -156,7 +168,9 @@ def infer_action_profile(checkpoint_or_state: Mapping[str, object]) -> str:
     explicit = checkpoint_or_state.get("action_profile")
     if explicit is not None:
         return normalize_action_profile(str(explicit))
-    if "state_dict" in checkpoint_or_state and isinstance(checkpoint_or_state["state_dict"], Mapping):
+    if "state_dict" in checkpoint_or_state and isinstance(
+        checkpoint_or_state["state_dict"], Mapping
+    ):
         state = checkpoint_or_state["state_dict"]  # type: ignore[assignment]
     else:
         state = checkpoint_or_state
@@ -168,6 +182,8 @@ def obs_dim_for(version: int) -> int:
         return OBS_DIM_V1
     if version == OBS_V3:
         return OBS_DIM_V3
+    if version == OBS_V4:
+        return OBS_DIM_V4
     raise ValueError(f"unsupported PPO observation version: {version}")
 
 
@@ -176,6 +192,8 @@ def obs_version_for_obs_dim(dim: int) -> int:
         return OBS_V1
     if dim == OBS_DIM_V3:
         return OBS_V3
+    if dim == OBS_DIM_V4:
+        return OBS_V4
     raise ValueError(f"unsupported PPO observation dimension: {dim}")
 
 
@@ -225,11 +243,17 @@ def _forecast_solar_factor(forecast: object | None, horizon: str) -> float | Non
         return None
 
 
-def encode_obs(ctx: AgentContext, valuation: ValuationSignal, *, obs_version: int = OBS_V1) -> np.ndarray:
+def encode_obs(
+    ctx: AgentContext, valuation: ValuationSignal, *, obs_version: int = OBS_V4
+) -> np.ndarray:
     """AgentContext + ValuationSignal → fixed-width observation."""
     m = ctx.market
     pr = price_ref_scale()
-    mid = float(m.mid_price) if m.mid_price is not None else (float(m.last_price) if m.last_price is not None else pr)
+    mid = (
+        float(m.mid_price)
+        if m.mid_price is not None
+        else (float(m.last_price) if m.last_price is not None else pr)
+    )
     mid = max(mid, 1e-3)
     bb = float(m.best_bid) if m.best_bid is not None else None
     ba = float(m.best_ask) if m.best_ask is not None else None
@@ -263,7 +287,7 @@ def encode_obs(ctx: AgentContext, valuation: ValuationSignal, *, obs_version: in
     )
     if obs_version == OBS_V1:
         return obs
-    if obs_version != OBS_V3:
+    if obs_version not in {OBS_V3, OBS_V4}:
         raise ValueError(f"unsupported PPO observation version: {obs_version}")
     forecast = ctx.forecast
     real_1h = _forecast_value(forecast, "price_real", "1h")
@@ -283,7 +307,50 @@ def encode_obs(ctx: AgentContext, valuation: ValuationSignal, *, obs_version: in
         ],
         dtype=np.float32,
     )
-    return np.concatenate([obs, forecast_obs]).astype(np.float32, copy=False)
+    if obs_version == OBS_V3:
+        return np.concatenate([obs, forecast_obs]).astype(np.float32, copy=False)
+
+    # V4 replaces fragile percentage-of-mid price channels with signed,
+    # fixed-scale differences. This stays finite through zero and negative prices.
+    robust = obs.copy()
+    signed_mid = float(m.mid_price) if m.mid_price is not None else last
+    robust[5] = 0.0 if bb is None else _finite_clamped((bb - signed_mid) / pr)
+    robust[6] = 0.0 if ba is None else _finite_clamped((ba - signed_mid) / pr)
+    robust[7] = _finite_clamped(signed_mid / pr)
+    robust[8] = 0.0 if bb is None or ba is None else _finite_clamped((ba - bb) / pr)
+    robust[9] = _finite_clamped(last / pr)
+    forecast_obs[:4] = np.array(
+        [
+            0.0 if real_1h is None else _finite_clamped((real_1h - signed_mid) / pr),
+            0.0 if real_12h is None else _finite_clamped((real_12h - signed_mid) / pr),
+            0.0 if p2p_1h is None else _finite_clamped((p2p_1h - signed_mid) / pr),
+            0.0 if p2p_12h is None else _finite_clamped((p2p_12h - signed_mid) / pr),
+        ],
+        dtype=np.float32,
+    )
+    interval = ctx.primary_interval
+    duration = max(interval.duration_sec, 1e-9)
+    time_to_gate = (interval.gate_closure - ctx.state.sim_ts).total_seconds() / duration
+    cash_scale = max(pr * cap / 1000.0, 0.01)
+    runtime_obs = np.array(
+        [
+            _finite_clamped(time_to_gate, -2.0, 2.0),
+            _finite_clamped(len(ctx.delivery_intervals) / 12.0, 0.0, 1.0),
+            _finite_clamped(ctx.decision_interval_sec / duration, 0.0, 1.0),
+            _finite_clamped(
+                ctx.dispatchable_power_kw / max(ctx.params.gas_kw_max, 1e-3),
+                0.0,
+                1.0,
+            ),
+            _finite_clamped(float(ctx.state.pnl) / cash_scale),
+            _finite_clamped(ctx.risk_rejections_total / 100.0, 0.0, 5.0),
+            _finite_clamped(len(ctx.open_orders) / 20.0, 0.0, 5.0),
+            _finite_clamped((ctx.projected_net_kwh or 0.0) / cap),
+            _finite_clamped(ctx.contracted_net_kwh / cap),
+        ],
+        dtype=np.float32,
+    )
+    return np.concatenate([robust, forecast_obs, runtime_obs]).astype(np.float32, copy=False)
 
 
 def _logit(p: float) -> float:
@@ -299,7 +366,7 @@ def _atanh_clamped(x: float) -> float:
 def encode_action(
     action: StrategyAction,
     *,
-    version: int = ENCODING_V1,
+    version: int = ENCODING_V2,
     modes: list[StrategyMode] | tuple[StrategyMode, ...] | None = None,
     market_mode: str | None = None,
     action_profile: str | None = None,
@@ -307,7 +374,11 @@ def encode_action(
     """StrategyAction → a raw policy vector that decode_action maps back to it — the
     supervised target for behavior cloning. Inverse of decode_action up to the squash
     clamps; modes outside the PPO set clone to NOOP."""
-    mode_list = list(modes) if modes is not None else primitive_modes_for(market_mode, action_profile=action_profile)
+    mode_list = (
+        list(modes)
+        if modes is not None
+        else primitive_modes_for(market_mode, action_profile=action_profile)
+    )
     n_modes = len(mode_list)
     vec = np.full(action_dim(version, modes=mode_list), -1.0, dtype=np.float32)
     try:
@@ -331,7 +402,7 @@ def encode_action(
 def decode_action(
     vec: np.ndarray,
     *,
-    version: int = ENCODING_V1,
+    version: int = ENCODING_V2,
     modes: list[StrategyMode] | tuple[StrategyMode, ...] | None = None,
     market_mode: str | None = None,
     action_profile: str | None = None,
@@ -339,12 +410,18 @@ def decode_action(
     """Raw policy vector (ACTION_DIM) → a bounded StrategyAction. The first N_MODES
     components are mode logits (argmax picks the primitive); the rest are squashed
     into their parameter ranges."""
-    mode_list = list(modes) if modes is not None else primitive_modes_for(market_mode, action_profile=action_profile)
+    mode_list = (
+        list(modes)
+        if modes is not None
+        else primitive_modes_for(market_mode, action_profile=action_profile)
+    )
     n_modes = len(mode_list)
     vec = np.asarray(vec, dtype=np.float32).flatten()
     expected = action_dim(version, modes=mode_list)
     if vec.shape[0] != expected:
-        raise ValueError(f"expected PPO action width {expected} for encoding V{version}, got {vec.shape[0]}")
+        raise ValueError(
+            f"expected PPO action width {expected} for encoding V{version}, got {vec.shape[0]}"
+        )
     mode = mode_list[int(np.argmax(vec[:n_modes]))]
     p = vec[n_modes:]
     return StrategyAction(

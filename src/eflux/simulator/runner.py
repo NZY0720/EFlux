@@ -203,6 +203,7 @@ class Simulator:
         self.fallback_invocations_by_vpp: dict[int, int] = {}
         self.veto_holds_by_vpp: dict[int, int] = {}
         self.decide_ticks_by_vpp: dict[int, int] = {}
+        self.decision_failures_by_vpp: dict[int, int] = {}
         # Site-weather memo: several VPPs share coords (e.g. the HKU rooftop),
         # and today/future forecast days are deliberately not disk-cached.
         self._site_weather_cache: dict[tuple[float, float], object] = {}
@@ -1923,6 +1924,17 @@ class Simulator:
     def _step_physics(
         self, vpp: SimulatorVPP, sim_ts: datetime, interval: DeliveryInterval
     ) -> None:
+        self._refresh_der_state(vpp, sim_ts, interval)
+        self.meters.integrate(
+            participant_id=vpp.vpp_id,
+            interval=interval,
+            renewable_power_kw=vpp.state.pv_kw + vpp.state.wind_kw,
+            uncontrolled_load_power_kw=vpp.state.load_kw,
+            duration_sec=self.clock.tick_sim_sec,
+        )
+
+    @staticmethod
+    def _refresh_der_state(vpp: SimulatorVPP, sim_ts: datetime, interval: DeliveryInterval) -> None:
         vpp.pv.kw_peak = vpp.params.pv_kw_peak
         vpp.state.sim_ts = sim_ts
         vpp.state.pv_kw = vpp.pv.output_kw(sim_ts, vpp.rng)
@@ -1931,13 +1943,30 @@ class Simulator:
         vpp.state.update_net()
         vpp.state.soc_kwh = vpp.battery.soc_kwh
         vpp.state.pending_net_kwh = vpp.state.net_kw * interval.duration_h
-        self.meters.integrate(
-            participant_id=vpp.vpp_id,
-            interval=interval,
-            renewable_power_kw=vpp.state.pv_kw + vpp.state.wind_kw,
-            uncontrolled_load_power_kw=vpp.state.load_kw,
-            duration_sec=self.clock.tick_sim_sec,
-        )
+
+    def run_interval_once(self, sim_ts: datetime) -> datetime:
+        """Deterministic synchronous V2 interval step for benchmark/evaluation."""
+
+        wall_ts = sim_ts.astimezone(UTC)
+        products = self._ensure_products(sim_ts)
+        self.gateway.expire_orders(sim_ts=sim_ts, wall_ts=wall_ts)
+        self.gateway.close_due(sim_ts=sim_ts, wall_ts=wall_ts)
+        self._settle_due_intervals(sim_ts)
+        primary = products[0]
+        for vpp in self.vpps.values():
+            self._refresh_der_state(vpp, sim_ts, primary)
+        self._run_decision_round(sim_ts, products)
+        self.gateway.close_interval(primary, sim_ts=primary.start, wall_ts=primary.start)
+        for vpp in self.vpps.values():
+            self.meters.integrate(
+                participant_id=vpp.vpp_id,
+                interval=primary,
+                renewable_power_kw=vpp.state.pv_kw + vpp.state.wind_kw,
+                uncontrolled_load_power_kw=vpp.state.load_kw,
+                duration_sec=primary.duration_sec,
+            )
+        self._settle_due_intervals(primary.end)
+        return primary.end
 
     def _run_decision_round(self, sim_ts: datetime, products: tuple[DeliveryInterval, ...]) -> None:
         primary = products[0]
@@ -1979,6 +2008,9 @@ class Simulator:
                 delivery_intervals=products,
                 decision_interval_sec=get_settings().agent_decision_interval_sec,
                 projected_net_kwh=projected,
+                contracted_net_kwh=self.gateway.participants[vpp.vpp_id]
+                .position(primary)
+                .contracted_net_injection_kwh,
                 dispatchable_power_kw=self.gateway.participants[
                     vpp.vpp_id
                 ].current_dispatchable_power_kw,
@@ -1995,6 +2027,7 @@ class Simulator:
                 return vpp.agent.decide(ctx)
             except Exception:
                 log.exception("VPP %s (%d) decision failed", vpp.name, pid)
+                self.decision_failures_by_vpp[pid] = self.decision_failures_by_vpp.get(pid, 0) + 1
                 return AgentDecision.hold("agent decision raised")
 
         decision_round = self.decision_scheduler.collect(
@@ -2077,12 +2110,15 @@ class Simulator:
                         "unserved_load_kwh": 0.0,
                         "spilled_generation_kwh": 0.0,
                         "settlement_cash": 0.0,
+                        "imbalance_kwh": 0.0,
                     },
                 )
                 totals["unserved_load_kwh"] += position.unserved_load_kwh
                 totals["spilled_generation_kwh"] += position.curtailed_generation_kwh
                 totals["settlement_cash"] += float(result.imbalance_usd)
+                totals["imbalance_kwh"] += abs(result.imbalance_kwh)
                 vpp.state.soc_kwh = vpp.battery.soc_kwh
+                vpp.state.pending_net_kwh = 0.0
                 vpp.state.pnl = self.gateway.ledger.balance(vpp.vpp_id)
             self._settled_intervals.add(iid)
 

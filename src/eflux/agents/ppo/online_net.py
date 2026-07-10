@@ -22,7 +22,7 @@ from torch import nn
 from eflux.agents.ppo.primitive_encoding import (
     ACTION_DIM,
     ACTION_PROFILE_P2P,
-    OBS_DIM_V1,
+    OBS_DIM_V4,
     action_profile_for_action_dim,
     encoding_version_for_action_dim,
     infer_action_dim,
@@ -45,7 +45,7 @@ class ActorCriticNet(nn.Module):
 
     def __init__(
         self,
-        obs_dim: int = OBS_DIM_V1,
+        obs_dim: int = OBS_DIM_V4,
         action_dim: int = ACTION_DIM,
         hidden: int = 64,
         *,
@@ -54,7 +54,9 @@ class ActorCriticNet(nn.Module):
         super().__init__()
         self.action_dim = int(action_dim)
         self.encoding_version = encoding_version_for_action_dim(self.action_dim)
-        self.action_profile = action_profile or action_profile_for_action_dim(self.action_dim) or ACTION_PROFILE_P2P
+        self.action_profile = (
+            action_profile or action_profile_for_action_dim(self.action_dim) or ACTION_PROFILE_P2P
+        )
         self.obs_version = obs_version_for_obs_dim(int(obs_dim))
         # Indices 0 and 2 line up with BCNet.net.0 / net.2 for a clean warm-start remap.
         self.trunk = nn.Sequential(
@@ -79,7 +81,9 @@ class ActorCriticNet(nn.Module):
         return torch.distributions.Normal(mean, self._std()), value
 
     @torch.no_grad()
-    def act(self, obs: np.ndarray, *, deterministic: bool = False) -> tuple[np.ndarray, float, float]:
+    def act(
+        self, obs: np.ndarray, *, deterministic: bool = False
+    ) -> tuple[np.ndarray, float, float]:
         """Serving step: returns (raw action vector, log-prob, value) as plain Python/NumPy.
 
         ``deterministic`` takes the mean (eval / mirror-eval); otherwise samples for
@@ -130,13 +134,15 @@ def warm_start_from_bcnet(net: ActorCriticNet, bc_state: dict) -> ActorCriticNet
 def _is_bcnet_state(state: dict) -> bool:
     """A BCNet state_dict is the bare Sequential ("net.0.*"); a resumed ActorCriticNet
     carries our own keys ("trunk.*", "actor_mean.*", "value.*", "log_std")."""
-    return any(k.startswith("net.") for k in state) and not any(k.startswith("trunk.") for k in state)
+    return any(k.startswith("net.") for k in state) and not any(
+        k.startswith("trunk.") for k in state
+    )
 
 
 def load_warm_start(
     path: str | Path,
     *,
-    obs_dim: int = OBS_DIM_V1,
+    obs_dim: int = OBS_DIM_V4,
     action_dim: int = ACTION_DIM,
     hidden: int = 64,
     map_location: str = "cpu",

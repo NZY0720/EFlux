@@ -24,12 +24,12 @@ import numpy as np
 from gymnasium import spaces
 
 from eflux.agents.base import AgentContext, MarketSnapshot
-from eflux.agents.hybrid import RiskGate
+from eflux.agents.decision import AgentDecision, OrderRequest
 from eflux.agents.ppo.primitive_encoding import (
     ACTION_PROFILE_P2P,
-    ENCODING_V1,
-    OBS_V1,
+    ENCODING_V2,
     OBS_V3,
+    OBS_V4,
     action_profile_for_action_dim,
     action_profile_for_market,
     decode_action,
@@ -44,12 +44,17 @@ from eflux.agents.ppo.primitive_encoding import (
 from eflux.agents.strategy import OrderProgramCompiler
 from eflux.agents.valuation import TruthfulValuationOracle
 from eflux.forecasting.schema import ForecastBundle, ForecastPoint, TargetForecast
-from eflux.market.matching_engine import MatchingEngine
+from eflux.market.delivery import OrderPurpose
+from eflux.market.gateway import TradingGatewayV2
+from eflux.market.product_engine import ProductMatchingEngine
+from eflux.market.products import DeliveryInterval, next_delivery_interval
+from eflux.market.settlement import SettlementPrices
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
 
-EPISODE_TICKS = 24
-TICK_DURATION_H = 1.0
+EPISODE_TICKS = 48
+PHYSICS_TICK_DURATION_H = 1.0 / 3600.0
+DECISION_INTERVAL_SEC = 30.0
 COUNTERPARTY_ORDERS_PER_TICK = 4
 ORDER_TTL_TICKS = 3
 VPP_ID = 1
@@ -58,13 +63,11 @@ COUNTERPARTY_ID = 999
 # training/eval never depend on wall-clock time. Summer solstice = a strong solar signal.
 _SYNTHETIC_EPOCH = datetime(2024, 6, 21, tzinfo=UTC)
 
-# Reward weights (§7). Realized cash is the primary term; the rest shape behaviour.
-W_INVENTORY = 0.1  # mark-to-market value of unsettled energy
-W_IMBALANCE = 1.0  # unserved position
-W_SOC = 8.0  # asymmetric deviation outside the SOC band
-W_INVALID = 10.0  # per gate-vetoed order
-W_DEGRADE = 0.3  # per kWh of battery throughput
-W_EXCESS_ORDERS = 4.0  # per order beyond the soft cap
+# Reward terms are denominated in real USD, matching the live ledger.
+W_INVENTORY = 1.0
+W_SOC = 0.02
+W_INVALID = 0.02
+W_EXCESS_ORDERS = 0.005
 ORDER_SOFT_CAP = 3
 SOC_LOW, SOC_HIGH = 0.1, 0.95
 
@@ -78,8 +81,8 @@ class VPPPrimitiveEnv(gym.Env):
         self,
         config: dict | None = None,
         *,
-        encoding_version: int = ENCODING_V1,
-        obs_version: int = OBS_V1,
+        encoding_version: int = ENCODING_V2,
+        obs_version: int = OBS_V4,
         action_dim: int | None = None,
         action_profile: str | None = None,
     ) -> None:
@@ -151,12 +154,13 @@ class VPPPrimitiveEnv(gym.Env):
             price_ref=Decimal(str(price_ref_scale())), demand_beta=0.5
         )
         self._compiler = OrderProgramCompiler()
-        self._risk_gate = RiskGate()
         # Late-initialized in reset().
         self._rng: random.Random
         self._np_rng: np.random.Generator
         self._forecast_rng: np.random.Generator
-        self._engine: MatchingEngine
+        self._engine: ProductMatchingEngine
+        self._gateway: TradingGatewayV2
+        self._product: DeliveryInterval
         self._params: VPPParams
         self._state: VPPState
         self._pv: PV
@@ -192,20 +196,37 @@ class VPPPrimitiveEnv(gym.Env):
         self._load = FlexibleLoad(
             base_kw=self._params.load_kw_base, profile=self._params.load_profile
         )
-        self._engine = MatchingEngine()
+        self._engine = ProductMatchingEngine()
+        self._gateway = TradingGatewayV2(engine=self._engine)
+        self._gateway.register_participant(
+            participant_id=VPP_ID,
+            params=self._params,
+            battery=self._battery,
+        )
+        counterparty_params = VPPParams(
+            pv_kw_peak=0.0,
+            battery_kwh=1_000_000.0,
+            battery_kw_max=1_000_000.0,
+            battery_initial_soc_frac=0.5,
+            load_kw_base=0.0,
+            starting_cash_usd=1_000_000.0,
+        )
+        self._gateway.register_participant(
+            participant_id=COUNTERPARTY_ID,
+            params=counterparty_params,
+        )
         self._tick = 0
         self._last_price_ref = price_ref_scale()
-        self._oracle.reset()  # fresh gas-throttle cadence per episode
+        self._oracle.reset()
 
         self._step_der()
-        self._seed_counterparty()
+        self._prepare_product()
         return self._obs(), {}
 
     def step(self, action):
-        self._apply_der_balance()
         scale = price_ref_scale()
-        inv_start = (self._state.pending_net_kwh + self._battery.soc_kwh) * scale
-        soc_throughput_start = self._battery.soc_kwh
+        soc_start = self._battery.soc_kwh
+        cash_start = self._gateway.ledger.balance(VPP_ID)
 
         ctx = self._make_ctx()
         valuation = self._oracle.estimate(ctx)
@@ -213,55 +234,85 @@ class VPPPrimitiveEnv(gym.Env):
             action, version=self.encoding_version, action_profile=self.action_profile
         )
         compiled = self._compiler.compile(ctx, strategy_action, valuation)
-        decision = self._risk_gate.validate(
-            compiled.order_intents,
-            vpp_id=VPP_ID,
-            params=self._params,
-            battery=self._battery,
-            tick_h=TICK_DURATION_H,
-            open_order_count=self._open_order_count(),
+        execution = self._gateway.execute_decision(
+            participant_id=VPP_ID,
+            decision=compiled.as_decision(),
+            sim_ts=self._sim_ts,
+            wall_ts=self._sim_ts,
         )
-        n_rejected = len(decision.rejected)
+        n_rejected = len(execution.rejected)
+        n_orders = len(execution.accepted_order_ids)
 
-        realized = 0.0
-        n_orders = 0
-        for intent in decision.accepted:
-            realized += self._submit(intent)
-            n_orders += 1
+        self._gateway.close_interval(
+            self._product,
+            sim_ts=self._product.start,
+            wall_ts=self._product.start,
+        )
+        duration_h = self._product.duration_h
+        self._gateway.record_meter_data(
+            VPP_ID,
+            self._product,
+            renewable_generation_kwh=max(0.0, self._state.pv_kw) * duration_h,
+            load_demand_kwh=max(0.0, self._state.load_kw) * duration_h,
+        )
+        self._gateway.record_meter_data(COUNTERPARTY_ID, self._product)
+        ref = Decimal(str(self._last_price_ref))
+        spread = abs(ref) * Decimal("0.25")
+        prices = SettlementPrices(ref - spread, ref + spread)
+        self._gateway.settle_participant(
+            VPP_ID,
+            self._product,
+            prices=prices,
+            occurred_at=self._product.end,
+        )
+        self._gateway.settle_participant(
+            COUNTERPARTY_ID,
+            self._product,
+            prices=prices,
+            occurred_at=self._product.end,
+        )
+        self._state.pnl = self._gateway.ledger.balance(VPP_ID)
+        self._state.soc_kwh = self._battery.soc_kwh
 
-        self._expire_orders()
-
-        # Reward terms (§7).
-        inv_end = (self._state.pending_net_kwh + self._battery.soc_kwh) * scale
-        open_net = self._open_orders_net()
-        imbalance = abs(self._state.pending_net_kwh + open_net)
+        economic_delta = float(self._gateway.ledger.balance(VPP_ID) - cash_start)
+        inventory_delta = (self._battery.soc_kwh - soc_start) * scale / 1000.0
         soc = self._battery.soc_frac
         soc_dev = max(0.0, SOC_LOW - soc) + 0.25 * max(0.0, soc - SOC_HIGH)
-        degrade = abs(self._battery.soc_kwh - soc_throughput_start)
         reward = (
-            realized
-            + W_INVENTORY * (inv_end - inv_start)
-            - W_IMBALANCE * imbalance
+            economic_delta
+            + W_INVENTORY * inventory_delta
             - W_SOC * soc_dev
             - W_INVALID * n_rejected
-            - W_DEGRADE * degrade
             - W_EXCESS_ORDERS * max(0, n_orders - ORDER_SOFT_CAP)
         )
 
         self._tick += 1
-        self._sim_ts = self._sim_ts + timedelta(hours=TICK_DURATION_H)
+        self._sim_ts = self._product.end
         self._step_der()
-        self._seed_counterparty()
+        self._prepare_product()
 
         truncated = self._tick >= self._episode_ticks
         return self._obs(), float(reward), False, truncated, {}
 
     # -- internals -----------------------------------------------------------
 
+    def _prepare_product(self) -> None:
+        self._product = next_delivery_interval(self._sim_ts, market=self._market_mode)
+        self._engine.register(self._product)
+        projected_net = self._state.net_kw * self._product.duration_h
+        self._state.pending_net_kwh = projected_net
+        self._gateway.set_balance_projection(VPP_ID, self._product, projected_net)
+        self._gateway.set_flex_load_capacity(
+            VPP_ID,
+            self._product,
+            max(0.0, self._state.load_kw * self._params.load_elasticity) * self._product.duration_h,
+        )
+        self._seed_counterparty()
+
     def _make_ctx(self) -> AgentContext:
         market = MarketSnapshot.from_engine(
             self._sim_ts,
-            self._engine.snapshot(depth_levels=1),
+            self._engine.snapshot(self._product.interval_id, depth_levels=1),
             market_mode=self._market_mode,
             anchor_to_external=False,
         )
@@ -274,85 +325,25 @@ class VPPPrimitiveEnv(gym.Env):
             load=self._load,
             market=market,
             rng=self._rng,
-            tick_duration_h=TICK_DURATION_H,
+            tick_duration_h=PHYSICS_TICK_DURATION_H,
+            delivery_intervals=(self._product,),
+            decision_interval_sec=DECISION_INTERVAL_SEC,
+            projected_net_kwh=self._state.net_kw * self._product.duration_h,
+            contracted_net_kwh=self._gateway.participants[VPP_ID]
+            .position(self._product)
+            .contracted_net_injection_kwh,
             open_orders_net_kwh=self._open_orders_net(),
-            forecast=self._make_forecast() if self.obs_version == OBS_V3 else None,
+            forecast=self._make_forecast() if self.obs_version in {OBS_V3, OBS_V4} else None,
         )
-
-    def _submit(self, intent) -> float:
-        """Submit one accepted intent; mirror the runner's accounting for VPP_ID.
-        Returns realized cash (sell positive, buy negative)."""
-        ttl_sec = TICK_DURATION_H * 3600.0 * ORDER_TTL_TICKS
-        try:
-            result = self._engine.submit(
-                vpp_id=VPP_ID,
-                side=intent.side,
-                price=intent.price,
-                qty=intent.qty,
-                sim_ts=self._sim_ts,
-                wall_ts=self._sim_ts,
-                ttl_sec=ttl_sec,
-                dispatched=intent.dispatched,
-            )
-        except ValueError:
-            return 0.0
-        return self._apply_fills(result.trades)
-
-    def _apply_fills(self, trades) -> float:
-        cash = 0.0
-        for tr in trades:
-            qty_f = float(tr.qty)
-            party_is_buyer = tr.buy_vpp_id == VPP_ID
-            amount = float(tr.price) * qty_f
-            if party_is_buyer:
-                cash -= amount
-                cover = min(qty_f, max(0.0, -self._state.pending_net_kwh))
-                self._state.pending_net_kwh += cover
-                self._battery.apply_kwh(qty_f - cover)
-                self._state.soc_kwh = self._battery.soc_kwh
-            else:
-                cash += amount
-                clear = min(qty_f, max(0.0, self._state.pending_net_kwh))
-                self._state.pending_net_kwh -= clear
-                self._battery.apply_kwh(-(qty_f - clear))
-                self._state.soc_kwh = self._battery.soc_kwh
-        self._state.pnl += Decimal(str(cash))
-        return cash
-
-    def _expire_orders(self) -> None:
-        self._engine.expire(sim_ts=self._sim_ts, wall_ts=self._sim_ts)
-
-    def _apply_der_balance(self) -> None:
-        cap = max(self._params.battery_kwh, 1.0)
-        gen_kwh = self._state.net_kw * TICK_DURATION_H
-        max_rate_kwh = max(0.0, self._battery.max_power_kw * TICK_DURATION_H)
-        if gen_kwh >= 0.0:
-            absorbed = min(
-                gen_kwh, max(0.0, self._battery.capacity_kwh - self._battery.soc_kwh), max_rate_kwh
-            )
-            self._battery.apply_kwh(absorbed)
-            self._state.pending_net_kwh += gen_kwh - absorbed
-        else:
-            needed = -gen_kwh
-            supplied = min(needed, max(0.0, self._battery.soc_kwh), max_rate_kwh)
-            self._battery.apply_kwh(-supplied)
-            self._state.pending_net_kwh -= needed - supplied
-        self._state.soc_kwh = self._battery.soc_kwh
-        self._state.pending_net_kwh = min(cap, max(-cap, self._state.pending_net_kwh))
 
     def _open_order_count(self) -> int:
-        return sum(
-            1
-            for side in ("buy", "sell")
-            for o in self._engine.book.iter_orders(side)
-            if o.vpp_id == VPP_ID
-        )
+        return len(self._engine.open_orders_for_vpp(VPP_ID))
 
     def _open_orders_net(self) -> float:
         net = 0.0
         for side in ("buy", "sell"):
-            for o in self._engine.book.iter_orders(side):
-                if o.vpp_id != VPP_ID or o.dispatched:
+            for o in self._engine.iter_orders(self._product.interval_id, side):
+                if o.vpp_id != VPP_ID or o.purpose != OrderPurpose.BALANCE:
                     continue
                 net += float(o.remaining_qty) if o.side == "sell" else -float(o.remaining_qty)
         return net
@@ -385,12 +376,12 @@ class VPPPrimitiveEnv(gym.Env):
         if self._real_data is not None:
             # Center the counter-party on the real LMP for this hour, so the agent trades
             # against the actual price curve (its own normalization scale stays fixed).
-            ref = max(5.0, self._real_data.price_at(self._sim_ts))
+            ref = self._real_data.price_at(self._sim_ts)
             self._last_price_ref = ref
         else:
             drift = self._np_rng.normal(0.0, 1.0)
             revert = 0.05 * (price_ref_scale() - self._last_price_ref)
-            self._last_price_ref = max(5.0, self._last_price_ref + drift + revert)
+            self._last_price_ref = min(300.0, max(-100.0, self._last_price_ref + drift + revert))
             ref = self._last_price_ref
         if self._market_mode == "realprice":
             self._seed_grid(ref)
@@ -400,44 +391,54 @@ class VPPPrimitiveEnv(gym.Env):
     def _seed_peer_book(self, ref: float) -> None:
         """p2p structure: a thin noisy two-sided peer book around the reference price, so the
         agent discovers price against peers and its own size can move the book."""
+        requests: list[OrderRequest] = []
         for _ in range(COUNTERPARTY_ORDERS_PER_TICK):
             side = self._rng.choice(["buy", "sell"])
-            jitter = self._np_rng.normal(0.0, 0.05 * ref)
-            price = max(0.01, ref + (jitter if side == "buy" else -jitter))
+            jitter = self._np_rng.normal(0.0, 0.05 * max(abs(ref), 1.0))
+            price = min(1000.0, max(-150.0, ref + (jitter if side == "buy" else -jitter)))
             qty = self._np_rng.uniform(0.2, 1.0)
-            try:
-                self._engine.submit(
-                    vpp_id=COUNTERPARTY_ID,
-                    side=side,
-                    price=Decimal(str(round(price, 4))),
-                    qty=Decimal(str(round(qty, 4))),
-                    sim_ts=self._sim_ts,
-                    wall_ts=self._sim_ts,
-                    ttl_sec=TICK_DURATION_H * 3600.0 * ORDER_TTL_TICKS,
+            requests.append(
+                OrderRequest(
+                    side,
+                    Decimal(str(round(price, 4))),
+                    Decimal(str(round(qty, 4))),
+                    self._product,
+                    OrderPurpose.BATTERY,
+                    ttl_sec=DECISION_INTERVAL_SEC * ORDER_TTL_TICKS,
                 )
-            except ValueError:
-                continue
+            )
+        self._gateway.execute_decision(
+            participant_id=COUNTERPARTY_ID,
+            decision=AgentDecision(orders=tuple(requests)),
+            sim_ts=self._sim_ts,
+            wall_ts=self._sim_ts,
+        )
 
     def _seed_grid(self, ref: float) -> None:
         """realprice structure: a deep grid book at import/export (lmp ± fee). The agent is a
         pure price-taker — it can always buy at ref+fee or sell at ref-fee, and its volume
         never moves the price — mirroring the live realprice market's settlement."""
-        depth = 1e6  # effectively unlimited grid liquidity → no price impact
-        export = max(0.01, ref - self._txn_fee)  # grid bid the agent sells into
-        import_ = max(export + 0.0002, ref + self._txn_fee)  # grid ask the agent buys from
+        depth = 1000.0
+        export = max(-150.0, ref - self._txn_fee)
+        import_ = min(1000.0, max(export + 0.0002, ref + self._txn_fee))
+        requests: list[OrderRequest] = []
         for side, price in (("buy", export), ("sell", import_)):
-            try:
-                self._engine.submit(
-                    vpp_id=COUNTERPARTY_ID,
-                    side=side,
-                    price=Decimal(str(round(price, 4))),
-                    qty=Decimal(str(depth)),
-                    sim_ts=self._sim_ts,
-                    wall_ts=self._sim_ts,
-                    ttl_sec=TICK_DURATION_H * 3600.0 * ORDER_TTL_TICKS,
+            requests.append(
+                OrderRequest(
+                    side,
+                    Decimal(str(round(price, 4))),
+                    Decimal(str(depth)),
+                    self._product,
+                    OrderPurpose.BATTERY,
+                    ttl_sec=DECISION_INTERVAL_SEC * ORDER_TTL_TICKS,
                 )
-            except ValueError:
-                continue
+            )
+        self._gateway.execute_decision(
+            participant_id=COUNTERPARTY_ID,
+            decision=AgentDecision(orders=tuple(requests)),
+            sim_ts=self._sim_ts,
+            wall_ts=self._sim_ts,
+        )
 
     def _future_price_ref(self, ts: datetime) -> float:
         """Forecast future price from data the env already owns.
@@ -448,12 +449,12 @@ class VPPPrimitiveEnv(gym.Env):
         shocks, so V3 does not alter the episode RNG stream.
         """
         if self._real_data is not None:
-            return max(5.0, self._real_data.price_at(ts, default=self._last_price_ref))
+            return self._real_data.price_at(ts, default=self._last_price_ref)
         hours = max(0, round((ts - self._sim_ts).total_seconds() / 3600.0))
         ref = self._last_price_ref
         target = price_ref_scale()
         for _ in range(hours):
-            ref = max(5.0, ref + 0.05 * (target - ref))
+            ref = min(1000.0, max(-150.0, ref + 0.05 * (target - ref)))
         return ref
 
     def _future_ghi(self, ts: datetime) -> float:
@@ -481,10 +482,10 @@ class VPPPrimitiveEnv(gym.Env):
     def _make_forecast(self) -> ForecastBundle:
         ts_1h = self._sim_ts + timedelta(hours=1)
         ts_12h = self._sim_ts + timedelta(hours=12)
-        real_1h = max(0.0, self._forecast_noise(self._future_price_ref(ts_1h)))
-        real_12h = max(0.0, self._forecast_noise(self._future_price_ref(ts_12h)))
-        p2p_1h = max(0.0, self._forecast_noise(self._future_price_ref(ts_1h)))
-        p2p_12h = max(0.0, self._forecast_noise(self._future_price_ref(ts_12h)))
+        real_1h = min(1000.0, max(-150.0, self._forecast_noise(self._future_price_ref(ts_1h))))
+        real_12h = min(1000.0, max(-150.0, self._forecast_noise(self._future_price_ref(ts_12h))))
+        p2p_1h = min(1000.0, max(-150.0, self._forecast_noise(self._future_price_ref(ts_1h))))
+        p2p_12h = min(1000.0, max(-150.0, self._forecast_noise(self._future_price_ref(ts_12h))))
         ghi_1h = max(0.0, self._forecast_noise(self._future_ghi(ts_1h)))
         ghi_12h = max(0.0, self._forecast_noise(self._future_ghi(ts_12h)))
         zeros = self._target_forecast(0.0, 0.0)

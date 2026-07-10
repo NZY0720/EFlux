@@ -24,9 +24,9 @@ from eflux.agents.base import AgentContext
 from eflux.agents.hybrid import StrategyAgent
 from eflux.agents.ppo.primitive_encoding import (
     ACTION_PROFILE_P2P,
-    ENCODING_V1,
-    OBS_DIM_V1,
-    OBS_V1,
+    ENCODING_V2,
+    OBS_DIM_V4,
+    OBS_V4,
     action_profile_for_action_dim,
     action_profile_for_market,
     decode_action,
@@ -62,11 +62,11 @@ class BCNet(nn.Module):
 
     def __init__(
         self,
-        obs_dim: int = OBS_DIM_V1,
+        obs_dim: int = OBS_DIM_V4,
         action_dim: int | None = None,
         hidden: int = 64,
         *,
-        encoding_version: int = ENCODING_V1,
+        encoding_version: int = ENCODING_V2,
         obs_version: int | None = None,
         action_profile: str | None = None,
     ) -> None:
@@ -76,10 +76,14 @@ class BCNet(nn.Module):
             self.action_profile = action_profile or action_profile_for_action_dim(self.action_dim)
         else:
             self.action_profile = action_profile or ACTION_PROFILE_P2P
-            self.action_dim = encoding_action_dim(encoding_version, action_profile=self.action_profile)
+            self.action_dim = encoding_action_dim(
+                encoding_version, action_profile=self.action_profile
+            )
         self.encoding_version = encoding_version_for_action_dim(self.action_dim)
         self.obs_dim = int(obs_dim)
-        self.obs_version = obs_version if obs_version is not None else obs_version_for_obs_dim(self.obs_dim)
+        self.obs_version = (
+            obs_version if obs_version is not None else obs_version_for_obs_dim(self.obs_dim)
+        )
         self.net = nn.Sequential(
             nn.Linear(self.obs_dim, hidden),
             nn.Tanh(),
@@ -99,8 +103,8 @@ def collect_demonstrations(
     seed: int = 0,
     demand_beta: float = _DEMO_DEMAND_BETA,
     env_config: dict | None = None,
-    encoding_version: int = ENCODING_V1,
-    obs_version: int = OBS_V1,
+    encoding_version: int = ENCODING_V2,
+    obs_version: int = OBS_V4,
     action_profile: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Roll the expert through VPPPrimitiveEnv, recording (obs, encoded-action) pairs.
@@ -114,12 +118,18 @@ def collect_demonstrations(
     from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 
     cfg = dict(env_config or {})
-    action_profile = action_profile or cfg.get("action_profile") or action_profile_for_market(str(cfg.get("market_mode", "p2p")))
+    action_profile = (
+        action_profile
+        or cfg.get("action_profile")
+        or action_profile_for_market(str(cfg.get("market_mode", "p2p")))
+    )
     cfg.setdefault("encoding_version", encoding_version)
     cfg.setdefault("obs_version", obs_version)
     cfg.setdefault("action_profile", action_profile)
     env = VPPPrimitiveEnv(cfg)
-    oracle = TruthfulValuationOracle(price_ref=Decimal(str(price_ref_scale())), demand_beta=demand_beta)
+    oracle = TruthfulValuationOracle(
+        price_ref=Decimal(str(price_ref_scale())), demand_beta=demand_beta
+    )
     obs_rows: list[np.ndarray] = []
     act_rows: list[np.ndarray] = []
     for ep in range(n_episodes):
@@ -143,8 +153,8 @@ def train_bc(
     lr: float = 1e-3,
     seed: int = 0,
     hidden: int = 64,
-    encoding_version: int = ENCODING_V1,
-    obs_version: int = OBS_V1,
+    encoding_version: int = ENCODING_V2,
+    obs_version: int = OBS_V4,
     action_profile: str | None = None,
 ) -> BCNet:
     """Clone the expert: cross-entropy on the primitive choice (the mode logits) plus
@@ -168,7 +178,9 @@ def train_bc(
     x = torch.as_tensor(obs)
     expected_obs_dim = obs_dim_for(obs_version)
     if obs.shape[1] != expected_obs_dim:
-        raise ValueError(f"expected obs width {expected_obs_dim} for observation V{obs_version}, got {obs.shape[1]}")
+        raise ValueError(
+            f"expected obs width {expected_obs_dim} for observation V{obs_version}, got {obs.shape[1]}"
+        )
     mode_idx = torch.as_tensor(np.argmax(acts[:, :n_modes], axis=1)).long()
     params = torch.as_tensor(acts[:, n_modes:])
     net.train()
@@ -184,7 +196,12 @@ def train_bc(
 
 def mode_accuracy(net: BCNet, obs: np.ndarray, acts: np.ndarray) -> float:
     """Fraction of samples where the cloned net picks the expert's primitive."""
-    n_modes = len(primitive_modes_for(action_profile=getattr(net, "action_profile", None) or action_profile_for_action_dim(acts.shape[1])))
+    n_modes = len(
+        primitive_modes_for(
+            action_profile=getattr(net, "action_profile", None)
+            or action_profile_for_action_dim(acts.shape[1])
+        )
+    )
     with torch.no_grad():
         pred = net(torch.as_tensor(obs)).numpy()
     return float((pred[:, :n_modes].argmax(1) == acts[:, :n_modes].argmax(1)).mean())
@@ -194,7 +211,12 @@ def trade_mode_accuracy(net: BCNet, obs: np.ndarray, acts: np.ndarray) -> float:
     """Mode accuracy on samples where the expert actually trades (non-NOOP). The
     razor-thin NOOP boundary (surplus/deficit just under min_qty) is dust-filtered by
     the compiler downstream, so the trade decisions are what matter for behaviour."""
-    n_modes = len(primitive_modes_for(action_profile=getattr(net, "action_profile", None) or action_profile_for_action_dim(acts.shape[1])))
+    n_modes = len(
+        primitive_modes_for(
+            action_profile=getattr(net, "action_profile", None)
+            or action_profile_for_action_dim(acts.shape[1])
+        )
+    )
     true = np.argmax(acts[:, :n_modes], axis=1)
     mask = true != 0
     if not mask.any():
@@ -210,8 +232,8 @@ def mean_episode_reward(
     n_episodes: int = 8,
     seed: int = 0,
     env_config: dict | None = None,
-    encoding_version: int = ENCODING_V1,
-    obs_version: int = OBS_V1,
+    encoding_version: int = ENCODING_V2,
+    obs_version: int = OBS_V4,
     action_profile: str | None = None,
 ) -> float:
     """Mean total VPPPrimitiveEnv reward when `policy` drives it — the warm-start
@@ -219,7 +241,11 @@ def mean_episode_reward(
     from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 
     cfg = dict(env_config or {})
-    action_profile = action_profile or cfg.get("action_profile") or action_profile_for_market(str(cfg.get("market_mode", "p2p")))
+    action_profile = (
+        action_profile
+        or cfg.get("action_profile")
+        or action_profile_for_market(str(cfg.get("market_mode", "p2p")))
+    )
     cfg.setdefault("encoding_version", encoding_version)
     cfg.setdefault("obs_version", obs_version)
     cfg.setdefault("action_profile", action_profile)
@@ -232,7 +258,11 @@ def mean_episode_reward(
             ctx = env._make_ctx()
             valuation = env._oracle.estimate(ctx)
             _o, r, _t, _tr, _ = env.step(
-                encode_action(policy.select_action(ctx, valuation), version=encoding_version, action_profile=action_profile)
+                encode_action(
+                    policy.select_action(ctx, valuation),
+                    version=encoding_version,
+                    action_profile=action_profile,
+                )
             )
             total += r
         totals.append(total)
@@ -244,15 +274,19 @@ def mean_random_reward(
     n_episodes: int = 8,
     seed: int = 0,
     env_config: dict | None = None,
-    encoding_version: int = ENCODING_V1,
-    obs_version: int = OBS_V1,
+    encoding_version: int = ENCODING_V2,
+    obs_version: int = OBS_V4,
     action_profile: str | None = None,
 ) -> float:
     """Mean total reward of a uniformly-random policy — the warm-start floor."""
     from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 
     cfg = dict(env_config or {})
-    action_profile = action_profile or cfg.get("action_profile") or action_profile_for_market(str(cfg.get("market_mode", "p2p")))
+    action_profile = (
+        action_profile
+        or cfg.get("action_profile")
+        or action_profile_for_market(str(cfg.get("market_mode", "p2p")))
+    )
     cfg.setdefault("encoding_version", encoding_version)
     cfg.setdefault("obs_version", obs_version)
     cfg.setdefault("action_profile", action_profile)
@@ -263,7 +297,9 @@ def mean_random_reward(
         env.reset(seed=seed + ep)
         total = 0.0
         for _ in range(env._episode_ticks):
-            _o, r, _t, _tr, _ = env.step(rng.uniform(-5.0, 5.0, size=env.action_dim).astype(np.float32))
+            _o, r, _t, _tr, _ = env.step(
+                rng.uniform(-5.0, 5.0, size=env.action_dim).astype(np.float32)
+            )
             total += r
         totals.append(total)
     return float(np.mean(totals))
@@ -282,9 +318,9 @@ class BCPolicy:
         if self.encoding_version is None:
             self.encoding_version = encoding_version_for_action_dim(self.net.net[-1].out_features)
         if self.action_profile is None:
-            self.action_profile = getattr(self.net, "action_profile", None) or action_profile_for_action_dim(
-                self.net.net[-1].out_features
-            )
+            self.action_profile = getattr(
+                self.net, "action_profile", None
+            ) or action_profile_for_action_dim(self.net.net[-1].out_features)
         if self.obs_version is None:
             self.obs_version = obs_version_for_obs_dim(self.net.net[0].in_features)
 
@@ -303,8 +339,8 @@ def train_bc_policy(
     n_episodes: int = 40,
     epochs: int = 300,
     seed: int = 0,
-    encoding_version: int = ENCODING_V1,
-    obs_version: int = OBS_V1,
+    encoding_version: int = ENCODING_V2,
+    obs_version: int = OBS_V4,
     action_profile: str | None = None,
 ) -> BCPolicy:
     obs, acts = collect_demonstrations(
@@ -361,7 +397,9 @@ def save_bc(
             if encoding_version is not None
             else encoding_version_for_action_dim(net.net[-1].out_features),
             "obs_dim": int(net.net[0].in_features),
-            "obs_version": obs_version if obs_version is not None else obs_version_for_obs_dim(net.net[0].in_features),
+            "obs_version": obs_version
+            if obs_version is not None
+            else obs_version_for_obs_dim(net.net[0].in_features),
         },
         path,
     )

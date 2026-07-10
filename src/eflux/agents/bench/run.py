@@ -9,10 +9,9 @@ from __future__ import annotations
 
 import argparse
 import math
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from eflux.agents.base import MarketSnapshot
 from eflux.agents.bench.metrics import EpisodeMetrics, format_leaderboard
 from eflux.agents.bench.scenarios import candidates, counter_roster, test_slot_params
 from eflux.bridge.bus import InMemoryBus
@@ -47,7 +46,7 @@ def _observe_and_refresh_forecast(sim: Simulator, sim_ts: datetime) -> None:
     service = sim.forecast_service
     if service is None:
         return
-    last = sim.engine.last_price
+    last = sim.engine.latest_price
     price = None if last is None else float(last)
     service.observe(sim_ts, price_p2p=price, price_real=price, ghi=_bench_ghi(sim_ts))
     service.refresh(sim_ts)
@@ -90,28 +89,11 @@ def run_episode(
         raise CandidateEpisodeError("candidate construction failed") from exc
 
     sim_ts = sim.clock.now_sim()
-    step = timedelta(seconds=tick_h * 3600.0)
     for _ in range(n_ticks):
         _observe_and_refresh_forecast(sim, sim_ts)
-        sim._expire_orders(sim_ts)
-        market = MarketSnapshot.from_engine(sim_ts, sim.engine.snapshot(depth_levels=5))
-        net = sim._open_orders_net_by_vpp()
-        counts = sim._open_order_counts_by_vpp()
-        for vpp in sim.vpps.values():
-            try:
-                sim._tick_vpp(
-                    vpp,
-                    sim_ts,
-                    tick_h,
-                    market,
-                    open_orders_net_kwh=net.get(vpp.vpp_id, 0.0),
-                    open_order_count=counts.get(vpp.vpp_id, 0),
-                )
-            except Exception as exc:
-                if vpp is test_vpp:
-                    raise CandidateEpisodeError("candidate execution failed") from exc
-                raise
-        sim_ts = sim_ts + step
+        sim_ts = sim.run_interval_once(sim_ts)
+        if sim.decision_failures_by_vpp.get(test_vpp.vpp_id, 0):
+            raise CandidateEpisodeError("candidate execution failed")
     return sim, test_vpp
 
 
@@ -122,19 +104,18 @@ def _episode_vpp_seed(episode_seed: int, vpp_seed: int) -> int:
 
 def measure_episode(name: str, sim: Simulator, vpp, n_ticks: int) -> EpisodeMetrics:
     """Measure any VPP from a completed benchmark episode."""
-    last = sim.engine.last_price
-    pending = vpp.state.pending_net_kwh
+    last = sim.engine.latest_price
     realized = float(vpp.state.pnl)
     price_ref = float(last) if last is not None else 0.0
-    mtm = realized + (pending + vpp.battery.soc_kwh) * price_ref
-    open_net = sim._open_orders_net_by_vpp().get(vpp.vpp_id, 0.0)
+    mtm = realized + vpp.battery.soc_kwh * price_ref / 1000.0
+    imbalance = sim.imbalance_totals(vpp.vpp_id).get("imbalance_kwh", 0.0)
     return EpisodeMetrics(
         candidate=name,
         realized_pnl=realized,
         mark_to_market=mtm,
         energy_bought_kwh=vpp.state.cumulative_energy_bought_kwh,
         energy_sold_kwh=vpp.state.cumulative_energy_sold_kwh,
-        unresolved_imbalance_kwh=abs(pending + open_net),
+        unresolved_imbalance_kwh=imbalance,
         final_soc_frac=vpp.battery.soc_frac,
         risk_rejections=sim.risk_rejections_by_vpp.get(vpp.vpp_id, 0),
         n_ticks=n_ticks,
@@ -177,7 +158,9 @@ def run_benchmark(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="EFlux agent benchmark — each candidate vs a fixed counter-roster.")
+    ap = argparse.ArgumentParser(
+        description="EFlux agent benchmark — each candidate vs a fixed counter-roster."
+    )
     ap.add_argument("--ticks", type=int, default=144, help="number of ticks per episode")
     ap.add_argument("--tick-minutes", type=float, default=10.0, help="sim-minutes per tick")
     ap.add_argument(

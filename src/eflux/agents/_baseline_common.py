@@ -17,7 +17,7 @@ trade no matter how it adapts.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import ROUND_DOWN, Decimal
 
 from eflux.agents.base import AgentContext, BaseAgent
 from eflux.agents.decision import AgentDecision, OrderRequest
@@ -99,7 +99,7 @@ class BaselineAgent(BaseAgent):
         purpose: OrderPurpose,
     ) -> tuple[OrderRequest, ...]:
         price = Decimal(str(price_f)).quantize(_QUANT)
-        qty = Decimal(str(qty_f)).quantize(_QUANT)
+        qty = Decimal(str(qty_f)).quantize(_QUANT, rounding=ROUND_DOWN)
         if not price.is_finite() or qty < self.min_qty:
             return ()
         return (

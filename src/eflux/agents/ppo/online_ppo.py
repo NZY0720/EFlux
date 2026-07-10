@@ -49,11 +49,11 @@ log = logging.getLogger(__name__)
 # ---- primitive emits a single order, so that term is structurally ~0 online) -----------
 @dataclass(frozen=True)
 class RewardWeights:
-    inventory: float = 0.1   # mark-to-market value of unsettled energy (W_INVENTORY)
-    imbalance: float = 1.0   # unserved position (W_IMBALANCE)
-    soc: float = 5.0         # asymmetric deviation outside the SOC band (live LLM lever)
-    degrade: float = 0.3     # battery throughput this step (W_DEGRADE)
-    invalid: float = 10.0    # per gate-vetoed order (W_INVALID)
+    inventory: float = 1.0
+    imbalance: float = 1.0
+    soc: float = 0.02
+    degrade: float = 0.0  # degradation is already debited in real USD PnL
+    invalid: float = 0.02
     soc_low: float = 0.1
     soc_high: float = 0.95
     # Opt-in shaping toward the (LLM-set) soc_target — couples the M4 battery-drain gap to
@@ -66,11 +66,12 @@ class _Snap:
     """The slice of agent state the step reward is computed from, captured at decision time."""
 
     pnl: float
-    pending: float          # pending_net_kwh
-    open_net: float         # open_orders_net_kwh
+    pending: float  # pending_net_kwh
+    open_net: float  # open_orders_net_kwh
+    contracted_net: float
     soc_frac: float
     soc_kwh: float
-    rejections: float       # cumulative risk rejections (0 until Part C-M5 surfaces it)
+    rejections: float  # cumulative risk rejections (0 until Part C-M5 surfaces it)
     soc_target: float = 0.5
 
 
@@ -79,6 +80,7 @@ def _snap(ctx: AgentContext, soc_target: float) -> _Snap:
         pnl=float(ctx.state.pnl),
         pending=float(ctx.state.pending_net_kwh),
         open_net=float(ctx.open_orders_net_kwh),
+        contracted_net=float(ctx.contracted_net_kwh),
         soc_frac=float(ctx.battery.soc_frac),
         soc_kwh=float(ctx.battery.soc_kwh),
         rejections=float(getattr(ctx, "risk_rejections_total", 0.0) or 0.0),
@@ -90,15 +92,16 @@ def compute_step_reward(prev: _Snap, cur: _Snap, w: RewardWeights) -> float:
     """Reward for the action taken at the *prev* tick, read off the deltas to the *cur*
     tick. Pure function of two snapshots + weights, so it is unit-testable in isolation."""
     realized = cur.pnl - prev.pnl
-    inv_delta = ((cur.pending + cur.soc_kwh) - (prev.pending + prev.soc_kwh)) * price_ref_scale()
-    imbalance = abs(cur.pending + cur.open_net)
+    inv_delta = (cur.soc_kwh - prev.soc_kwh) * price_ref_scale() / 1000.0
+    residual = cur.pending - cur.contracted_net - cur.open_net
+    imbalance_usd = abs(residual) * price_ref_scale() / 1000.0
     soc_dev = max(0.0, w.soc_low - cur.soc_frac) + 0.25 * max(0.0, cur.soc_frac - w.soc_high)
     degrade = abs(cur.soc_kwh - prev.soc_kwh)
     n_rejected = max(0.0, cur.rejections - prev.rejections)
     reward = (
         realized
         + w.inventory * inv_delta
-        - w.imbalance * imbalance
+        - w.imbalance * imbalance_usd
         - w.soc * soc_dev
         - w.degrade * degrade
         - w.invalid * n_rejected
@@ -134,8 +137,8 @@ class OnlineLearner:
     value_coef: float = 0.5
     entropy_coef: float = 0.01
     max_grad_norm: float = 0.5
-    kl_target: float = 0.02   # early-stop the epoch loop past 1.5x; 0 disables
-    update_every: int = 64    # segment length (transitions) before an update fires
+    kl_target: float = 0.02  # early-stop the epoch loop past 1.5x; 0 disables
+    update_every: int = 64  # segment length (transitions) before an update fires
     min_update_size: int = 16
     mode_reg_coef: float = 0.0
     seed: int = 0
@@ -146,9 +149,9 @@ class OnlineLearner:
         self.buffer = RolloutBuffer()
         self._rng = np.random.default_rng(self.seed)
         self._mode_target: torch.Tensor | None = None
-        self.action_profile = getattr(self.net, "action_profile", None) or action_profile_for_action_dim(
-            self.net.actor_mean.out_features
-        )
+        self.action_profile = getattr(
+            self.net, "action_profile", None
+        ) or action_profile_for_action_dim(self.net.actor_mean.out_features)
         self.primitive_modes = primitive_modes_for(action_profile=self.action_profile)
         self.n_modes = len(self.primitive_modes)
         self.update_count = 0
@@ -193,7 +196,7 @@ class OnlineLearner:
         execution-time `apply_guidance` — this shapes what the policy *learns*."""
         if self.mode_reg_coef <= 0.0 or self._mode_target is None:
             return means.new_zeros(())
-        logp = torch.log_softmax(means[:, :self.n_modes], dim=-1)
+        logp = torch.log_softmax(means[:, : self.n_modes], dim=-1)
         q = self._mode_target
         kl = (q * (q.clamp_min(1e-8).log() - logp)).sum(-1).mean()
         return self.mode_reg_coef * kl
@@ -228,7 +231,9 @@ class OnlineLearner:
         old_logp, returns, adv = data["logprobs"], data["returns"], data["advantages"]
         n = obs.shape[0]
         if actions.shape[1] != self.net.action_dim:
-            raise ValueError(f"PPO batch action width {actions.shape[1]} != net action_dim {self.net.action_dim}")
+            raise ValueError(
+                f"PPO batch action width {actions.shape[1]} != net action_dim {self.net.action_dim}"
+            )
 
         work = copy.deepcopy(self.net)
         work.train()
@@ -294,10 +299,12 @@ class OnlinePPOPolicy:
     def __post_init__(self) -> None:
         self._prev: _Pending | None = None
         self._base_weights = self.weights
-        self.encoding_version = encoding_version_for_action_dim(self.learner.net.actor_mean.out_features)
-        self.action_profile = getattr(self.learner.net, "action_profile", None) or action_profile_for_action_dim(
+        self.encoding_version = encoding_version_for_action_dim(
             self.learner.net.actor_mean.out_features
         )
+        self.action_profile = getattr(
+            self.learner.net, "action_profile", None
+        ) or action_profile_for_action_dim(self.learner.net.actor_mean.out_features)
         self.obs_version = obs_version_for_obs_dim(self.learner.net.trunk[0].in_features)
 
     # -- meta-control push (off-tick, from the hybrid agent) -----------------------------
@@ -358,7 +365,9 @@ class OnlinePPOPolicy:
             # Bootstrap off the value of the just-observed (still-pending) state.
             self.learner.update(last_value=value)
 
-        return decode_action(action_vec, version=self.encoding_version, action_profile=self.action_profile)
+        return decode_action(
+            action_vec, version=self.encoding_version, action_profile=self.action_profile
+        )
 
     def take_update_batch(self) -> dict | None:
         """Tick-thread hook for an external (off-tick) scheduler: when a segment has filled,
@@ -398,7 +407,9 @@ class OnlinePPOPolicy:
             incoming_profile = infer_action_profile(raw if isinstance(raw, dict) else state)
             incoming_obs_dim = infer_obs_dim(state)
         except Exception:
-            log.warning("online PPO hot-reload skipped: cannot inspect %s", checkpoint_path, exc_info=True)
+            log.warning(
+                "online PPO hot-reload skipped: cannot inspect %s", checkpoint_path, exc_info=True
+            )
             return
         live_dim = self.learner.net.actor_mean.out_features
         live_obs_dim = self.learner.net.trunk[0].in_features
@@ -446,10 +457,18 @@ def build_online_policy(
             net = load_warm_start(checkpoint_path)
         except Exception:
             log.exception("online PPO warm-start failed for %s — fresh net", checkpoint_path)
-            version = encoding_version if encoding_version is not None else get_settings().ppo_encoding_version
+            version = (
+                encoding_version
+                if encoding_version is not None
+                else get_settings().ppo_encoding_version
+            )
             net = ActorCriticNet(action_dim=encoding_action_dim(version))
     else:
-        version = encoding_version if encoding_version is not None else get_settings().ppo_encoding_version
+        version = (
+            encoding_version
+            if encoding_version is not None
+            else get_settings().ppo_encoding_version
+        )
         net = ActorCriticNet(action_dim=encoding_action_dim(version))
     learner = OnlineLearner(net=net, seed=seed)
     return OnlinePPOPolicy(learner=learner, learning=learning, auto_update=auto_update)
