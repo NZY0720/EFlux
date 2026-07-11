@@ -61,13 +61,13 @@ def test_all_baselines_side_follows_net_position():
     for agent in (ZIPAgent(), GDAgent(), AAAgent()):
         sell = agent.decide(_make_ctx(pv_kw=5.0, load_kw=1.0))
         buy = agent.decide(_make_ctx(pv_kw=0.5, load_kw=3.0))
-        assert sell and sell[0].side == "sell", type(agent).__name__
-        assert buy and buy[0].side == "buy", type(agent).__name__
+        assert sell.orders and sell.orders[0].side == "sell", type(agent).__name__
+        assert buy.orders and buy.orders[0].side == "buy", type(agent).__name__
 
 
 def test_all_baselines_balanced_position_no_order():
     for agent in (ZIPAgent(), GDAgent(), AAAgent()):
-        assert agent.decide(_make_ctx(pv_kw=2.0, load_kw=2.0)) == [], type(agent).__name__
+        assert agent.decide(_make_ctx(pv_kw=2.0, load_kw=2.0)).is_empty, type(agent).__name__
 
 
 def test_all_baselines_respect_individual_rationality():
@@ -81,10 +81,18 @@ def test_all_baselines_respect_individual_rationality():
         for last in (5.0, 30.0, 50.0, 90.0, 200.0):
             s = seller.decide(_make_ctx(pv_kw=5.0, load_kw=1.0, last_price=last))
             b = buyer.decide(_make_ctx(pv_kw=0.5, load_kw=3.0, last_price=last))
-            if s:
-                assert float(s[0].price) >= floor - 1e-6, (AgentCls.__name__, last, s[0].price)
-            if b:
-                assert float(b[0].price) <= 50.0 + 1e-6, (AgentCls.__name__, last, b[0].price)
+            if s.orders:
+                assert float(s.orders[0].price) >= floor - 1e-6, (
+                    AgentCls.__name__,
+                    last,
+                    s.orders[0].price,
+                )
+            if b.orders:
+                assert float(b.orders[0].price) <= 50.0 + 1e-6, (
+                    AgentCls.__name__,
+                    last,
+                    b.orders[0].price,
+                )
 
 
 # --------------------------------------------------------------------------- ZIP
@@ -93,9 +101,9 @@ def test_zip_low_market_price_raises_buyer_margin():
     agent = ZIPAgent(price_ref=Decimal("50.0"))
     prices = []
     for _ in range(15):
-        intents = agent.decide(_make_ctx(pv_kw=0.5, load_kw=3.0, last_price=30.0))
-        if intents:
-            prices.append(float(intents[0].price))
+        decision = agent.decide(_make_ctx(pv_kw=0.5, load_kw=3.0, last_price=30.0))
+        if decision.orders:
+            prices.append(float(decision.orders[0].price))
     assert len(prices) >= 3
     assert prices[-1] < prices[0], prices  # bid drifts down toward the cheap market
     assert agent._margin > agent.init_margin
@@ -106,9 +114,9 @@ def test_zip_high_market_price_shrinks_buyer_margin_toward_limit():
     agent = ZIPAgent(price_ref=Decimal("50.0"))
     last = 0.0
     for _ in range(20):
-        intents = agent.decide(_make_ctx(pv_kw=0.5, load_kw=3.0, last_price=60.0))
-        if intents:
-            last = float(intents[0].price)
+        decision = agent.decide(_make_ctx(pv_kw=0.5, load_kw=3.0, last_price=60.0))
+        if decision.orders:
+            last = float(decision.orders[0].price)
     assert last > 47.0, last  # pushed up close to the 50 marginal value
     assert last <= 50.0 + 1e-6
 
@@ -128,9 +136,9 @@ def test_gd_cold_start_quotes_at_limit():
     ctx.market.best_ask = None
     ctx.market.last_price = None
     ctx.market.mid_price = None
-    intents = agent.decide(ctx)
-    assert intents and intents[0].side == "buy"
-    assert abs(float(intents[0].price) - 50.0) < 1e-6  # == fair_buy_price (limit)
+    decision = agent.decide(ctx)
+    assert decision.orders and decision.orders[0].side == "buy"
+    assert abs(float(decision.orders[0].price) - 50.0) < 1e-6
 
 
 def test_gd_seller_captures_surplus_above_limit_when_bids_are_high():
@@ -141,11 +149,11 @@ def test_gd_seller_captures_surplus_above_limit_when_bids_are_high():
     # Warm up the window, then quote.
     price = None
     for _ in range(3):
-        intents = agent.decide(
+        decision = agent.decide(
             _make_ctx(pv_kw=5.0, load_kw=1.0, best_bid=60.0, best_ask=62.0, last_price=60.0, recent_trades=trades)
         )
-        if intents:
-            price = float(intents[0].price)
+        if decision.orders:
+            price = float(decision.orders[0].price)
     floor = 0.4 * 50.0
     assert price is not None
     assert price > floor + 1e-6, price          # captured surplus above the floor
@@ -182,8 +190,8 @@ def test_baseline_policy_reproduces_standalone_quote_without_guidance():
 
     ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, recent_trades=[{"price": 51.0, "qty": 1.0}])
     standalone = AAAgent(price_ref=Decimal("50.0"))
-    intents = standalone.decide(ctx)
-    assert intents and intents[0].side == "sell"
+    decision = standalone.decide(ctx)
+    assert decision.orders and decision.orders[0].side == "sell"
 
     policy = BaselinePolicy(AAAgent(price_ref=Decimal("50.0")))
     val = TruthfulValuationOracle(price_ref=Decimal("50.0")).estimate(ctx)
@@ -191,7 +199,9 @@ def test_baseline_policy_reproduces_standalone_quote_without_guidance():
     assert action.mode.value == "liquidate_surplus"
     program = build_program(action, ctx, val)
     assert program.orders and program.orders[0].side == "sell"
-    assert float(program.orders[0].price) == pytest.approx(float(intents[0].price), rel=1e-3)
+    assert float(program.orders[0].price) == pytest.approx(
+        float(decision.orders[0].price), rel=1e-3
+    )
 
 
 def test_baseline_policy_forwards_record_trade_to_base():

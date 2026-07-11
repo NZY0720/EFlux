@@ -2255,6 +2255,32 @@ class Simulator:
             self._record_rejections(scheduled.participant_id, len(execution.rejected))
             self._record_product_trades(execution.trades)
             vpp = self.vpps[scheduled.participant_id]
+            # If every new order in a tactical decision was rejected, the hybrid
+            # agent may opt into one safe fallback decision.  The fallback still
+            # traverses the same V2 gateway and physical reservations.
+            if (
+                scheduled.decision.orders
+                and not execution.accepted_order_ids
+                and len(execution.rejected) >= len(scheduled.decision.orders)
+            ):
+                fallback = getattr(vpp.agent, "risk_fallback", None)
+                if fallback is None:
+                    self.veto_holds_by_vpp[vpp.vpp_id] = (
+                        self.veto_holds_by_vpp.get(vpp.vpp_id, 0) + 1
+                    )
+                else:
+                    self.fallback_invocations_by_vpp[vpp.vpp_id] = (
+                        self.fallback_invocations_by_vpp.get(vpp.vpp_id, 0) + 1
+                    )
+                    fallback_decision = fallback.decide(contexts[vpp.vpp_id])
+                    fallback_execution = self.gateway.execute_decision(
+                        participant_id=vpp.vpp_id,
+                        decision=fallback_decision,
+                        sim_ts=sim_ts,
+                        wall_ts=wall_ts,
+                    )
+                    self._record_rejections(vpp.vpp_id, len(fallback_execution.rejected))
+                    self._record_product_trades(fallback_execution.trades)
             vpp.open_order_ids = [
                 order.order_id
                 for order in self.engine.open_orders_for_vpp(scheduled.participant_id)

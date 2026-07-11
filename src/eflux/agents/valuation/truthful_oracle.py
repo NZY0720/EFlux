@@ -81,7 +81,7 @@ class TruthfulValuationOracle:
         # fully covered) is pure renewable export → quote the floor; surplus
         # beyond renewable output would be sourced from the battery → delivery cost.
         if ctx.state.net_kw <= ctx.state.pv_kw + ctx.state.wind_kw:
-            fair_sell_price = max(float(ctx.params.markup_floor) * pr, 0.0001)
+            fair_sell_price = float(ctx.params.markup_floor) * pr
         else:
             fair_sell_price = battery_sell_price
 

@@ -22,6 +22,7 @@ from eflux.vpp.base import VPPParams
 
 def _context_kwargs(sim: Simulator, vpp):
     sim_ts = sim.clock.now_sim()
+    product = sim._ensure_products(sim_ts)[0]
     return {
         "vpp_id": vpp.vpp_id,
         "params": vpp.params,
@@ -29,7 +30,7 @@ def _context_kwargs(sim: Simulator, vpp):
         "pv": vpp.pv,
         "battery": vpp.battery,
         "load": vpp.load,
-        "market": MarketSnapshot.from_engine(sim_ts, sim.engine.snapshot()),
+        "market": MarketSnapshot.from_engine(sim_ts, sim.engine.snapshot(product.interval_id)),
         "rng": random.Random(1),
         "tick_duration_h": 1.0 / 3600.0,
     }
@@ -188,7 +189,9 @@ async def test_bootstrap_falls_back_to_cached_window_when_fresh_fetch_thin(monke
 
     def cached_window(self, start_d, end_d):
         assert (start_d, end_d) == (date(2026, 6, 1), date(2026, 7, 1))
-        return RealMarketData(price=rich_price, weather=None, wind=None, start=start, end=start + timedelta(hours=200))
+        return RealMarketData(
+            price=rich_price, weather=None, wind=None, start=start, end=start + timedelta(hours=200)
+        )
 
     monkeypatch.setattr(Simulator, "_load_forecast_live_frames", lambda self: None)
     monkeypatch.setattr(Simulator, "_load_forecast_dam_prices", lambda self: None)
@@ -227,7 +230,9 @@ async def test_bootstrap_rewarms_price_cold_restored_state(monkeypatch, tmp_path
     fresh_price = {ts + timedelta(hours=i): 50.0 + (i % 5) for i in range(200)}
 
     def fresh_warmup(self, days):
-        return RealMarketData(price=fresh_price, weather=None, wind=None, start=ts, end=ts + timedelta(hours=200))
+        return RealMarketData(
+            price=fresh_price, weather=None, wind=None, start=ts, end=ts + timedelta(hours=200)
+        )
 
     monkeypatch.setattr(Simulator, "_load_forecast_live_frames", lambda self: None)
     monkeypatch.setattr(Simulator, "_load_forecast_dam_prices", lambda self: None)
@@ -256,10 +261,7 @@ async def test_warmup_selector_prefers_dense_contiguous_cache(monkeypatch):
     monkeypatch.setenv("EFLUX_FORECAST_WARMUP_MAX_GAP_HOURS", "2")
     get_settings.cache_clear()
     start = datetime(2026, 6, 1, tzinfo=UTC)
-    sparse = {
-        start + timedelta(hours=i): 40.0
-        for i in [*range(84), *range(300, 384)]
-    }
+    sparse = {start + timedelta(hours=i): 40.0 for i in [*range(84), *range(300, 384)]}
     dense = {start + timedelta(hours=i): 41.0 for i in range(240)}
 
     def data(price):
@@ -418,15 +420,15 @@ def test_profile_observes_only_fresh_prints(monkeypatch, tmp_path):
     service.warm_start(series={"price_real": [(start, 50.0)], "price_p2p": [(start, 18.0)]})
     sim.forecast_service = service
 
-    sim.engine.last_price = Decimal("18.5")
-    sim.engine._next_trade_id = 2  # one trade has printed
+    sim.engine._latest_price = Decimal("18.5")
+    sim.engine._trade_count = 1  # one trade has printed
     sim._refresh_forecast_once()
     sim._refresh_forecast_once()  # echo refresh — same trade_count, no new print
 
     assert sum(sim._forecast_p2p_profile.counts.values()) == 1
 
-    sim.engine._next_trade_id = 3  # a second trade printed
-    sim.engine.last_price = Decimal("19.0")
+    sim.engine._trade_count = 2  # a second trade printed
+    sim.engine._latest_price = Decimal("19.0")
     sim._refresh_forecast_once()
 
     assert sum(sim._forecast_p2p_profile.counts.values()) == 2

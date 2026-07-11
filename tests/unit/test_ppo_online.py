@@ -8,12 +8,14 @@ No Ray, no live sim — the VPPPrimitiveEnv is used only to mint realistic conte
 
 from __future__ import annotations
 
+from datetime import timedelta
 from decimal import Decimal
 
 import numpy as np
 import torch
 
-from eflux.agents.base import BaseAgent, MarketSnapshot, OrderIntent
+from eflux.agents.base import BaseAgent
+from eflux.agents.decision import AgentDecision, OrderRequest
 from eflux.agents.ppo.bc import BCNet
 from eflux.agents.ppo.online_buffer import RolloutBuffer
 from eflux.agents.ppo.online_net import (
@@ -44,6 +46,7 @@ from eflux.agents.ppo.primitive_encoding import (
 from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
 from eflux.agents.strategy.schema import StrategyMode
 from eflux.bridge.bus import InMemoryBus
+from eflux.market.delivery import OrderPurpose
 from eflux.simulator.runner import Simulator
 from eflux.vpp.base import VPPParams
 
@@ -136,7 +139,9 @@ def test_gae_matches_manual_computation():
         delta = rewards[t] + gamma * nv - values[t]  # no dones
         last = delta + gamma * lam * last
         adv[t] = last
-    np.testing.assert_allclose(out["advantages"].numpy(), np.array(adv, dtype=np.float32), rtol=1e-5)
+    np.testing.assert_allclose(
+        out["advantages"].numpy(), np.array(adv, dtype=np.float32), rtol=1e-5
+    )
     np.testing.assert_allclose(
         out["returns"].numpy(), (np.array(adv) + np.array(values)).astype(np.float32), rtol=1e-5
     )
@@ -181,8 +186,10 @@ def test_update_widens_logprob_gap_toward_advantaged_actions():
         with torch.no_grad():
             dh, _ = net.distribution(_stack(hi_obs))
             dl, _ = net.distribution(_stack(lo_obs))
-            return float(dh.log_prob(_stack(hi_act)).sum(-1).mean()
-                         - dl.log_prob(_stack(lo_act)).sum(-1).mean())
+            return float(
+                dh.log_prob(_stack(hi_act)).sum(-1).mean()
+                - dl.log_prob(_stack(lo_act)).sum(-1).mean()
+            )
 
     before = gap(learner.net)
     learner.update(last_value=0.0)
@@ -213,33 +220,49 @@ def test_update_fits_value_function():
 # -- M4: live reward ---------------------------------------------------------------------
 def test_compute_step_reward_matches_formula():
     w = RewardWeights()
-    prev = _Snap(pnl=0.0, pending=1.0, open_net=0.0, soc_frac=0.5, soc_kwh=10.0, rejections=0.0)
-    cur = _Snap(pnl=30.0, pending=0.0, open_net=0.0, soc_frac=0.9, soc_kwh=11.0, rejections=2.0)
+    prev = _Snap(
+        pnl=0.0,
+        pending=1.0,
+        open_net=0.0,
+        contracted_net=0.0,
+        soc_frac=0.5,
+        soc_kwh=10.0,
+        rejections=0.0,
+    )
+    cur = _Snap(
+        pnl=30.0,
+        pending=0.0,
+        open_net=0.0,
+        contracted_net=0.0,
+        soc_frac=0.9,
+        soc_kwh=11.0,
+        rejections=2.0,
+    )
     expected = (
-        30.0                                  # realized
-        + 0.1 * (((0.0 + 11.0) - (1.0 + 10.0)) * PRICE_REF)  # pending + SOC inventory delta
-        - 1.0 * abs(0.0 + 0.0)                # imbalance
-        - 5.0 * 0.0                           # soc band: 0.9 is inside [0.1, 0.95]
-        - 0.3 * abs(11.0 - 10.0)             # degrade
-        - 10.0 * (2.0 - 0.0)                 # 2 rejections
+        30.0  # realized
+        + 1.0 * ((11.0 - 10.0) * PRICE_REF / 1000.0)
+        - 1.0 * 0.0
+        - 0.02 * 0.0
+        - 0.0 * abs(11.0 - 10.0)
+        - 0.02 * 2.0
     )
     assert compute_step_reward(prev, cur, w) == expected
 
 
 def test_compute_step_reward_inventory_includes_soc_delta():
     w = RewardWeights()
-    prev = _Snap(pnl=0.0, pending=0.0, open_net=0.0, soc_frac=0.5, soc_kwh=10.0, rejections=0.0)
-    cur = _Snap(pnl=0.0, pending=0.0, open_net=0.0, soc_frac=0.55, soc_kwh=11.0, rejections=0.0)
+    prev = _Snap(0.0, 0.0, 0.0, 0.0, 0.5, 10.0, 0.0)
+    cur = _Snap(0.0, 0.0, 0.0, 0.0, 0.55, 11.0, 0.0)
 
-    expected = 0.1 * PRICE_REF - 0.3
+    expected = PRICE_REF / 1000.0
     assert compute_step_reward(prev, cur, w) == expected
 
 
 def test_soc_target_shaping_opt_in():
     base = RewardWeights()
     shaped = RewardWeights(soc_target_weight=2.0)
-    prev = _Snap(0.0, 0.0, 0.0, 0.5, 10.0, 0.0, soc_target=0.5)
-    cur = _Snap(0.0, 0.0, 0.0, 0.3, 10.0, 0.0, soc_target=0.5)  # drained below target
+    prev = _Snap(0.0, 0.0, 0.0, 0.0, 0.5, 10.0, 0.0, soc_target=0.5)
+    cur = _Snap(0.0, 0.0, 0.0, 0.0, 0.3, 10.0, 0.0, soc_target=0.5)
     assert compute_step_reward(prev, cur, base) == 0.0  # band [0.1,0.95] not breached
     assert compute_step_reward(prev, cur, shaped) < 0.0  # shaping penalizes the drift
 
@@ -276,9 +299,7 @@ def test_frozen_eval_is_deterministic_and_never_buffers():
 # -- mode-reg target (used by the LLM meta-controller in M6) ------------------------------
 def test_set_mode_target_normalized_and_biased():
     learner = OnlineLearner()
-    learner.set_mode_target(
-        preferred=(StrategyMode.LIQUIDATE_SURPLUS,), avoid=(StrategyMode.NOOP,)
-    )
+    learner.set_mode_target(preferred=(StrategyMode.LIQUIDATE_SURPLUS,), avoid=(StrategyMode.NOOP,))
     q = learner._mode_target.numpy()
     assert q.shape == (N_MODES,)
     np.testing.assert_allclose(q.sum(), 1.0, rtol=1e-6)
@@ -304,7 +325,17 @@ class _CaptureAgent(BaseAgent):
 
     def decide(self, ctx):
         self.seen.append(ctx.risk_rejections_total)
-        return [OrderIntent(side="sell", price=Decimal("2000"), qty=Decimal("1"))]
+        return AgentDecision(
+            orders=(
+                OrderRequest(
+                    side="sell",
+                    price=Decimal("2000"),
+                    qty_kwh=Decimal("0.01"),
+                    interval=ctx.primary_interval,
+                    purpose=OrderPurpose.BALANCE,
+                ),
+            )
+        )
 
 
 def test_risk_rejections_surface_into_context():
@@ -312,12 +343,15 @@ def test_risk_rejections_surface_into_context():
     agent = _CaptureAgent()
     vpp = sim.add_builtin_vpp("rej", VPPParams(), agent)
     sim_ts = sim.clock.now_sim()
-    tick_h = 1.0 / 3600.0
-    market = MarketSnapshot.from_engine(sim_ts, sim.engine.snapshot())
-    sim._tick_vpp(vpp, sim_ts, tick_h, market)
-    sim._tick_vpp(vpp, sim_ts, tick_h, market)
-    assert agent.seen[0] == 0.0       # nothing vetoed before the first decision
-    assert agent.seen[1] == 1.0       # tick 1's price-2000 order was vetoed → delta of 1
+    vpp.state.pv_kw = 5.0
+    vpp.state.load_kw = 0.0
+    vpp.state.update_net()
+    products = sim._ensure_products(sim_ts)
+    sim._run_decision_round(sim_ts, products)
+    next_decision = sim_ts + timedelta(seconds=sim.decision_scheduler.cadence_sec)
+    sim._run_decision_round(next_decision, sim._ensure_products(next_decision))
+    assert agent.seen[0] == 0.0  # nothing vetoed before the first decision
+    assert agent.seen[1] == 1.0  # tick 1's price-2000 order was vetoed → delta of 1
 
 
 # -- M6: LLM meta-controller -------------------------------------------------------------
@@ -327,8 +361,13 @@ def test_policy_apply_meta_scales_weights_and_forwards_levers():
     policy = build_online_policy(seed=0)
     base = RewardWeights()
     meta = MetaControl(
-        w_soc_mult=2.0, w_imbalance_mult=0.5, w_degrade_mult=1.5,
-        lr=1e-4, entropy_coef=0.03, kl_target=0.01, mode_reg_coef=0.5,
+        w_soc_mult=2.0,
+        w_imbalance_mult=0.5,
+        w_degrade_mult=1.5,
+        lr=1e-4,
+        entropy_coef=0.03,
+        kl_target=0.01,
+        mode_reg_coef=0.5,
     ).clamped()
     policy.apply_meta(meta)
     assert policy.weights.soc == base.soc * 2.0
@@ -360,9 +399,9 @@ def test_mirror_vpp_is_strategist_less_online_twin():
     _add_mirror_vpp(sim, spec, use_real_weather=False, default_seed=80)
     twin = next(v for v in sim.vpps.values() if v.name == "llm-x-ppo-mirror")
     assert isinstance(twin.agent, StrategyAgent)
-    assert not hasattr(twin.agent, "strategist")           # PPO-only control, no LLM
-    assert hasattr(twin.agent._policy, "learner")           # learns online
-    assert twin.agent._policy.auto_update is True           # sync inline (no scheduler)
+    assert not hasattr(twin.agent, "strategist")  # PPO-only control, no LLM
+    assert hasattr(twin.agent._policy, "learner")  # learns online
+    assert twin.agent._policy.auto_update is True  # sync inline (no scheduler)
 
 
 def test_persist_online_weights(tmp_path, monkeypatch):
@@ -405,8 +444,13 @@ def test_mode_reg_loss_pulls_policy_toward_target():
     # shift the policy's mode distribution toward the LLM-preferred mode.
     target_idx = 1
     learner = OnlineLearner(
-        seed=11, epochs=40, minibatch=64, kl_target=0.0,
-        entropy_coef=0.0, value_coef=0.0, mode_reg_coef=1.0,
+        seed=11,
+        epochs=40,
+        minibatch=64,
+        kl_target=0.0,
+        entropy_coef=0.0,
+        value_coef=0.0,
+        mode_reg_coef=1.0,
     )
     learner.set_mode_target(preferred=(PRIMITIVE_MODES[target_idx],))
     rng = np.random.default_rng(11)

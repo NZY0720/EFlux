@@ -14,21 +14,32 @@ from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
 
 
-def _make_ctx(*, pv_kw: float, load_kw: float, soc_kwh: float = 5.0, markup_floor: float = 0.0) -> AgentContext:
+def _make_ctx(
+    *, pv_kw: float, load_kw: float, soc_kwh: float = 5.0, markup_floor: float = 0.0
+) -> AgentContext:
     params = VPPParams(markup_floor=markup_floor)
     state = VPPState(sim_ts=datetime.now(UTC), soc_kwh=soc_kwh, pv_kw=pv_kw, load_kw=load_kw)
     state.update_net()
     state.pending_net_kwh = state.net_kw * 1.0
     market = MarketSnapshot(
-        sim_ts=state.sim_ts, best_bid=Decimal("48"), best_ask=Decimal("52"),
-        last_price=Decimal("50"), mid_price=Decimal("50"),
+        sim_ts=state.sim_ts,
+        best_bid=Decimal("48"),
+        best_ask=Decimal("52"),
+        last_price=Decimal("50"),
+        mid_price=Decimal("50"),
     )
     return AgentContext(
-        vpp_id=1, params=params, state=state,
+        vpp_id=1,
+        params=params,
+        state=state,
         pv=PV(kw_peak=params.pv_kw_peak),
-        battery=Battery(capacity_kwh=params.battery_kwh, max_power_kw=params.battery_kw_max, soc_kwh=soc_kwh),
+        battery=Battery(
+            capacity_kwh=params.battery_kwh, max_power_kw=params.battery_kw_max, soc_kwh=soc_kwh
+        ),
         load=FlexibleLoad(base_kw=params.load_kw_base),
-        market=market, rng=random.Random(0), tick_duration_h=1.0,
+        market=market,
+        rng=random.Random(0),
+        tick_duration_h=1.0,
     )
 
 
@@ -36,20 +47,26 @@ def test_surplus_emits_sell_matching_truthful_balance_order():
     ctx = _make_ctx(pv_kw=5.0, load_kw=1.0, markup_floor=0.1)
     s = StrategyAgent(price_ref=Decimal("50.0")).decide(ctx)
     t = TruthfulAgent(price_ref=Decimal("50.0")).decide(ctx)
-    assert len(s) == 1 and s[0].side == "sell"
-    assert (s[0].price, s[0].qty) == (t[0].price, t[0].qty)
+    assert len(s.orders) == 1 and s.orders[0].side == "sell"
+    assert (s.orders[0].price, s.orders[0].qty_kwh) == (
+        t.orders[0].price,
+        t.orders[0].qty_kwh,
+    )
 
 
 def test_deficit_emits_buy_matching_truthful_balance_order():
     ctx = _make_ctx(pv_kw=0.5, load_kw=3.0)
     s = StrategyAgent(price_ref=Decimal("50.0"), demand_beta=0.5).decide(ctx)
     t = TruthfulAgent(price_ref=Decimal("50.0"), demand_beta=0.5).decide(ctx)
-    assert len(s) == 1 and s[0].side == "buy"
-    assert (s[0].price, s[0].qty) == (t[0].price, t[0].qty)
+    assert len(s.orders) == 1 and s.orders[0].side == "buy"
+    assert (s.orders[0].price, s.orders[0].qty_kwh) == (
+        t.orders[0].price,
+        t.orders[0].qty_kwh,
+    )
 
 
 def test_balanced_position_emits_nothing():
-    assert StrategyAgent().decide(_make_ctx(pv_kw=2.0, load_kw=2.0)) == []
+    assert StrategyAgent().decide(_make_ctx(pv_kw=2.0, load_kw=2.0)).is_empty
 
 
 def test_scripted_policy_skips_battery_band():
@@ -57,7 +74,7 @@ def test_scripted_policy_skips_battery_band():
     (battery arbitrage is left for the learned policy), unlike Truthful's battery quote."""
     ctx = _make_ctx(pv_kw=2.0, load_kw=2.0, soc_kwh=9.0)  # soc 0.9 > soc_high
     ctx.state.pending_net_kwh = 0.0
-    assert StrategyAgent().decide(ctx) == []
+    assert StrategyAgent().decide(ctx).is_empty
 
 
 def test_registered_in_agent_factories():

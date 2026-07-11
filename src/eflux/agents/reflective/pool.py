@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from eflux.agents.reflective.llm_client import LLMClient, LLMUsageBudget
+from eflux.agents.reflective.llm_client import LLMClient, LLMUsageMeter
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ class SharedLLM:
     api_key: str | None = None
     timeout_sec: float = 120.0
     default_model: str | None = None
-    budget: LLMUsageBudget | None = None
+    usage_meter: LLMUsageMeter | None = None
     _pool: dict[str, LLMClient] = field(default_factory=dict)
 
     @property
@@ -66,7 +66,7 @@ class SharedLLM:
                 api_key=self.api_key,
                 model=model,
                 timeout_sec=self.timeout_sec,
-                budget=self.budget,
+                usage_meter=self.usage_meter,
             )
             self._pool[model] = existing
         return existing
@@ -86,8 +86,7 @@ class SharedLLM:
                 model=settings.llm_model,
             )
             if ok:
-                budget = LLMUsageBudget(
-                    max_cost_usd=settings.llm_budget_usd,
+                usage_meter = LLMUsageMeter(
                     input_cost_per_million_tokens=settings.llm_input_cost_per_million_tokens,
                     output_cost_per_million_tokens=settings.llm_output_cost_per_million_tokens,
                 )
@@ -96,7 +95,7 @@ class SharedLLM:
                     api_key=api_key,
                     model=settings.llm_model,
                     timeout_sec=settings.llm_timeout_sec,
-                    budget=budget,
+                    usage_meter=usage_meter,
                 )
                 return cls(
                     client=client,
@@ -106,7 +105,7 @@ class SharedLLM:
                     api_key=api_key,
                     timeout_sec=settings.llm_timeout_sec,
                     default_model=settings.llm_model,
-                    budget=budget,
+                    usage_meter=usage_meter,
                 )
             log.warning("LLM connection check failed: %s", detail)
             return cls(
@@ -136,7 +135,7 @@ class SharedLLM:
 
     @property
     def usage(self) -> dict[str, float | int] | None:
-        return None if self.budget is None else self.budget.snapshot()
+        return None if self.usage_meter is None else self.usage_meter.snapshot()
 
 
 def validate_llm_connection(*, base_url: str, api_key: str, model: str) -> tuple[bool, str]:

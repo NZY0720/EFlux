@@ -23,7 +23,6 @@ from dataclasses import fields as dataclass_fields
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
-from eflux.agents.reflective.llm_client import LLMBudgetExceeded
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 
 log = logging.getLogger(__name__)
@@ -808,7 +807,7 @@ class LLMStrategist:
             )
             content = str(content)
             if not content.strip():
-                raise RuntimeError("empty LLM response (completion budget exhausted?)")
+                raise RuntimeError("empty LLM response")
             guidance = parse_guidance(content, market_mode=market_mode)
             meta = parse_meta_control(content)  # tolerant — never raises
             self._guidance = guidance
@@ -816,19 +815,6 @@ class LLMStrategist:
             self.ok_count += 1
             self.last_ok_ts = datetime.now(UTC)
             self.reflection_log.append(self._entry(ok=True, guidance=guidance, meta=meta))
-        except LLMBudgetExceeded as e:
-            self.skipped_count += 1
-            self.reflection_log.append(
-                self._entry(
-                    ok=False,
-                    guidance=self._guidance,
-                    meta=self._meta,
-                    error=str(e),
-                )
-            )
-            if self.raise_errors:
-                raise
-            log.warning("strategist refresh skipped: %s", e)
         except Exception as e:  # network error or unparseable response — keep prior
             self.fail_count += 1
             self.reflection_log.append(

@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from eflux.agents.base import AgentContext, BaseAgent
 from eflux.agents.bench.scenarios import test_slot_params as benchmark_endowment
+from eflux.agents.decision import AgentDecision
 from eflux.agents.truthful import TruthfulAgent
 from eflux.db.models import (
     AuditEvent,
@@ -104,7 +105,7 @@ class _RaisingAgent(BaseAgent):
         self.ticks += 1
         if self.ticks == 2:
             raise RuntimeError("participant boom")
-        return []
+        return AgentDecision.hold("before injected failure")
 
 
 def test_agent_exception_scores_at_roster_floor(monkeypatch):
@@ -139,10 +140,14 @@ async def test_two_participant_failures_exclude_the_scored_run(db_session, monke
     async with factory() as session:
         run = await session.get(EvaluationRun, run_id)
         seeds = (
-            await session.execute(
-                select(EvaluationSeedRun).where(EvaluationSeedRun.evaluation_run_id == run_id)
+            (
+                await session.execute(
+                    select(EvaluationSeedRun).where(EvaluationSeedRun.evaluation_run_id == run_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert run is not None
     assert run.status == "scored"
     assert run.score == -1.25
@@ -195,10 +200,14 @@ async def test_once_drains_exactly_one_run_end_to_end(db_session):
             )
         ).scalar_one()
         metrics = (
-            await session.execute(
-                select(EvaluationMetric).where(EvaluationMetric.evaluation_run_id == first_id)
+            (
+                await session.execute(
+                    select(EvaluationMetric).where(EvaluationMetric.evaluation_run_id == first_id)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     assert first is not None and first.status == "scored"
     assert first.started_at is not None and first.finished_at is not None
     assert second is not None and second.status == "queued"

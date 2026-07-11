@@ -13,13 +13,14 @@ from eflux.vpp.der import PV, Battery, FlexibleLoad, WindTurbine
 
 # --- WindTurbine ------------------------------------------------------------
 
+
 def test_power_curve_regions():
     wt = WindTurbine(rated_kw=10.0)
-    assert wt._power_curve(1.0) == 0.0            # below cut-in
-    assert wt._power_curve(12.0) == 10.0          # at rated speed
-    assert wt._power_curve(20.0) == 10.0          # between rated and cut-out
-    assert wt._power_curve(26.0) == 0.0           # storm cut-out
-    mid = wt._power_curve(7.5)                    # halfway → (0.5)^3 = 12.5%
+    assert wt._power_curve(1.0) == 0.0  # below cut-in
+    assert wt._power_curve(12.0) == 10.0  # at rated speed
+    assert wt._power_curve(20.0) == 10.0  # between rated and cut-out
+    assert wt._power_curve(26.0) == 0.0  # storm cut-out
+    mid = wt._power_curve(7.5)  # halfway → (0.5)^3 = 12.5%
     assert 1.0 < mid < 2.0
 
 
@@ -51,6 +52,7 @@ def test_wind_uses_weather_dataframe_when_attached():
 
 # --- FlexibleLoad profiles ----------------------------------------------------
 
+
 def _draw(profile: str, hour: int, weekday: bool = True) -> float:
     # 2026-06-10 is a Wednesday; 2026-06-13 a Saturday.
     day = 10 if weekday else 13
@@ -59,8 +61,8 @@ def _draw(profile: str, hour: int, weekday: bool = True) -> float:
 
 
 def test_industrial_profile_shift_vs_night():
-    assert _draw("industrial", 12) == 10.0   # full shift
-    assert _draw("industrial", 2) == 3.5     # night crew
+    assert _draw("industrial", 12) == 10.0  # full shift
+    assert _draw("industrial", 2) == 3.5  # night crew
     assert _draw("industrial", 12, weekday=False) < 5.0  # weekend slowdown
 
 
@@ -73,8 +75,11 @@ def test_commercial_and_flat_profiles():
 
 # --- GasGeneratorAgent ---------------------------------------------------------
 
+
 def _gas_ctx(gas_kw_max: float, cost: float = 60.0) -> AgentContext:
-    params = VPPParams(gas_kw_max=gas_kw_max, gas_cost_per_mwh=cost, battery_kwh=0.0, battery_kw_max=0.0)
+    params = VPPParams(
+        gas_kw_max=gas_kw_max, gas_cost_per_mwh=cost, battery_kwh=0.0, battery_kw_max=0.0
+    )
     state = VPPState(sim_ts=datetime.now(UTC), soc_kwh=0.0)
     market = MarketSnapshot(
         sim_ts=state.sim_ts, best_bid=None, best_ask=None, last_price=None, mid_price=None
@@ -95,22 +100,17 @@ def _gas_ctx(gas_kw_max: float, cost: float = 60.0) -> AgentContext:
 def test_gas_agent_offers_capacity_at_marginal_cost():
     agent = GasGeneratorAgent()
     ctx = _gas_ctx(gas_kw_max=30.0, cost=58.0)
-    intents = []
-    for _ in range(agent.quote_every_n_ticks + 1):
-        intents = agent.decide(ctx)
-        if intents:
-            break
-    assert len(intents) == 1
-    offer = intents[0]
+    decision = agent.decide(ctx)
+    assert len(decision.orders) == 1
+    offer = decision.orders[0]
     assert offer.side == "sell"
-    assert offer.dispatched is True
+    assert offer.purpose.value == "dispatchable"
     assert offer.price == Decimal("58.0000")
-    # 30 kW over a 30-second window = 0.25 kWh
-    assert offer.qty == Decimal("0.2500")
+    # 30 kW over a five-minute delivery interval = 2.5 kWh.
+    assert offer.qty_kwh == Decimal("2.5000")
 
 
 def test_gas_agent_silent_without_capacity():
     agent = GasGeneratorAgent()
     ctx = _gas_ctx(gas_kw_max=0.0)
-    for _ in range(agent.quote_every_n_ticks * 2):
-        assert agent.decide(ctx) == []
+    assert agent.decide(ctx).is_empty

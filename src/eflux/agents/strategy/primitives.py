@@ -83,7 +83,9 @@ def _battery_qty_kwh(
     eta = max(0.01, ctx.battery.eta_rt) ** 0.5
     terminal_head = cell_head * eta if side == "sell" else cell_head / eta
     interval_limit = ctx.battery.max_power_kw * ctx.primary_interval.duration_h
-    return min(terminal_head, interval_limit) * max(0.0, action.qty_fraction)
+    # Risk scaling may exceed 1.0, but it can only use more SOC headroom; it
+    # must never scale beyond the interval's inverter energy budget.
+    return min(terminal_head * max(0.0, action.qty_fraction), interval_limit)
 
 
 def _imbalance_qty_fraction(action: StrategyAction) -> float:

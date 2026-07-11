@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from eflux.agents.base import AgentContext, MarketSnapshot
+from eflux.agents.base import AgentContext
 from eflux.agents.hybrid import HybridPolicyAgent
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.agents.valuation import ValuationSignal
@@ -25,9 +25,10 @@ class _OutOfBandPolicy:
 
 def _tick_once(sim: Simulator, vpp) -> None:
     sim_ts = sim.clock.now_sim()
-    market = MarketSnapshot.from_engine(sim_ts, sim.engine.snapshot(depth_levels=5))
-    vpp.pv.output_kw = lambda sim_ts, rng: 5.0
-    sim._tick_vpp(vpp, sim_ts, 1.0, market)
+    vpp.state.pv_kw = 5.0
+    vpp.state.load_kw = 0.0
+    vpp.state.update_net()
+    sim._run_decision_round(sim_ts, sim._ensure_products(sim_ts))
 
 
 def test_hold_fallback_policy_counts_veto_hold_and_submits_nothing():
@@ -41,7 +42,8 @@ def test_hold_fallback_policy_counts_veto_hold_and_submits_nothing():
 
     _tick_once(sim, vpp)
 
-    assert sim.engine.book.best_ask() is None
+    product = sim._ensure_products(sim.clock.now_sim())[0]
+    assert sim.engine.snapshot(product.interval_id)["best_ask"] is None
     assert sim.veto_holds_by_vpp[vpp.vpp_id] == 1
     assert sim.fallback_invocations_by_vpp.get(vpp.vpp_id, 0) == 0
     assert sim.decide_ticks_by_vpp[vpp.vpp_id] == 1
@@ -58,7 +60,8 @@ def test_truthful_fallback_policy_requotes_and_counts_invocation():
 
     _tick_once(sim, vpp)
 
-    assert sim.engine.book.best_ask() is not None
+    product = sim._ensure_products(sim.clock.now_sim())[0]
+    assert sim.engine.snapshot(product.interval_id)["best_ask"] is not None
     assert sim.fallback_invocations_by_vpp[vpp.vpp_id] == 1
     assert sim.veto_holds_by_vpp.get(vpp.vpp_id, 0) == 0
     assert sim.decide_ticks_by_vpp[vpp.vpp_id] == 1

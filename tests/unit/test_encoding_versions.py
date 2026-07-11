@@ -20,6 +20,7 @@ from eflux.agents.ppo.primitive_encoding import (
     ENCODING_V2,
     OBS_DIM_V1,
     OBS_DIM_V3,
+    OBS_DIM_V4,
     OBS_V1,
     OBS_V3,
     action_dim,
@@ -41,8 +42,8 @@ from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
 
 
-def test_action_dim_alias_is_v1():
-    assert ACTION_DIM == ACTION_DIM_V1
+def test_action_dim_alias_is_current_v2():
+    assert ACTION_DIM == ACTION_DIM_V2
 
 
 def test_p2p_default_action_encoding_bytes_are_legacy():
@@ -224,7 +225,7 @@ def _valuation() -> ValuationSignal:
     )
 
 
-def test_encode_obs_v1_is_18_wide_and_default_byte_identical():
+def test_encode_obs_v1_is_stable_and_default_is_v4():
     set_price_ref_scale(50.0)
     obs_default = encode_obs(_ctx(), _valuation())
     obs_v1 = encode_obs(_ctx(forecast=_forecast()), _valuation(), obs_version=OBS_V1)
@@ -251,10 +252,10 @@ def test_encode_obs_v1_is_18_wide_and_default_byte_identical():
         ],
         dtype=np.float32,
     )
-    assert obs_default.shape == (OBS_DIM_V1,)
+    assert obs_default.shape == (OBS_DIM_V4,)
     assert obs_v1.shape == (OBS_DIM_V1,)
-    assert obs_default.tobytes() == obs_v1.tobytes()
-    assert obs_default.tobytes() == expected.tobytes()
+    assert obs_v1.tobytes() == expected.tobytes()
+    assert obs_default[:OBS_DIM_V1].tobytes() == obs_v1.tobytes()
 
 
 def test_encode_obs_v3_appends_forecast_channels():
@@ -289,19 +290,33 @@ def test_load_warm_start_preserves_checkpoint_obs_version(tmp_path):
     from eflux.agents.ppo.online_net import load_warm_start
 
     path_v1 = tmp_path / "ac_v1.pt"
-    torch.save(ActorCriticNet(obs_dim=OBS_DIM_V1).state_dict(), path_v1)
+    torch.save(
+        ActorCriticNet(obs_dim=OBS_DIM_V1, action_dim=ACTION_DIM_V1).state_dict(), path_v1
+    )
     loaded_v1 = load_warm_start(path_v1)
     assert loaded_v1.obs_version == OBS_V1
     assert loaded_v1.act_mean(np.zeros(OBS_DIM_V1, dtype=np.float32)).shape == (ACTION_DIM_V1,)
 
     path_v3 = tmp_path / "ac_v3.pt"
-    torch.save(ActorCriticNet(obs_dim=OBS_DIM_V3).state_dict(), path_v3)
+    torch.save(
+        ActorCriticNet(obs_dim=OBS_DIM_V3, action_dim=ACTION_DIM_V1).state_dict(), path_v3
+    )
     loaded_v3 = load_warm_start(path_v3)
     assert loaded_v3.obs_version == OBS_V3
     assert loaded_v3.act_mean(np.zeros(OBS_DIM_V3, dtype=np.float32)).shape == (ACTION_DIM_V1,)
 
     bc_path_v3 = tmp_path / "bc_v3.pt"
-    save_bc(BCNet(obs_dim=OBS_DIM_V3, obs_version=OBS_V3), str(bc_path_v3), obs_version=OBS_V3)
+    save_bc(
+        BCNet(
+            obs_dim=OBS_DIM_V3,
+            action_dim=ACTION_DIM_V1,
+            obs_version=OBS_V3,
+            encoding_version=ENCODING_V1,
+        ),
+        str(bc_path_v3),
+        obs_version=OBS_V3,
+        encoding_version=ENCODING_V1,
+    )
     loaded_bc_v3 = load_warm_start(bc_path_v3)
     assert loaded_bc_v3.obs_version == OBS_V3
     assert loaded_bc_v3.trunk[0].in_features == OBS_DIM_V3

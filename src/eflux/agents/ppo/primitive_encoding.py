@@ -76,9 +76,9 @@ OBS_V4 = 4
 N_FORECAST_CHANNELS = 6
 N_RUNTIME_CHANNELS = 9
 OBS_DIM_V1 = 18
-OBS_DIM = OBS_DIM_V1
 OBS_DIM_V3 = OBS_DIM_V1 + N_FORECAST_CHANNELS
 OBS_DIM_V4 = OBS_DIM_V3 + N_RUNTIME_CHANNELS
+OBS_DIM = OBS_DIM_V4
 
 
 def normalize_action_profile(action_profile: str | None) -> str:

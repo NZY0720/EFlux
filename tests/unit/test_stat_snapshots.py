@@ -48,15 +48,13 @@ def test_collect_rows_track_live_state():
     sim = _sim_with_two_vpps()
     sim.session_id = 1
     vpp = next(v for v in sim.vpps.values() if v.name == "solar-a")
-    vpp.state.pnl = Decimal("12345")  # internal $/MWh x kWh units
+    vpp.state.pnl = Decimal("12.345")  # real USD
     vpp.trade_count = 9
     vpp.state.cumulative_energy_sold_kwh = 3.5
 
-    row = next(
-        r for r in sim._collect_stat_rows(1, datetime.now(UTC)) if r["name"] == "solar-a"
-    )
+    row = next(r for r in sim._collect_stat_rows(1, datetime.now(UTC)) if r["name"] == "solar-a")
 
-    assert row["pnl_usd"] == Decimal("12.345")  # /1000 internal -> USD
+    assert row["pnl_usd"] == Decimal("12.345")
     assert row["trade_count"] == 9
     assert row["energy_sold_kwh"] == 3.5
 

@@ -25,35 +25,6 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class OrderIntent:
-    side: str  # "buy" or "sell"
-    price: Decimal
-    qty: Decimal
-    # True for dispatched energy (battery-band arbitrage, gas generation):
-    # it is excluded from ambient resting-order exposure. Fills still use the
-    # unified settlement path.
-    dispatched: bool = False
-
-
-@dataclass
-class CancelIntent:
-    """Cancel a resting order this VPP owns, by engine order id."""
-
-    order_id: int
-
-
-@dataclass
-class ReplaceIntent:
-    """Atomically reprice/resize a resting order this VPP owns. The runner may
-    implement it as cancel-then-submit; the compiler emits it so a strategy can
-    reprice stale quotes without a gap in the book."""
-
-    order_id: int
-    new_price: Decimal
-    new_qty: Decimal
-
-
-@dataclass
 class OpenOrderView:
     """Read-only view of one of this VPP's own resting orders, surfaced to the
     agent so strategy primitives (e.g. CANCEL_REPRICE) can act on stale quotes.

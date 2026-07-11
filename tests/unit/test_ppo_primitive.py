@@ -61,7 +61,9 @@ def test_env_is_deterministic_given_seed():
         env = VPPPrimitiveEnv({"seed": 5, "episode_ticks": 10})
         env.reset(seed=5)
         rng = np.random.default_rng(5)
-        return sum(env.step(rng.uniform(-2, 2, ACTION_DIM).astype(np.float32))[1] for _ in range(10))
+        return sum(
+            env.step(rng.uniform(-2, 2, ACTION_DIM).astype(np.float32))[1] for _ in range(10)
+        )
 
     assert rollout() == rollout()
 
@@ -78,12 +80,12 @@ def test_noop_action_keeps_reward_finite():
 def test_soc_reward_band_allows_high_solar_charge():
     assert SOC_LOW == 0.1
     assert SOC_HIGH == 0.95
-    assert W_SOC == 8.0
+    assert W_SOC == 0.02
 
     soc_dev_90 = max(0.0, SOC_LOW - 0.9) + 0.25 * max(0.0, 0.9 - SOC_HIGH)
     soc_dev_empty = max(0.0, SOC_LOW - 0.05) + 0.25 * max(0.0, 0.05 - SOC_HIGH)
     soc_dev_full = max(0.0, SOC_LOW - 1.0) + 0.25 * max(0.0, 1.0 - SOC_HIGH)
 
     assert soc_dev_90 == 0.0
-    assert W_SOC * soc_dev_empty == 0.4
-    assert W_SOC * soc_dev_full == pytest.approx(0.1)
+    assert W_SOC * soc_dev_empty == pytest.approx(0.001)
+    assert W_SOC * soc_dev_full == pytest.approx(0.00025)

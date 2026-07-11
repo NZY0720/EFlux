@@ -10,7 +10,7 @@ import pytest
 
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.hybrid import HybridPolicyAgent
-from eflux.agents.reflective.llm_client import LLMBudgetExceeded, LLMClient, LLMUsageBudget
+from eflux.agents.reflective.llm_client import LLMClient, LLMUsageMeter
 from eflux.agents.reflective.strategist import LLMStrategist
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad
@@ -28,9 +28,8 @@ class _ResponseClient:
 
 
 @pytest.mark.asyncio
-async def test_llm_client_tracks_provider_usage_and_stops_before_budget_breach():
-    budget = LLMUsageBudget(
-        max_cost_usd=0.00011,
+async def test_llm_client_tracks_provider_usage_without_blocking_calls():
+    usage_meter = LLMUsageMeter(
         input_cost_per_million_tokens=1.0,
         output_cost_per_million_tokens=1.0,
     )
@@ -38,7 +37,7 @@ async def test_llm_client_tracks_provider_usage_and_stops_before_budget_breach()
         base_url="https://example.test/v1",
         api_key="secret",
         model="model",
-        budget=budget,
+        usage_meter=usage_meter,
     )
     await client._client.aclose()
     client._client = _ResponseClient(
@@ -54,12 +53,9 @@ async def test_llm_client_tracks_provider_usage_and_stops_before_budget_breach()
         "prompt_tokens": 10,
         "completion_tokens": 20,
         "estimated_cost_usd": 0.00003,
-        "reserved_cost_usd": 0.0,
-        "max_cost_usd": 0.00011,
-        "remaining_cost_usd": 0.00008,
     }
-    with pytest.raises(LLMBudgetExceeded):
-        await client.chat([{"role": "user", "content": "x"}], max_tokens=100)
+    assert await client.chat([{"role": "user", "content": "x"}], max_tokens=100) == "{}"
+    assert client.usage["calls"] == 2
 
 
 def _ctx() -> AgentContext:
@@ -121,23 +117,3 @@ async def test_hybrid_sends_windowed_trade_imbalance_and_rejection_feedback():
     assert latest["rejection_delta"] == 2
     assert latest["realized_abs_imbalance_delta_kwh"] == pytest.approx(0.15)
     assert latest["residual_contract_exposure_kwh"] == pytest.approx(0.05)
-
-
-@pytest.mark.asyncio
-async def test_strategist_treats_budget_exhaustion_as_skip_not_live_failure():
-    class BudgetClient:
-        async def chat(self, messages, *, temperature=0.2):
-            raise LLMBudgetExceeded("ceiling reached")
-
-    strategist = LLMStrategist(client=BudgetClient())
-    result = await strategist.arefresh(
-        recent_pnl=[],
-        soc_frac=0.5,
-        best_bid=None,
-        best_ask=None,
-        last_price=None,
-    )
-    assert result is None
-    assert strategist.skipped_count == 1
-    assert strategist.fail_count == 0
-    assert "ceiling reached" in strategist.reflection_log[-1]["error"]

@@ -9,11 +9,21 @@ import pytest
 
 from eflux.bridge.bus import InMemoryBus
 from eflux.market.events import EventKind, TickEvent
+from eflux.market.products import next_delivery_interval
 
 
 def _tick(n: int) -> TickEvent:
     now = datetime.now(UTC)
-    return TickEvent(kind=EventKind.TICK, sim_ts=now, wall_ts=now, tick_no=n)
+    product = next_delivery_interval(now)
+    return TickEvent(
+        kind=EventKind.TICK,
+        sim_ts=now,
+        wall_ts=now,
+        tick_no=n,
+        interval_id=product.interval_id,
+        delivery_start=product.start,
+        delivery_end=product.end,
+    )
 
 
 @pytest.mark.asyncio

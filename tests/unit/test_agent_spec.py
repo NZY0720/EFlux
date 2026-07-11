@@ -119,7 +119,7 @@ def test_agent_params_reach_agent_constructor(monkeypatch, tmp_path):
 vpps:
   - name: gas-custom
     agent: gas
-    agent_params: { quote_every_n_ticks: 7 }
+    agent_params: { min_qty: 0.02 }
     params: { gas_kw_max: 10.0, pv_kw_peak: 0.0, battery_kwh: 0.0, battery_kw_max: 0.0, load_kw_base: 0.0 }
 """,
         encoding="utf-8",
@@ -135,7 +135,7 @@ vpps:
         get_settings.cache_clear()
 
     gas = next(v for v in sim.vpps.values() if v.name == "gas-custom")
-    assert gas.agent.quote_every_n_ticks == 7
+    assert gas.agent.min_qty == 0.02
 
 
 def test_duplicate_names_rejected(monkeypatch, tmp_path):

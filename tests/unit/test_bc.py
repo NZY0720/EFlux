@@ -16,7 +16,6 @@ pytest.importorskip("gymnasium")
 from eflux.agents.ppo.primitive_encoding import (
     ACTION_DIM_V2,
     ENCODING_V2,
-    N_MODES,
     OBS_DIM,
     decode_action,
     encode_action,
@@ -49,7 +48,7 @@ def test_collect_demonstrations_shapes():
     obs, acts = collect_demonstrations(ScriptedStrategyPolicy(), n_episodes=3, seed=0)
     assert obs.shape[0] == acts.shape[0] > 0
     assert obs.shape[1] == OBS_DIM
-    assert acts.shape[1] == N_MODES + 4
+    assert acts.shape[1] == ACTION_DIM_V2
 
 
 def test_bc_version_plumbing_uses_v2_width():
