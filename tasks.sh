@@ -107,12 +107,13 @@ EOF
       -H 'Content-Type: application/json' \
       -d "{\"name\":\"smoke-vpp-$(date +%s)\",\"params\":{}}")
     vpp_id=$(printf '%s' "$vpp_json" | extract "['id']")
+    product_id=$(curl -fsS "$base/market/products" | extract "[0]['product_id']")
     echo "user_id=$user_id vpp_id=$vpp_id"
 
     order_json=$(curl -fsS -X POST "$base/orders" \
       -H "Authorization: Bearer $session_token" \
       -H 'Content-Type: application/json' \
-      -d "{\"vpp_id\":\"$vpp_id\",\"side\":\"buy\",\"price\":80,\"qty\":0.05}")
+      -d "{\"vpp_id\":\"$vpp_id\",\"side\":\"buy\",\"price\":80,\"qty_kwh\":0.05,\"product_id\":\"$product_id\",\"purpose\":\"battery\"}")
     order_id=$(printf '%s' "$order_json" | extract "['order_id']")
     trades=$(printf '%s' "$order_json" | extract "['trades'].__len__()")
     remaining=$(printf '%s' "$order_json" | extract "['remaining_qty']")

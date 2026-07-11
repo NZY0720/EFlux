@@ -8,6 +8,7 @@ import type {
   CompetitionDetail,
   CompetitionLeaderboard,
   CompetitionListItem,
+  DeliveryProduct,
   ForecastHistoryRecord,
   ForecastTarget,
   LatestForecastResponse,
@@ -22,9 +23,11 @@ import type {
   MarketReflection,
   MarketSnapshot,
   OrderSubmitResponse,
+  OrderPurpose,
   Participant,
   SessionInfo,
   SupplyCurve,
+  TimeInForce,
   VPP,
 } from "./types";
 
@@ -294,7 +297,11 @@ export async function submitOrder(payload: {
   vpp_id: number;
   side: "buy" | "sell";
   price: number;
-  qty: number;
+  qty_kwh: number;
+  product_id: string;
+  purpose: OrderPurpose;
+  time_in_force: TimeInForce;
+  ttl_sec?: number;
 }): Promise<OrderSubmitResponse> {
   const { data } = await api.post<OrderSubmitResponse>("/orders", payload);
   return data;
@@ -304,6 +311,11 @@ export async function submitOrder(payload: {
 
 export async function fetchSnapshot(depth = 10): Promise<MarketSnapshot> {
   const { data } = await api.get<MarketSnapshot>("/market/snapshot", { params: { depth } });
+  return data;
+}
+
+export async function fetchProducts(): Promise<DeliveryProduct[]> {
+  const { data } = await api.get<DeliveryProduct[]>("/market/products");
   return data;
 }
 

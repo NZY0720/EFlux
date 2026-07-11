@@ -1,15 +1,15 @@
 """Order-program compiler.
 
 `OrderProgramCompiler.compile(ctx, action, valuation)` is the deterministic translation
-from a policy's `StrategyAction` to concrete market intents (design note §4, §8). It:
+from a policy's `StrategyAction` to concrete V2 requests. It:
 
 1. builds the `OrderProgram` for the chosen primitive (via `primitives.build_program`),
-2. drops dust / non-positive orders (the same min_qty / price>0 guard Truthful applied),
+2. drops dust quantities and non-finite signed prices,
 3. expands the program's cancel policy against the VPP's own resting orders into
-   `CancelIntent` / `ReplaceIntent`.
+   `CancelRequest` / `ReplaceRequest`.
 
-It is pure and independently testable — no market calls, no agent state. The runner (or
-RiskGate) is what actually submits the resulting intents.
+It is pure and independently testable — no market calls, no agent state. The runner
+submits the resulting decision through TradingGatewayV2.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ class OrderProgramCompiler:
         if not policy.reprice:
             return [CancelRequest(o.order_id) for o in stale], [], set()
 
-        # Reprice: pair each stale order with a fresh same-side spec → ReplaceIntent;
+        # Reprice: pair each stale order with a fresh same-side spec → ReplaceRequest;
         # unpaired stale orders become plain cancels, unpaired specs stay as new orders.
         cancels: list[CancelRequest] = []
         replaces: list[ReplaceRequest] = []

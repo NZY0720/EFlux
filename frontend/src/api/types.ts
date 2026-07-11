@@ -26,7 +26,28 @@ export interface MarketSnapshot {
   data_source: DataSourceStatus;
   external_market: ExternalMarket;
   balance: MarketBalance;
+  product_id: string;
+  delivery_start: string;
+  delivery_end: string;
+  gate_closure: string;
 }
+
+export interface DeliveryProduct {
+  product_id: string;
+  market: string;
+  delivery_start: string;
+  delivery_end: string;
+  gate_closure: string;
+  opens_at: string;
+  is_open: boolean;
+  is_closed: boolean;
+  best_bid: string | null;
+  best_ask: string | null;
+  last_price: string | null;
+}
+
+export type OrderPurpose = "balance" | "battery" | "dispatchable" | "flex_load";
+export type TimeInForce = "good_til_gate" | "immediate_or_cancel" | "fill_or_kill";
 
 export interface ForecastSkillMetric {
   n: number;
@@ -343,6 +364,7 @@ export interface OrderSubmitResponse {
   remaining_qty: string;
   /** Sim time the unfilled remainder is swept by the order TTL; null = rests. */
   expires_at_sim?: string | null;
+  product_id: string;
   trades: Array<TradeEvent | ExternalTradeEvent>;
 }
 

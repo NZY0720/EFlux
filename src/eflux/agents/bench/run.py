@@ -10,11 +10,13 @@ from __future__ import annotations
 import argparse
 import math
 from datetime import datetime
+from decimal import Decimal
 from zoneinfo import ZoneInfo
 
 from eflux.agents.bench.metrics import EpisodeMetrics, format_leaderboard
 from eflux.agents.bench.scenarios import candidates, counter_roster, test_slot_params
 from eflux.bridge.bus import InMemoryBus
+from eflux.data.electricity_market import synthetic_quote
 from eflux.forecasting.service import ForecastService
 from eflux.simulator.runner import Simulator
 from eflux.vpp.base import VPPParams
@@ -60,17 +62,30 @@ def run_episode(
     forecasts_enabled: bool = True,
     episode_seed: int = 0,
     candidate_params: VPPParams | None = None,
+    market_price_ref: Decimal | None = None,
+    market_mode: str = "p2p",
 ) -> tuple[Simulator, object]:
     """One episode: counter-roster + the candidate in the test slot, stepped n_ticks
     through the exact gate path the live loop uses."""
     sim = Simulator(bus=InMemoryBus(), sim_epoch=BENCH_EPOCH)
+    if market_mode not in {"p2p", "realprice"}:
+        raise ValueError(f"unsupported benchmark market_mode {market_mode!r}")
+    sim.market_mode = market_mode
+    if market_mode == "realprice":
+        sim._external_market_quote = synthetic_quote(
+            price=market_price_ref or Decimal("50"),
+            status="real",
+            source="paired-world fixed grid",
+            now=BENCH_EPOCH,
+            transaction_fee=Decimal("2"),
+        )
     # Let resting orders survive a few ticks (the live default TTL is tuned for 1s
     # ticks; at the bench's coarser cadence it would expire orders within their own
     # tick and kill cross-tick liquidity).
     sim.order_ttl_sec = tick_h * 3600.0 * 4
     if forecasts_enabled:
         sim.forecast_service = ForecastService()
-    for spec in counter_roster():
+    for spec in counter_roster(price_ref=market_price_ref or Decimal("50")):
         sim.add_builtin_vpp(
             spec.name,
             spec.params,
@@ -131,6 +146,8 @@ def score(
     forecasts_enabled: bool = True,
     episode_seed: int = 0,
     candidate_params: VPPParams | None = None,
+    market_price_ref: Decimal | None = None,
+    market_mode: str = "p2p",
 ) -> EpisodeMetrics:
     """Run one candidate through an episode and measure it (shared by the benchmark
     and the PPO eval so they score identically)."""
@@ -141,6 +158,8 @@ def score(
         forecasts_enabled=forecasts_enabled,
         episode_seed=episode_seed,
         candidate_params=candidate_params,
+        market_price_ref=market_price_ref,
+        market_mode=market_mode,
     )
     return measure_episode(name, sim, vpp, n_ticks)
 

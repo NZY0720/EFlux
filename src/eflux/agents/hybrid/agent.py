@@ -2,7 +2,7 @@
 
 Assembles the M1 pieces into a working BaseAgent: a valuation oracle estimates what the
 energy is worth, a `StrategyPolicy` selects one `StrategyAction`, and the
-`OrderProgramCompiler` lowers it to order intents. The runner's RiskGate (M2) then has
+`OrderProgramCompiler` lowers it to an AgentDecision. TradingGatewayV2 then has
 final say over what reaches the engine.
 
 This is the scripted precursor to the full `HybridPolicyAgent` (M6): swap the default
@@ -70,7 +70,7 @@ class StrategyAgent(BaseAgent):
 class HybridPolicyAgent(BaseAgent):
     """The full layered agent (design note §5, §8): a slow LLM strategist coaches a fast
     tactical executor over the structured action space; the Truthful oracle values the
-    energy, the compiler lowers the chosen action, and the runner's RiskGate has final
+    energy, the compiler lowers the chosen action, and TradingGatewayV2 has final
     say (with a configurable fallback policy when the executor's batch is fully vetoed).
 
     LLM guidance enters through apply_guidance and audit metadata: mode_pin, halt,

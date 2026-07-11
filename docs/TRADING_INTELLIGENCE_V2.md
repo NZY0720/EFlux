@@ -4,6 +4,9 @@ This document is the implementation index for the unreleased V2 redesign. No
 V1 compatibility is required. Old checkpoints and generated results were
 deleted when the branch was created.
 
+The current verification record is
+[TRADING_V2_ACCEPTANCE.md](TRADING_V2_ACCEPTANCE.md).
+
 ## Accepted defaults
 
 - 1-second physical simulation ticks.

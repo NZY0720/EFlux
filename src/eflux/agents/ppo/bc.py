@@ -145,6 +145,65 @@ def collect_demonstrations(
     return np.asarray(obs_rows, dtype=np.float32), np.asarray(act_rows, dtype=np.float32)
 
 
+def collect_scenario_demonstrations(
+    expert: StrategyPolicy,
+    *,
+    n_episodes: int = 10,
+    intervals_per_episode: int = 288,
+    seed: int = 0,
+    market_mode: str = "p2p",
+    demand_beta: float = _DEMO_DEMAND_BETA,
+    encoding_version: int = ENCODING_V2,
+    obs_version: int = OBS_V4,
+    action_profile: str | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Collect expert decisions inside the multi-agent live simulator topology.
+
+    The primitive env supplies broad price/weather coverage, while these rows
+    cover the actual scheduler, counterparties, product books, forecasts, and
+    delivery cadence used by serving.  Mixing both prevents a checkpoint that
+    scores well in the single-agent env but stands down in the live market.
+    """
+
+    from eflux.agents.bench.run import run_episode
+
+    profile = action_profile or action_profile_for_market(market_mode)
+    price_ref = Decimal(str(price_ref_scale()))
+    obs_rows: list[np.ndarray] = []
+    act_rows: list[np.ndarray] = []
+
+    class RecordingPolicy:
+        def select_action(self, ctx, valuation, guidance=None):
+            action = expert.select_action(ctx, valuation, guidance)
+            obs_rows.append(encode_obs(ctx, valuation, obs_version=obs_version))
+            act_rows.append(
+                encode_action(
+                    action,
+                    version=encoding_version,
+                    action_profile=profile,
+                )
+            )
+            return action
+
+    for episode in range(n_episodes):
+        recorder = RecordingPolicy()
+        run_episode(
+            lambda recorder=recorder: StrategyAgent(
+                price_ref=price_ref,
+                demand_beta=demand_beta,
+                use_forecast=True,
+                policy=recorder,
+            ),
+            n_ticks=intervals_per_episode,
+            tick_h=5.0 / 60.0,
+            forecasts_enabled=True,
+            episode_seed=seed + episode,
+            market_price_ref=price_ref,
+            market_mode=market_mode,
+        )
+    return np.asarray(obs_rows, dtype=np.float32), np.asarray(act_rows, dtype=np.float32)
+
+
 def train_bc(
     obs: np.ndarray,
     acts: np.ndarray,
@@ -173,7 +232,6 @@ def train_bc(
         action_profile=action_profile,
     )
     opt = torch.optim.Adam(net.parameters(), lr=lr)
-    ce = nn.CrossEntropyLoss()
     mse = nn.MSELoss()
     x = torch.as_tensor(obs)
     expected_obs_dim = obs_dim_for(obs_version)
@@ -182,6 +240,14 @@ def train_bc(
             f"expected obs width {expected_obs_dim} for observation V{obs_version}, got {obs.shape[1]}"
         )
     mode_idx = torch.as_tensor(np.argmax(acts[:, :n_modes], axis=1)).long()
+    # Delivery data is naturally imbalanced (e.g. nighttime deficit dominates
+    # solar surplus).  Unweighted CE can score highly by predicting the majority
+    # mode while never learning to sell.  Square-root inverse-frequency weights
+    # preserve majority calibration without erasing minority delivery modes.
+    counts = torch.bincount(mode_idx, minlength=n_modes).float().clamp_min(1.0)
+    class_weights = torch.sqrt(mode_idx.numel() / (n_modes * counts))
+    class_weights = class_weights / class_weights.mean()
+    ce = nn.CrossEntropyLoss(weight=class_weights)
     params = torch.as_tensor(acts[:, n_modes:])
     net.train()
     for _ in range(epochs):
@@ -224,6 +290,20 @@ def trade_mode_accuracy(net: BCNet, obs: np.ndarray, acts: np.ndarray) -> float:
     with torch.no_grad():
         pred = net(torch.as_tensor(obs)).numpy()[:, :n_modes].argmax(1)
     return float((pred[mask] == true[mask]).mean())
+
+
+def per_mode_recall(net: BCNet, obs: np.ndarray, acts: np.ndarray) -> dict[str, float]:
+    """Recall for every demonstrated primitive; exposes majority-mode collapse."""
+
+    modes = primitive_modes_for(action_profile=getattr(net, "action_profile", None))
+    true = np.argmax(acts[:, : len(modes)], axis=1)
+    with torch.no_grad():
+        pred = net(torch.as_tensor(obs)).numpy()[:, : len(modes)].argmax(1)
+    return {
+        mode.value: float((pred[true == idx] == idx).mean())
+        for idx, mode in enumerate(modes)
+        if np.any(true == idx)
+    }
 
 
 def mean_episode_reward(

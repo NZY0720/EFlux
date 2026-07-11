@@ -2,8 +2,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import { AlertCircle, Bot, CheckCircle2, Layers3, ShoppingCart, Trash2, Zap } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 
-import { deleteManagedVPP, deleteVPP, fetchManagedVPPPerformance, listManagedVPPs, listModels, listVPPs, submitOrder } from "../api/client";
-import type { ManagedVPP, ManagedVPPPerformance, VPP } from "../api/types";
+import { deleteManagedVPP, deleteVPP, fetchManagedVPPPerformance, fetchProducts, listManagedVPPs, listModels, listVPPs, submitOrder } from "../api/client";
+import type { DeliveryProduct, ManagedVPP, ManagedVPPPerformance, OrderPurpose, TimeInForce, VPP } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill } from "../components/DashboardCard";
 import PriceChart from "../components/PriceChart";
 import { algorithmChipLabel, isLlmManaged, LLMBadge, ManagedControls, ManagedPerformancePanel, NumberField } from "./vpps/LegacyVppParts";
@@ -77,8 +77,33 @@ function ManualOrder({ vpp, onError }: { vpp: VPP; onError: (message: string | n
   const [side, setSide] = useState<"buy" | "sell">("buy");
   const [price, setPrice] = useState(50);
   const [qty, setQty] = useState(0.05);
+  const [products, setProducts] = useState<DeliveryProduct[]>([]);
+  const [productId, setProductId] = useState("");
+  const [purpose, setPurpose] = useState<OrderPurpose>("balance");
+  const [timeInForce, setTimeInForce] = useState<TimeInForce>("good_til_gate");
+  const [ttlSec, setTtlSec] = useState(120);
   const [busy, setBusy] = useState(false);
   const [lastOrder, setLastOrder] = useState<string | null>(null);
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); onError(null); setLastOrder(null); try { const result = await submitOrder({ vpp_id: vpp.id, side, price, qty }); setLastOrder(`order ${result.order_id} - ${result.trades.length} fill(s), remaining=${result.remaining_qty}`); } catch (err) { onError((err as Error).message); } finally { setBusy(false); } };
-  return <DashboardCard><CardTitle icon={ShoppingCart}>Submit order</CardTitle><form onSubmit={submit} className="space-y-3"><p className="text-xs text-[var(--text-muted)]">Submitting as {vpp.name} (#{vpp.id})</p><div className="inline-flex overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-inset)]">{(["buy", "sell"] as const).map((value) => <button key={value} type="button" onClick={() => setSide(value)} className={`px-4 py-2 text-sm font-semibold uppercase ${side === value ? value === "buy" ? "bg-[var(--success)] text-[var(--text-inverse)]" : "bg-[var(--danger)] text-[var(--text-inverse)]" : "text-[var(--text-muted)]"}`}>{value}</button>)}</div><div className="grid grid-cols-2 gap-2"><NumberField label="Price" value={price} step="0.01" onChange={setPrice} /><NumberField label="Qty (kWh)" value={qty} step="0.01" onChange={setQty} /></div><button disabled={busy} className={`eflux-btn h-10 w-full px-4 text-sm font-semibold disabled:opacity-50 ${side === "buy" ? "eflux-btn-success" : "eflux-btn-danger"}`}><Zap size={16} />{busy ? "Submitting…" : `Submit ${side.toUpperCase()}`}</button>{lastOrder && <div className="flex items-center gap-2 rounded-lg bg-[var(--success-soft)] px-3 py-2 text-sm text-[var(--success)]"><CheckCircle2 size={16} />{lastOrder}</div>}</form></DashboardCard>;
+  useEffect(() => {
+    fetchProducts().then((rows) => {
+      const open = rows.filter((row) => row.is_open && !row.is_closed);
+      setProducts(open);
+      setProductId((current) => current || open[0]?.product_id || "");
+    }).catch((err: Error) => onError(err.message));
+  }, [onError]);
+  useEffect(() => {
+    if (purpose === "dispatchable" && side === "buy") setPurpose("balance");
+    if (purpose === "flex_load" && side === "sell") setPurpose("balance");
+  }, [side, purpose]);
+  const purposes: Array<{ value: OrderPurpose; label: string }> = side === "buy"
+    ? [{ value: "balance", label: "Load balance" }, { value: "battery", label: "Battery charge" }, { value: "flex_load", label: "Flexible load" }]
+    : [{ value: "balance", label: "Renewable surplus" }, { value: "battery", label: "Battery discharge" }, { value: "dispatchable", label: "Dispatchable generation" }];
+  const submit = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); onError(null); setLastOrder(null);
+    try {
+      const result = await submitOrder({ vpp_id: vpp.id, side, price, qty_kwh: qty, product_id: productId, purpose, time_in_force: timeInForce, ...(timeInForce === "good_til_gate" ? { ttl_sec: ttlSec } : {}) });
+      setLastOrder(`order ${result.order_id} · ${result.product_id} · ${result.trades.length} fill(s), remaining=${result.remaining_qty} kWh`);
+    } catch (err) { onError((err as Error).message); } finally { setBusy(false); }
+  };
+  return <DashboardCard><CardTitle icon={ShoppingCart}>Submit delivery order</CardTitle><form onSubmit={submit} className="space-y-3"><p className="text-xs text-[var(--text-muted)]">Submitting as {vpp.name} (#{vpp.id}). Prices are USD/MWh; negative prices are valid.</p><div className="inline-flex overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-inset)]">{(["buy", "sell"] as const).map((value) => <button key={value} type="button" onClick={() => setSide(value)} className={`px-4 py-2 text-sm font-semibold uppercase ${side === value ? value === "buy" ? "bg-[var(--success)] text-[var(--text-inverse)]" : "bg-[var(--danger)] text-[var(--text-inverse)]" : "text-[var(--text-muted)]"}`}>{value}</button>)}</div><label className="block text-xs font-medium text-[var(--text-muted)]">Delivery product<select required value={productId} onChange={(event) => setProductId(event.target.value)} className="eflux-select mt-1 w-full rounded-md px-3 py-2 text-sm outline-none"><option value="" disabled>No open product</option>{products.map((product) => <option key={product.product_id} value={product.product_id}>{new Date(product.delivery_start).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}–{new Date(product.delivery_end).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} · gate {new Date(product.gate_closure).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</option>)}</select></label><div className="grid grid-cols-2 gap-2"><label className="block text-xs font-medium text-[var(--text-muted)]">Physical purpose<select value={purpose} onChange={(event) => setPurpose(event.target.value as OrderPurpose)} className="eflux-select mt-1 w-full rounded-md px-3 py-2 text-sm outline-none">{purposes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label><label className="block text-xs font-medium text-[var(--text-muted)]">Time in force<select value={timeInForce} onChange={(event) => setTimeInForce(event.target.value as TimeInForce)} className="eflux-select mt-1 w-full rounded-md px-3 py-2 text-sm outline-none"><option value="good_til_gate">Good til gate</option><option value="immediate_or_cancel">IOC</option><option value="fill_or_kill">FOK</option></select></label></div><div className="grid grid-cols-2 gap-2"><NumberField label="Price (USD/MWh)" value={price} step="0.01" onChange={setPrice} /><NumberField label="Qty (kWh)" value={qty} step="0.01" onChange={setQty} /></div>{timeInForce === "good_til_gate" && <NumberField label="TTL (sim seconds)" value={ttlSec} step="1" onChange={setTtlSec} />}<p className="text-[11px] text-[var(--text-subtle)]">Purpose is a physical commitment: the gateway checks battery power/SOC, generation ramp, flexible-load headroom, and delivery energy before accepting.</p><button disabled={busy || !productId} className={`eflux-btn h-10 w-full px-4 text-sm font-semibold disabled:opacity-50 ${side === "buy" ? "eflux-btn-success" : "eflux-btn-danger"}`}><Zap size={16} />{busy ? "Submitting…" : `Submit ${side.toUpperCase()}`}</button>{lastOrder && <div className="flex items-center gap-2 rounded-lg bg-[var(--success-soft)] px-3 py-2 text-sm text-[var(--success)]"><CheckCircle2 size={16} />{lastOrder}</div>}</form></DashboardCard>;
 }

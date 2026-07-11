@@ -2,7 +2,7 @@
 
 One PPO-controlled VPP acts in the *structured primitive space* — it emits a
 `StrategyAction` (mode + parameters), which the real `OrderProgramCompiler` lowers and the
-real `RiskGate` validates before it hits a matching engine — against a synthetic
+real TradingGatewayV2 validates before it hits the product venue — against a synthetic
 counter-party. This trains the policy over the exact pipeline used live (oracle →
 compiler → risk gate), so a checkpoint transfers to the live `PPOPrimitiveAgent` without
 distribution shift in the action semantics.

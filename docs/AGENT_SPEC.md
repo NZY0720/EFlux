@@ -86,9 +86,11 @@ All `agent: hybrid` entries share **one** LLM connection (configured via
   `LLMStrategist` supplies soft guidance (`preferred_modes`, `avoid_modes`,
   `risk_budget`, `soc_target`), and the compiler lowers the primitive into
   concrete orders. The LLM never submits raw orders.
-- **Risk gate** — every compiled order still passes through the simulator's
-  `RiskGate`; if a batch is fully vetoed, the hybrid agent exposes a Truthful
-  fallback path for a safe retry.
+- **Trading gateway** — every compiled order passes through `TradingGatewayV2`,
+  which validates cash, delivery product, declared physical purpose, power,
+  energy, SOC, ramp and reservations before the product venue sees it. If a
+  tactical batch is fully rejected, the configured fallback is compiled and
+  submitted through the same gateway; there is no bypass.
 - **Fallback** — when the LLM is unconfigured or unreachable, hybrid agents
   and legacy `reflective` entries trade on the scripted hybrid baseline and report
   `llm_status` accordingly. Nothing else changes.
@@ -121,15 +123,24 @@ VPP_ID=$(curl -s -X POST $BASE/vpps -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' \
   -d '{"name":"my-external-vpp","params":{"pv_kw_peak":4.0,"battery_kwh":10.0}}' | jq -r '.id')
 
-# 4. Trade
+# 4. Discover an open delivery product, then trade
+PRODUCT_ID=$(curl -s $BASE/market/products | jq -r '[.[] | select(.is_open)][0].product_id')
 curl -s -X POST $BASE/orders -H "Authorization: Bearer $KEY" \
   -H 'Content-Type: application/json' \
-  -d "{\"vpp_id\":$VPP_ID,\"side\":\"buy\",\"price\":49.5,\"qty\":1.0}"
+  -d "{\"vpp_id\":$VPP_ID,\"side\":\"buy\",\"price\":49.5,\"qty_kwh\":1.0,
+       \"product_id\":\"$PRODUCT_ID\",\"purpose\":\"balance\",
+       \"time_in_force\":\"good_til_gate\",\"ttl_sec\":120}"
 ```
 
 ### Order semantics
 
-- Bounds: `0 < price ≤ 1000`, `0.01 ≤ qty ≤ 1000`.
+- Bounds: `-150 ≤ price ≤ 1000 USD/MWh`, `0.01 ≤ qty_kwh ≤ 1000 kWh`.
+- Every order names a five-minute `product_id`, a physical `purpose`
+  (`balance`, `battery`, `dispatchable`, or `flex_load`), and a time in force
+  (`good_til_gate`, `immediate_or_cancel`, or `fill_or_kill`). `system_grid` is
+  reserved for the platform grid participant.
+- Purpose is enforceable, not descriptive metadata: the gateway reserves the
+  corresponding battery, dispatchable, flexible-load, balance and cash capacity.
 - Matching: continuous double auction, price-time priority; fills happen at
   the **resting** order's price.
 - **Realtime only**: external orders are rejected (409) while the market runs
@@ -148,6 +159,7 @@ curl -s -X POST $BASE/orders -H "Authorization: Bearer $KEY" \
 | Endpoint | Purpose |
 |---|---|
 | `GET /market/snapshot?depth=N` | Book depth, last price, speed, **balance** block (supply/demand KPI). |
+| `GET /market/products` | Open delivery products, delivery/gate times and top of book. |
 | `GET /market/trades?limit=N` | Recent trades (backfill). |
 | `GET /market/participants` | id → name/kind/strategy directory. |
 | `GET /market/supply_curve` | Resting orders with per-VPP category attribution (merit order). |
@@ -161,11 +173,11 @@ curl -s -X POST $BASE/orders -H "Authorization: Bearer $KEY" \
 payload shapes as the REST backfill endpoints. Reconnect + replay from
 `GET /market/trades`.
 
-## 5. Agent Protocol v1 — batch orders, state & governance (Tier A1)
+## 5. Agent Protocol v2 — batch orders, state & governance (Tier A1)
 
 An async agent runs its own loop: read state → decide → submit a **batch** of orders and
 cancels in one authenticated call → reconcile. Realtime-only (rejected at 10x/100x); every
-order passes the same `RiskGate` as the built-in fleet. The per-account order bucket is
+order passes the same `TradingGatewayV2` as the built-in fleet. The per-account order bucket is
 shared with single `POST /orders`, so callers cannot bypass batch governance by looping
 one order at a time.
 
@@ -181,15 +193,17 @@ the whole market.
 
 ### Submit + cancel a batch — `POST /orders/batch`
 
-The canonical Agent Protocol v1 envelope:
+The canonical Agent Protocol v2 envelope:
 
 ```jsonc
 {
-  "protocol_version": 1,                 // required; the server speaks v1
+  "protocol_version": 2,
   "idempotency_key": "uuid-...",         // optional; a replay returns the original result
   "deadline": "2026-07-01T12:00:00Z",    // optional; a stale batch is rejected (409)
   "orders": [                            // up to 50; each risk-gated independently
-    {"vpp_id": 12, "side": "sell", "price": 55.0, "qty": 1.0, "client_ref": "a"}
+    {"vpp_id": 12, "side": "sell", "price": 55.0, "qty_kwh": 1.0,
+     "product_id": "p2p:...", "purpose": "balance",
+     "time_in_force": "good_til_gate", "ttl_sec": 120, "client_ref": "a"}
   ],
   "cancels": [4211, 4212]                // up to 50 order_ids (only your own are touched)
 }
@@ -199,7 +213,7 @@ Response:
 
 ```jsonc
 {
-  "protocol_version": 1,
+  "protocol_version": 2,
   "tick_id": 84213,                      // current market tick, for staleness detection
   "results": [
     {"index": 0, "client_ref": "a", "status": "accepted",
@@ -228,8 +242,8 @@ Semantics:
 ### Rate limits
 
 Per account, a token bucket: **120 orders burst, refilling at 2/s**. Each order costs one
-token; cancels are free. Exceeding it returns **429** with the remaining budget. Read
-endpoints and the single-order `POST /orders` path are unaffected.
+token; cancels are free. Exceeding it returns **429** with the remaining capacity. The
+single-order and batch paths share this limiter.
 
 ### Python SDK & MCP
 
@@ -240,7 +254,11 @@ endpoints and the single-order `POST /orders` path are unaffected.
   ```python
   async with EFluxClient("http://localhost:8000", token=API_KEY) as c:
       vpp = await c.create_vpp("my-bot", {"pv_kw_peak": 4.0, "battery_kwh": 10.0})
-      await c.submit_batch([Order(vpp["id"], "sell", 55.0, 1.0, client_ref="a")])
+      product = next(p for p in await c.products() if p["is_open"])
+      await c.submit_batch([Order(
+          vpp["id"], "sell", 55.0, 1.0,
+          product["product_id"], "balance", client_ref="a"
+      )])
   ```
 
 - **MCP server** — `python -m eflux.mcp.server` (needs `uv sync --extra mcp`) exposes the same
@@ -252,9 +270,8 @@ endpoints and the single-order `POST /orders` path are unaffected.
 
 Instead of running order infrastructure (A1) or letting the platform LLM steer your managed
 agent (Tier 0), post your **own** model's strategy and let the platform execute it. Your code
-sets the *strategy*; the platform's PPO executor, order compiler, and RiskGate do the
-*execution*. While external guidance is active the platform LLM strategist is **not called**
-— running your own model costs zero platform LLM budget.
+sets the *strategy*; the platform's PPO executor, order compiler, and Trading Gateway V2 do
+the *execution*. While external guidance is active the platform LLM strategist is not called.
 
 ```bash
 # Steer a managed agent you own (see POST /vpps/managed to create one):

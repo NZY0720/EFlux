@@ -308,9 +308,14 @@ from eflux.sdk import EFluxClient
 client = EFluxClient(base_url="http://localhost:8000", api_key="<YOUR_API_KEY>")
 
 # Read the market, then submit a replay-safe batch for ${targetVpp ? `"${targetVpp.name}"` : "your VPP"}.
-snap = await client.market_snapshot(depth=10)
+products = await client.products()
+product = next(p for p in products if p["is_open"])
 await client.submit_batch(
-    orders=[{"vpp_id": ${targetId}, "side": "buy", "price": 48.0, "qty": 0.2}],
+    orders=[{
+        "vpp_id": ${targetId}, "side": "buy", "price": 48.0, "qty_kwh": 0.2,
+        "product_id": product["product_id"], "purpose": "balance",
+        "time_in_force": "good_til_gate", "ttl_sec": 120,
+    }],
     idempotency_key="quote-001",  # a resend returns the original result, never a double order
 )`;
 
@@ -389,7 +394,7 @@ await client.submit_batch(
       <div className="mt-4 space-y-1 text-xs text-[var(--text-muted)]">
         <div>
           <span className="font-semibold text-[var(--text)]">Endpoint</span> —{" "}
-          <code className="font-mono">POST /orders/batch</code> (Agent Protocol v1:{" "}
+          <code className="font-mono">POST /orders/batch</code> (Agent Protocol v2:{" "}
           <code className="font-mono">idempotency_key</code>, <code className="font-mono">deadline</code>, cancels-first)
         </div>
         <div>
@@ -398,7 +403,7 @@ await client.submit_batch(
         </div>
         <div>
           <span className="font-semibold text-[var(--text)]">Rate limit</span> — 120 burst / 2·s⁻¹ per account
-          (429 on exceed); every order still passes the RiskGate.
+          (429 on exceed); every order still passes the Trading Gateway V2.
         </div>
       </div>
 

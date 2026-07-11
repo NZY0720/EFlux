@@ -117,6 +117,16 @@
           "title": "Battery Eta Rt",
           "type": "number"
         },
+        "battery_initial_soc_frac": {
+          "default": 0.5,
+          "title": "Battery Initial Soc Frac",
+          "type": "number"
+        },
+        "battery_degradation_cost_per_mwh_throughput": {
+          "default": 20.0,
+          "title": "Battery Degradation Cost Per Mwh Throughput",
+          "type": "number"
+        },
         "load_kw_base": {
           "default": 1.5,
           "title": "Load Kw Base",
@@ -147,9 +157,41 @@
           "title": "Gas Kw Max",
           "type": "number"
         },
+        "gas_min_kw": {
+          "default": 0.0,
+          "title": "Gas Min Kw",
+          "type": "number"
+        },
+        "gas_ramp_kw_per_min": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gas Ramp Kw Per Min"
+        },
         "gas_cost_per_mwh": {
           "default": 60.0,
-          "title": "Gas Cost Per Kwh",
+          "title": "Gas Cost Per Mwh",
+          "type": "number"
+        },
+        "gas_startup_cost_usd": {
+          "default": 0.0,
+          "title": "Gas Startup Cost Usd",
+          "type": "number"
+        },
+        "value_of_lost_load_per_mwh": {
+          "default": 10000.0,
+          "title": "Value Of Lost Load Per Mwh",
+          "type": "number"
+        },
+        "starting_cash_usd": {
+          "default": 0.0,
+          "title": "Starting Cash Usd",
           "type": "number"
         },
         "risk_aversion": {

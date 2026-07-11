@@ -64,19 +64,16 @@ PRIMITIVE_MODES_REALPRICE: list[StrategyMode] = [
 ]
 N_MODES = len(PRIMITIVE_MODES)
 N_PARAMS = 4  # aggressiveness, qty_fraction, price_offset_bps, soc_target
-ENCODING_V1 = 1
 ENCODING_V2 = 2
-ACTION_DIM_V1 = N_MODES + N_PARAMS
-ACTION_DIM_V2 = ACTION_DIM_V1 + 1
+ACTION_DIM_V2 = N_MODES + N_PARAMS + 1
 ACTION_DIM = ACTION_DIM_V2
 LOG_MULT_MAX = math.log(2.5)
-OBS_V1 = 1
 OBS_V3 = 3
 OBS_V4 = 4
 N_FORECAST_CHANNELS = 6
 N_RUNTIME_CHANNELS = 9
-OBS_DIM_V1 = 18
-OBS_DIM_V3 = OBS_DIM_V1 + N_FORECAST_CHANNELS
+OBS_BASE_DIM = 18
+OBS_DIM_V3 = OBS_BASE_DIM + N_FORECAST_CHANNELS
 OBS_DIM_V4 = OBS_DIM_V3 + N_RUNTIME_CHANNELS
 OBS_DIM = OBS_DIM_V4
 
@@ -121,24 +118,20 @@ def action_dim(
         if modes is not None
         else len(primitive_modes_for(market_mode, action_profile=action_profile))
     )
-    if version == ENCODING_V1:
-        return mode_count + N_PARAMS
     if version == ENCODING_V2:
         return mode_count + N_PARAMS + 1
     raise ValueError(f"unsupported PPO encoding version: {version}")
 
 
 def action_profile_for_action_dim(dim: int) -> str:
-    if dim in (8, 9):
+    if dim == 9:
         return ACTION_PROFILE_P2P
-    if dim in (10, 11):
+    if dim == 11:
         return ACTION_PROFILE_REALPRICE_GRID
     raise ValueError(f"unsupported PPO action dimension: {dim}")
 
 
 def encoding_version_for_action_dim(dim: int) -> int:
-    if dim in (8, 10):
-        return ENCODING_V1
     if dim in (9, 11):
         return ENCODING_V2
     raise ValueError(f"unsupported PPO action dimension: {dim}")
@@ -155,15 +148,15 @@ def infer_action_dim(state_dict: Mapping[str, object]) -> int:
 
 
 def infer_encoding_version(state_dict: Mapping[str, object]) -> int:
-    """Infer V1/V2 from the actor output-layer weight rows in a checkpoint state_dict."""
+    """Validate the V2 actor output width in a checkpoint state dict."""
     return encoding_version_for_action_dim(infer_action_dim(state_dict))
 
 
 def infer_action_profile(checkpoint_or_state: Mapping[str, object]) -> str:
     """Resolve the action profile from checkpoint metadata when present, else action width.
 
-    Legacy realprice checkpoints were trained with the 4-mode p2p head despite their
-    market metadata, so fallback intentionally keys only off actor output width.
+    Checkpoint metadata is authoritative when present; otherwise the current
+    V2 action width identifies the profile.
     """
     explicit = checkpoint_or_state.get("action_profile")
     if explicit is not None:
@@ -178,8 +171,6 @@ def infer_action_profile(checkpoint_or_state: Mapping[str, object]) -> str:
 
 
 def obs_dim_for(version: int) -> int:
-    if version == OBS_V1:
-        return OBS_DIM_V1
     if version == OBS_V3:
         return OBS_DIM_V3
     if version == OBS_V4:
@@ -188,8 +179,6 @@ def obs_dim_for(version: int) -> int:
 
 
 def obs_version_for_obs_dim(dim: int) -> int:
-    if dim == OBS_DIM_V1:
-        return OBS_V1
     if dim == OBS_DIM_V3:
         return OBS_V3
     if dim == OBS_DIM_V4:
@@ -285,8 +274,6 @@ def encode_obs(
         ],
         dtype=np.float32,
     )
-    if obs_version == OBS_V1:
-        return obs
     if obs_version not in {OBS_V3, OBS_V4}:
         raise ValueError(f"unsupported PPO observation version: {obs_version}")
     forecast = ctx.forecast
@@ -392,10 +379,9 @@ def encode_action(
     bps = max(-1.0 + 1e-3, min(1.0 - 1e-3, action.price_offset_bps / 50.0))
     p[2] = max(-5.0, min(5.0, math.atanh(bps)))
     p[3] = _logit(action.soc_target)
-    if version == ENCODING_V2:
-        ratio = 1.0 if action.price_target_mult is None else float(action.price_target_mult)
-        ratio = max(math.exp(-LOG_MULT_MAX), min(math.exp(LOG_MULT_MAX), ratio))
-        p[4] = _atanh_clamped(math.log(ratio) / LOG_MULT_MAX)
+    ratio = 1.0 if action.price_target_mult is None else float(action.price_target_mult)
+    ratio = max(math.exp(-LOG_MULT_MAX), min(math.exp(LOG_MULT_MAX), ratio))
+    p[4] = _atanh_clamped(math.log(ratio) / LOG_MULT_MAX)
     return vec
 
 
@@ -424,13 +410,34 @@ def decode_action(
         )
     mode = mode_list[int(np.argmax(vec[:n_modes]))]
     p = vec[n_modes:]
+    aggressiveness = _sigmoid(float(p[0]))
+    qty_fraction = _sigmoid(float(p[1]))
+    price_offset_bps = math.tanh(float(p[2])) * 50.0
+    price_target_mult = math.exp(math.tanh(float(p[4])) * LOG_MULT_MAX)
+    # BC targets for the neutral execution parameters are finite approximations
+    # (-5/+5 logits), and a neural net will reproduce them with small residual
+    # error.  On a continuous double auction, a harmless-looking 0.5% price error
+    # can move a quote across the spread and cascade into persistent imbalance.
+    # Snap only the narrow neighborhoods of the exact structured-action defaults;
+    # values outside these deadbands remain fully continuous for PPO exploration.
+    if aggressiveness <= 0.01:
+        aggressiveness = 0.0
+    elif aggressiveness >= 0.99:
+        aggressiveness = 1.0
+    if qty_fraction <= 0.01:
+        qty_fraction = 0.0
+    elif qty_fraction >= 0.99:
+        qty_fraction = 1.0
+    if abs(price_offset_bps) <= 2.5:
+        price_offset_bps = 0.0
+    if price_target_mult is not None and abs(math.log(price_target_mult)) <= 0.02:
+        price_target_mult = 1.0
+
     return StrategyAction(
         mode=mode,
-        aggressiveness=_sigmoid(float(p[0])),
-        qty_fraction=_sigmoid(float(p[1])),
-        price_offset_bps=math.tanh(float(p[2])) * 50.0,
+        aggressiveness=aggressiveness,
+        qty_fraction=qty_fraction,
+        price_offset_bps=price_offset_bps,
         soc_target=_sigmoid(float(p[3])),
-        price_target_mult=math.exp(math.tanh(float(p[4])) * LOG_MULT_MAX)
-        if version == ENCODING_V2
-        else None,
+        price_target_mult=price_target_mult,
     )

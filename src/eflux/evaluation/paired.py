@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 from statistics import fmean, median
 
 from eflux.agents.base import BaseAgent
@@ -75,6 +76,8 @@ def evaluate_paired_worlds(
     interval_count: int,
     forecasts_enabled: bool = True,
     candidate_params: VPPParams | None = None,
+    market_price_ref: Decimal | None = None,
+    market_mode: str = "p2p",
 ) -> PairedEvaluationReport:
     """Run isolated treatment/control worlds and aggregate paired deltas."""
 
@@ -96,6 +99,8 @@ def evaluate_paired_worlds(
             forecasts_enabled=forecasts_enabled,
             episode_seed=seed,
             candidate_params=candidate_params,
+            market_price_ref=market_price_ref,
+            market_mode=market_mode,
         )
         control = score(
             control_name,
@@ -105,6 +110,8 @@ def evaluate_paired_worlds(
             forecasts_enabled=forecasts_enabled,
             episode_seed=seed,
             candidate_params=candidate_params,
+            market_price_ref=market_price_ref,
+            market_mode=market_mode,
         )
         pairs.append(
             PairedSeedResult(

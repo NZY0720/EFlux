@@ -117,6 +117,6 @@ def test_bc_policy_actions_are_valid_on_benchmark():
 
     policy = train_bc_policy(n_episodes=30, epochs=300, seed=2)
     m = score("bc", lambda: build_bc_agent(policy), n_ticks=144, tick_h=10 / 60)
-    # Decoded actions always clear the RiskGate, and the agent participates.
+    # Decoded actions clear TradingGatewayV2, and the agent participates.
     assert m.risk_rejections == 0
     assert m.energy_traded_kwh > 0

@@ -1,7 +1,7 @@
 """Structured trading language.
 
 The core breakthrough of the agent-intelligence roadmap (design note §4): an agent no
-longer speaks only in raw `OrderIntent`s. It selects a *strategy primitive* and its
+longer speaks only in raw `OrderRequest`s. It selects a *strategy primitive* and its
 parameters (`StrategyAction`); a deterministic compiler expands that into an
 `OrderProgram` (a list of `OrderSpec`s plus a cancel policy), which lowers to concrete
 intents (`CompiledProgram`). This gives PPO/LLM a much richer yet bounded, interpretable
@@ -90,7 +90,7 @@ class CancelPolicy:
     # Cancel resting orders at/older than this age in ticks (0 = none).
     cancel_age_ticks: int = 0
     # When true, pair each cancelled order with a fresh same-side spec and emit a
-    # ReplaceIntent instead of a bare cancel (no gap in the book).
+    # ReplaceRequest instead of a bare cancel (no gap in the book).
     reprice: bool = False
 
 

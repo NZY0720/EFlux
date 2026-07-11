@@ -28,7 +28,7 @@ class BenchVPP:
     seed: int
 
 
-def counter_roster() -> list[BenchVPP]:
+def counter_roster(*, price_ref: Decimal = Decimal("50")) -> list[BenchVPP]:
     """Two-sided, stable liquidity: a constant load buyer, a big PV seller, a ZIP
     adaptive-margin baseline, and a gas backstop that caps the price. Fresh agent instances
     each call (agents carry per-tick state) so episodes never share mutable state."""
@@ -36,26 +36,26 @@ def counter_roster() -> list[BenchVPP]:
         BenchVPP(
             "buyer-load",
             VPPParams(pv_kw_peak=0.0, battery_kwh=15.0, load_kw_base=6.0),
-            TruthfulAgent(price_ref=Decimal("50")),
+            TruthfulAgent(price_ref=price_ref),
             101,
         ),
         BenchVPP(
             "seller-pv",
             VPPParams(pv_kw_peak=16.0, battery_kwh=15.0, load_kw_base=2.0, markup_floor=0.4),
-            TruthfulAgent(price_ref=Decimal("50")),
+            TruthfulAgent(price_ref=price_ref),
             102,
         ),
         BenchVPP(
             "zip-noise",
             VPPParams(pv_kw_peak=6.0, battery_kwh=10.0, load_kw_base=4.0),
-            ZIPAgent(price_ref=Decimal("50")),
+            ZIPAgent(price_ref=price_ref),
             103,
         ),
         BenchVPP(
             "gas-backstop",
             VPPParams(
                 gas_kw_max=20.0,
-                gas_cost_per_mwh=65.0,
+                gas_cost_per_mwh=float(price_ref) * 1.3,
                 battery_kwh=0.0,
                 battery_kw_max=0.0,
                 load_kw_base=0.0,

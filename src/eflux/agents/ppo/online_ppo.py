@@ -24,9 +24,7 @@ import torch
 from eflux.agents.base import AgentContext
 from eflux.agents.ppo.online_net import ActorCriticNet
 from eflux.agents.ppo.primitive_encoding import (
-    action_dim as encoding_action_dim,
-)
-from eflux.agents.ppo.primitive_encoding import (
+    ENCODING_V2,
     action_profile_for_action_dim,
     decode_action,
     encode_obs,
@@ -38,6 +36,9 @@ from eflux.agents.ppo.primitive_encoding import (
     obs_version_for_obs_dim,
     price_ref_scale,
     primitive_modes_for,
+)
+from eflux.agents.ppo.primitive_encoding import (
+    action_dim as encoding_action_dim,
 )
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.agents.valuation import ValuationSignal
@@ -444,12 +445,10 @@ def build_online_policy(
     learning: bool = True,
     auto_update: bool = True,
     seed: int = 0,
-    encoding_version: int | None = None,
 ) -> OnlinePPOPolicy:
     """Construct an OnlinePPOPolicy, warm-starting the net from a BC or resumed checkpoint
     when given. A missing/unreadable checkpoint falls back to a fresh net (logged)."""
     from eflux.agents.ppo.online_net import ActorCriticNet, load_warm_start
-    from eflux.config import get_settings
 
     net: ActorCriticNet
     if checkpoint_path:
@@ -457,18 +456,8 @@ def build_online_policy(
             net = load_warm_start(checkpoint_path)
         except Exception:
             log.exception("online PPO warm-start failed for %s — fresh net", checkpoint_path)
-            version = (
-                encoding_version
-                if encoding_version is not None
-                else get_settings().ppo_encoding_version
-            )
-            net = ActorCriticNet(action_dim=encoding_action_dim(version))
+            net = ActorCriticNet(action_dim=encoding_action_dim(ENCODING_V2))
     else:
-        version = (
-            encoding_version
-            if encoding_version is not None
-            else get_settings().ppo_encoding_version
-        )
-        net = ActorCriticNet(action_dim=encoding_action_dim(version))
+        net = ActorCriticNet(action_dim=encoding_action_dim(ENCODING_V2))
     learner = OnlineLearner(net=net, seed=seed)
     return OnlinePPOPolicy(learner=learner, learning=learning, auto_update=auto_update)

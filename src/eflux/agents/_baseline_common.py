@@ -33,7 +33,7 @@ class BaselineAgent(BaseAgent):
 
     Subclasses implement `_quote_price(...)` returning the price to quote for this tick;
     the base resolves side/qty from the oracle's accumulated balance, clamps the price to
-    individual rationality + positivity, and assembles the `OrderIntent`.
+    individual rationality and assembles an `OrderRequest`.
 
     `price_ref` is the per-agent marginal-cost basis (jittered per VPP for cost
     diversification, and re-based to the trailing-month CAISO mean — see

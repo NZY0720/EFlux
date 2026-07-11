@@ -15,7 +15,7 @@ export interface components {
     ApiKeyOut: { name : string; prefix : string; created_at : string; last_used_at?: string | null; revoked_at?: string | null; };
     ArenaOut: { min_trades : number; min_observation_min : number; agents : Array<components["schemas"]["AgentOut"]>; };
     BatchCancelResult: { order_id : number; ok : boolean; };
-    BatchOrderItem: { vpp_id : number; side : "buy" | "sell"; price : number | string; qty : number | string; client_ref?: string | null; };
+    BatchOrderItem: { vpp_id : number; side : "buy" | "sell"; price : number | string; qty_kwh : number | string; product_id : string; purpose : components["schemas"]["OrderPurpose"]; time_in_force?: components["schemas"]["TimeInForce"]; ttl_sec?: number | null; client_ref?: string | null; };
     BatchOrderResult: { index : number; client_ref?: string | null; status : string; order_id?: number | null; remaining_qty?: string | null; expires_at_sim?: string | null; reason?: string | null; trades?: Array<{ [key: string]: unknown; }>; };
     BatchResult: { protocol_version : number; tick_id : number; results : Array<components["schemas"]["BatchOrderResult"]>; cancelled : Array<components["schemas"]["BatchCancelResult"]>; rate_limit_remaining : number; };
     BatteryIn: { power_mw : number; energy_mwh : number; round_trip_efficiency : number; cycle_cost_per_mwh?: number; };
@@ -32,6 +32,7 @@ export interface components {
     DailyReportOut: { date : string; pnl_usd : number; spread_capture_pct : number | null; };
     DataSourceEntry: { component : string; status : string; source : string; detail : string; };
     DataSourceStatus: { checked_at : string; sim_ts : string; summary : string; sources : Array<components["schemas"]["DataSourceEntry"]>; };
+    DeliveryProductOut: { product_id : string; market : string; delivery_start : string; delivery_end : string; gate_closure : string; opens_at : string; is_open : boolean; is_closed : boolean; best_bid : string | null; best_ask : string | null; last_price : string | null; };
     EndowmentIn: { battery?: components["schemas"]["BatteryIn"] | null; solar_mw?: number; cash_usd?: number; };
     EquityPoint: { tick_no : number; sim_ts : string; wall_ts : string; pnl_usd : string; soc_frac : number; };
     EvaluationRunOut: { id : number; status : string; rules_version : string; score : number | null; created_at : string; started_at : string | null; finished_at : string | null; seed_runs : Array<components["schemas"]["EvaluationSeedRunOut"]>; };
@@ -50,7 +51,7 @@ export interface components {
     MagicLinkRequest: { email : string; };
     MagicLinkResponse: { sent : boolean; dev_token?: string | null; };
     ManagedSubmissionPayload: { algorithm : string; llm_enabled : boolean; preset?: string | null; endowment?: { [key: string]: unknown; } | null; risk?: unknown | null; };
-    ManagedTradeOut: { trade_id : number | string; kind?: string | null; side : string; price : string; raw_lmp?: string | null; qty : string; cash : string; counterparty?: string | null; counterparty_vpp_id : number; buy_vpp_id : number; sell_vpp_id : number; sim_ts : string; wall_ts : string; };
+    ManagedTradeOut: { trade_id : number | string; kind?: string | null; side : string; price : string; raw_lmp?: string | null; qty : string; cash_usd : string; counterparty?: string | null; counterparty_vpp_id : number; buy_vpp_id : number; sell_vpp_id : number; sim_ts : string; wall_ts : string; };
     ManagedVPPCreate: { name : string; params?: { [key: string]: unknown; }; algorithm?: "ppo" | "truthful" | "zip" | "gd" | "aa"; llm_enabled?: boolean; online_learning?: boolean; persona?: string | null; agent_params?: { [key: string]: unknown; }; seed?: number | null; model?: string | null; };
     ManagedVPPOut: { id : number; vpp_id : number; name : string; params : { [key: string]: number | number | string | null; }; is_active : boolean; is_external : boolean; algorithm?: string; llm_enabled?: boolean; agent_kind : string; strategy : string; llm_live : boolean; llm_status : string; llm_health_state : string; persona?: string | null; model?: string | null; guidance_source?: string; chat_style?: string | null; chat_color?: string | null; chat_avatar?: string | null; };
     ManagedVPPPerformanceOut: { id : number; name : string; pnl : string; cumulative_energy_bought_kwh : number; cumulative_energy_sold_kwh : number; imbalance_unserved_load_kwh?: number; imbalance_spilled_generation_kwh?: number; imbalance_settlement_cash?: string; soc_kwh : number; soc_frac : number; recent_trades : Array<components["schemas"]["ManagedTradeOut"]>; reflections : Array<components["schemas"]["ReflectionEntryOut"]>; llm_health : components["schemas"]["LLMHealthOut"] | null; };
@@ -58,13 +59,14 @@ export interface components {
     MarketBalanceOut: { renewable_kw : number; load_kw : number; gas_capacity_kw : number; net_kw : number; supply_demand_ratio : number | null; bid_depth_kwh : number; ask_depth_kwh : number; };
     MarketReflectionOut: { vpp_id : number; vpp_name : string; health_state : string; ts : string; ok : boolean; price_adjust?: number | null; qty_scale?: number | null; preferred_modes?: Array<string> | null; avoid_modes?: Array<string> | null; mode_pin?: string | null; risk_budget?: number | null; price_bias_bps?: number | null; soc_target?: number | null; execution_style?: string | null; rationale?: string; meta_control?: { [key: string]: number; } | null; error : string | null; };
     MarketSessionOut: { market_mode : string; sim_time : string; wall_time : string; };
-    MarketSnapshot: { sim_ts : string; speed : number; best_bid : string | null; best_ask : string | null; last_price : string | null; bids : Array<Array<unknown>>; asks : Array<Array<unknown>>; num_builtin_vpps : number; data_provenance : "real" | "cached" | "synthetic"; session : components["schemas"]["MarketSessionOut"]; data_source : components["schemas"]["DataSourceStatus"]; external_market : components["schemas"]["ExternalMarketOut"]; balance : components["schemas"]["MarketBalanceOut"]; };
+    MarketSnapshot: { sim_ts : string; speed : number; best_bid : string | null; best_ask : string | null; last_price : string | null; bids : Array<Array<unknown>>; asks : Array<Array<unknown>>; num_builtin_vpps : number; data_provenance : "real" | "cached" | "synthetic"; session : components["schemas"]["MarketSessionOut"]; data_source : components["schemas"]["DataSourceStatus"]; external_market : components["schemas"]["ExternalMarketOut"]; balance : components["schemas"]["MarketBalanceOut"]; product_id : string; delivery_start : string; delivery_end : string; gate_closure : string; };
     ModelsOut: { models : Array<string>; default : string; };
-    OpenOrderOut: { order_id : number; vpp_id : number; side : string; price : string; remaining_qty : string; expires_at_sim?: string | null; };
+    OpenOrderOut: { order_id : number; vpp_id : number; side : string; price : string; remaining_qty : string; expires_at_sim?: string | null; product_id : string; purpose : components["schemas"]["OrderPurpose"]; time_in_force : components["schemas"]["TimeInForce"]; };
     OrderBatch: { protocol_version?: number; idempotency_key?: string | null; deadline?: string | null; orders?: Array<components["schemas"]["BatchOrderItem"]>; cancels?: Array<number>; };
     OrderCancel: { order_id : number; };
-    OrderSubmit: { vpp_id : number; side : "buy" | "sell"; price : number | string; qty : number | string; };
-    OrderSubmitResponse: { order_id : number; remaining_qty : string; expires_at_sim?: string | null; trades : Array<components["schemas"]["TradeEvent"] | components["schemas"]["ExternalTradeEvent"]>; };
+    OrderPurpose: "balance" | "battery" | "dispatchable" | "flex_load" | "system_grid";
+    OrderSubmit: { vpp_id : number; side : "buy" | "sell"; price : number | string; qty_kwh : number | string; product_id : string; purpose : components["schemas"]["OrderPurpose"]; time_in_force?: components["schemas"]["TimeInForce"]; ttl_sec?: number | null; client_ref?: string | null; };
+    OrderSubmitResponse: { order_id : number; remaining_qty : string; expires_at_sim?: string | null; product_id : string; trades : Array<{ [key: string]: unknown; }>; };
     ParticipantOut: { id : number; name : string; kind : string; strategy?: string | null; };
     PpoRenewStartOut: { state : string; started_at : string | null; finished_at : string | null; detail : string; reloaded : number; error : string | null; metrics : { [key: string]: unknown; } | null; status : string; };
     PpoRenewStatusOut: { state : string; started_at : string | null; finished_at : string | null; detail : string; reloaded : number; error : string | null; metrics : { [key: string]: unknown; } | null; };
@@ -85,7 +87,8 @@ export interface components {
     SubmissionOut: { id : number; competition_id : number; track : string; status : string; payload : { [key: string]: unknown; }; created_at : string; updated_at : string; };
     SupplyCurveOrder: { price : string; qty : string; category : string; vpp_name : string | null; };
     SupplyCurveOut: { sim_ts : string; asks : Array<components["schemas"]["SupplyCurveOrder"]>; bids : Array<components["schemas"]["SupplyCurveOrder"]>; };
-    TradeEvent: { kind?: "trade"; sim_ts : string; wall_ts : string; trade_id : number; buy_order_id : number; sell_order_id : number; buy_vpp_id : number; sell_vpp_id : number; price : string; qty : string; };
+    TimeInForce: "good_til_gate" | "immediate_or_cancel" | "fill_or_kill";
+    TradeEvent: { kind?: "trade"; sim_ts : string; wall_ts : string; trade_id : number; buy_order_id : number; sell_order_id : number; buy_vpp_id : number; sell_vpp_id : number; price : string; qty : string; interval_id : string; delivery_start : string; delivery_end : string; buy_purpose : string; sell_purpose : string; };
     VPPCreate: { name : string; params?: { [key: string]: unknown; }; };
     VPPOut: { id : number; name : string; params : { [key: string]: number | number | string | null; }; is_active : boolean; is_external : boolean; created_at : string; };
     ValidationError: { loc : Array<string | number>; msg : string; type : string; input?: unknown; ctx?: Record<string, unknown>; };

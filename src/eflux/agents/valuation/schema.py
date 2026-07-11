@@ -3,7 +3,7 @@
 A pure data record produced by `TruthfulValuationOracle`. It decouples *valuation*
 (what the energy is economically worth) from *decision* (how to trade it): the
 Truthful agent assembles orders from it, the strategy compiler prices primitives off
-it, and the RiskGate uses it as an economic reference for sane price bands.
+it, and TradingGatewayV2 uses it as an economic reference for validation.
 
 Prices are floats in USD/MWh; quantities are terminal kWh.
 """

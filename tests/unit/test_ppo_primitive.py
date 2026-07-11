@@ -15,6 +15,7 @@ from eflux.agents.ppo.primitive_encoding import (
     OBS_DIM,
     PRIMITIVE_MODES,
     decode_action,
+    encode_action,
 )
 from eflux.agents.ppo.primitive_env import SOC_HIGH, SOC_LOW, W_SOC, VPPPrimitiveEnv
 from eflux.agents.strategy.schema import StrategyAction
@@ -35,6 +36,23 @@ def test_decode_action_params_stay_in_range():
         assert 0.0 <= a.qty_fraction <= 1.0
         assert -50.0 <= a.price_offset_bps <= 50.0
         assert 0.0 <= a.soc_target <= 1.0
+
+
+def test_behavior_clone_neutral_parameter_residuals_snap_to_exact_defaults():
+    encoded = encode_action(StrategyAction(mode=PRIMITIVE_MODES[1]))
+    # Model-fit residuals around the supervised target must not move a fair-price
+    # order across the spread or trim a physically required balance quantity.
+    encoded[-5] += 0.1
+    encoded[-4] -= 0.1
+    encoded[-3] = 0.04
+    encoded[-1] = 0.01
+
+    action = decode_action(encoded)
+
+    assert action.aggressiveness == 0.0
+    assert action.qty_fraction == 1.0
+    assert action.price_offset_bps == 0.0
+    assert action.price_target_mult == 1.0
 
 
 def test_env_reset_obs_shape_and_finite():

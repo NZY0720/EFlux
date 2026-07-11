@@ -24,6 +24,8 @@ from collections import Counter
 from datetime import date
 from pathlib import Path
 
+import numpy as np
+
 from eflux.agents.ppo.primitive_encoding import (
     OBS_V3,
     OBS_V4,
@@ -40,6 +42,8 @@ def run_training(
     real_data: bool = False,
     days: int = 30,
     episodes: int = 40,
+    scenario_episodes: int = 10,
+    scenario_intervals: int = 288,
     epochs: int = 300,
     seed: int = 0,
     market_mode: str = "p2p",
@@ -59,9 +63,11 @@ def run_training(
     from eflux.agents.ppo.bc import (
         BCPolicy,
         collect_demonstrations,
+        collect_scenario_demonstrations,
         mean_episode_reward,
         mean_random_reward,
         mode_accuracy,
+        per_mode_recall,
         save_bc,
         trade_mode_accuracy,
         train_bc,
@@ -112,7 +118,7 @@ def run_training(
         if obs_version in {OBS_V3, OBS_V4}
         else BatteryAwareStrategyPolicy()
     )
-    obs, acts = collect_demonstrations(
+    primitive_obs, primitive_acts = collect_demonstrations(
         expert,
         n_episodes=episodes,
         seed=seed,
@@ -121,6 +127,28 @@ def run_training(
         obs_version=obs_version,
         action_profile=action_profile,
     )
+    if scenario_episodes > 0 and scenario_intervals > 0:
+        log.info(
+            "Collecting live-topology demonstrations (%d episodes x %d intervals)…",
+            scenario_episodes,
+            scenario_intervals,
+        )
+        scenario_obs, scenario_acts = collect_scenario_demonstrations(
+            expert,
+            n_episodes=scenario_episodes,
+            intervals_per_episode=scenario_intervals,
+            seed=seed + 100_000,
+            market_mode=market_mode,
+            encoding_version=encoding_version,
+            obs_version=obs_version,
+            action_profile=action_profile,
+        )
+        obs = np.concatenate((primitive_obs, scenario_obs), axis=0)
+        acts = np.concatenate((primitive_acts, scenario_acts), axis=0)
+    else:
+        scenario_obs = np.empty((0, primitive_obs.shape[1]), dtype=np.float32)
+        scenario_acts = np.empty((0, primitive_acts.shape[1]), dtype=np.float32)
+        obs, acts = primitive_obs, primitive_acts
     modes = primitive_modes_for(action_profile=action_profile)
     mode_hist = Counter(modes[int(i)].value for i in acts[:, : len(modes)].argmax(axis=1))
     log.info("Demonstrator mode histogram: %s", dict(sorted(mode_hist.items())))
@@ -138,8 +166,13 @@ def run_training(
 
     metrics = {
         "samples": len(obs),
+        "primitive_samples": len(primitive_obs),
+        "scenario_samples": len(scenario_obs),
         "mode_accuracy": round(mode_accuracy(net, obs, acts), 4),
         "trade_mode_accuracy": round(trade_mode_accuracy(net, obs, acts), 4),
+        "per_mode_recall": {
+            mode: round(recall, 4) for mode, recall in per_mode_recall(net, obs, acts).items()
+        },
         "cloned_reward": round(
             mean_episode_reward(
                 BCPolicy(
@@ -225,10 +258,21 @@ def main() -> int:
         help="exclusive real-data end date (YYYY-MM-DD)",
     )
     p.add_argument("--episodes", type=int, default=40, help="demonstration episodes")
+    p.add_argument(
+        "--scenario-episodes",
+        type=int,
+        default=10,
+        help="live multi-agent topology demonstration episodes (0 disables)",
+    )
+    p.add_argument(
+        "--scenario-intervals",
+        type=int,
+        default=288,
+        help="five-minute decisions in each live-topology demonstration episode",
+    )
     p.add_argument("--epochs", type=int, default=300, help="behavior-cloning epochs")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--encoding-version", type=int, choices=(1, 2), default=2)
-    p.add_argument("--obs-version", type=int, choices=(1, 3, 4), default=OBS_V4)
+    p.add_argument("--obs-version", type=int, choices=(3, 4), default=OBS_V4)
     p.add_argument(
         "--market-mode",
         choices=("p2p", "realprice"),
@@ -254,12 +298,13 @@ def main() -> int:
             real_data=args.real_data,
             days=args.days,
             episodes=args.episodes,
+            scenario_episodes=args.scenario_episodes,
+            scenario_intervals=args.scenario_intervals,
             epochs=args.epochs,
             seed=args.seed,
             market_mode=args.market_mode,
             start_date=args.start_date,
             end_date=args.end_date,
-            encoding_version=args.encoding_version,
             obs_version=args.obs_version,
         )
     except ImportError as e:

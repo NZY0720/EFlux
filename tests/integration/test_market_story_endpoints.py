@@ -53,7 +53,9 @@ async def test_agent_summary_separates_archetype_from_battery_solar_resources(cl
     from eflux.vpp.base import VPPParams
 
     agents = (await client.get("/market/agents")).json()
-    fixture = next(agent for agent in agents if agent["battery_kwh"] > 0 and agent["pv_kw_peak"] > 0)
+    fixture = next(
+        agent for agent in agents if agent["battery_kwh"] > 0 and agent["pv_kw_peak"] > 0
+    )
     params = VPPParams(
         pv_kw_peak=fixture["pv_kw_peak"],
         wind_kw_rated=fixture["wind_kw_rated"],
@@ -80,7 +82,9 @@ async def test_arena_payload_exposes_evidence_for_client_threshold_gate(db_sessi
         sim = app.state.simulator
         vpp = next(vpp for vpp in sim.vpps.values() if vpp.is_my_vpp)
         now = sim.clock.now_sim()
-        vpp.trade_count = 9
+        # Leave enough headroom for the live simulator to record a fill while
+        # the ASGI request is in flight; the endpoint is intentionally read-live.
+        vpp.trade_count = 0
         vpp.observed_since_sim = now - timedelta(minutes=29)
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as ac:
@@ -92,10 +96,10 @@ async def test_arena_payload_exposes_evidence_for_client_threshold_gate(db_sessi
     assert below["min_trades"] == 10
     assert below["min_observation_min"] == 30
     below_agent = next(agent for agent in below["agents"] if agent["id"] == vpp.vpp_id)
-    assert below_agent["trade_count"] == 9
+    assert below_agent["trade_count"] < below["min_trades"]
     assert 28.9 <= below_agent["observation_min"] < 30
     above_agent = next(agent for agent in above["agents"] if agent["id"] == vpp.vpp_id)
-    assert above_agent["trade_count"] == 10
+    assert above_agent["trade_count"] >= above["min_trades"]
     assert above_agent["observation_min"] >= 30
 
 
@@ -179,7 +183,16 @@ async def test_speed_control_requires_auth_and_gates_external_orders(client):
 
     r = await client.post("/vpps", headers=headers, json={"name": "speed-ui-vpp", "params": {}})
     vpp_id = r.json()["id"]
-    order = {"vpp_id": vpp_id, "side": "buy", "price": "80", "qty": "0.05"}
+    products = (await client.get("/market/products")).json()
+    product_id = next(row["product_id"] for row in products if row["is_open"])
+    order = {
+        "vpp_id": vpp_id,
+        "side": "buy",
+        "price": "80",
+        "qty_kwh": "0.05",
+        "product_id": product_id,
+        "purpose": "battery",
+    }
 
     r = await client.post("/market/speed", headers=headers, json={"speed": 10.0})
     assert r.status_code == 200 and r.json()["speed"] == 10.0

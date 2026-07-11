@@ -20,19 +20,27 @@ async def test_sdk_end_to_end(client):
 
     snap = await sdk.market_snapshot()
     assert "best_bid" in snap
+    product = next(row for row in await sdk.products() if row["is_open"])
+    product_id = product["product_id"]
 
     # Batch submit — two sells priced high so they rest.
     res = await sdk.submit_batch(
-        [Order(vpp_id, "sell", 900, 1, client_ref="a"), Order(vpp_id, "sell", 910, 1, client_ref="b")],
+        [
+            Order(vpp_id, "sell", 900, 0.05, product_id, "battery", client_ref="a"),
+            Order(vpp_id, "sell", 910, 0.05, product_id, "battery", client_ref="b"),
+        ],
         idempotency_key="k1",
     )
-    assert res["protocol_version"] == 1
+    assert res["protocol_version"] == 2
     ids = [r["order_id"] for r in res["results"] if r["status"] == "accepted"]
     assert len(ids) == 2
 
     # Idempotency replay through the SDK — same key, same result, no new orders.
     res2 = await sdk.submit_batch(
-        [Order(vpp_id, "sell", 900, 1, client_ref="a"), Order(vpp_id, "sell", 910, 1, client_ref="b")],
+        [
+            Order(vpp_id, "sell", 900, 0.05, product_id, "battery", client_ref="a"),
+            Order(vpp_id, "sell", 910, 0.05, product_id, "battery", client_ref="b"),
+        ],
         idempotency_key="k1",
     )
     assert [r["order_id"] for r in res2["results"]] == [r["order_id"] for r in res["results"]]
@@ -48,5 +56,5 @@ async def test_sdk_end_to_end(client):
 
     # Errors surface as EFluxError with the server's status + detail.
     with pytest.raises(EFluxError) as ei:
-        await sdk.submit_batch([Order(999999, "buy", 40, 0.5)])
+        await sdk.submit_batch([Order(999999, "buy", 40, 0.05, product_id, "balance")])
     assert ei.value.status_code == 404

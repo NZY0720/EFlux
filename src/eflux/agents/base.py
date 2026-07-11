@@ -2,7 +2,7 @@
 
 All agents (ZI / Truthful / PPO / Reflective) implement `decide()`. The simulator runner
 calls this each tick. An agent owns a VPP, observes its own state + market snapshot, and
-returns a list of order intents that the runner submits to the matching engine.
+returns an AgentDecision that the runner submits through TradingGatewayV2.
 """
 
 from __future__ import annotations
@@ -119,7 +119,7 @@ class AgentContext:
     # unless the runner populates it; strategy primitives that cancel/reprice
     # stale quotes read it. Defaulting to empty keeps existing agents/tests intact.
     open_orders: list[OpenOrderView] = field(default_factory=list)
-    # Cumulative count of this VPP's RiskGate-vetoed orders through the *previous*
+    # Cumulative count of this VPP's gateway-rejected orders through the *previous*
     # tick (the runner reads its running tally when it builds the context, before
     # this tick's gating runs). An online learner takes the tick-to-tick delta as
     # the invalid-order reward penalty; default 0.0 keeps existing agents/tests intact.

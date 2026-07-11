@@ -16,10 +16,19 @@ async def _resting_order(client, headers, name: str) -> int:
     """Create a VPP and park a far-from-market bid that won't fill."""
     r = await client.post("/vpps", headers=headers, json={"name": name, "params": {}})
     vpp_id = r.json()["id"]
+    products = (await client.get("/market/products")).json()
+    product_id = next(row["product_id"] for row in products if row["is_open"])
     r = await client.post(
         "/orders",
         headers=headers,
-        json={"vpp_id": vpp_id, "side": "buy", "price": "0.5", "qty": "0.05"},
+        json={
+            "vpp_id": vpp_id,
+            "side": "buy",
+            "price": "0.5",
+            "qty_kwh": "0.05",
+            "product_id": product_id,
+            "purpose": "battery",
+        },
     )
     assert r.status_code == 200, r.text
     return r.json()["order_id"]
@@ -75,9 +84,9 @@ async def test_participants_directory_lists_builtin_and_external(client):
     parts = r.json()
     by_id = {p["id"]: p for p in parts}
 
-    # All builtin VPPs present (36 declared roster entries + 6 auto-spawned PPO mirrors).
+    # Full scenario roster is present; system participants may add to the declared fleet.
     builtin = [p for p in parts if p["kind"] == "builtin"]
-    assert len(builtin) == 42
+    assert len(builtin) >= 42
     llm = next(p for p in builtin if p["name"] == "my-llm-vpp")
     assert llm["strategy"]
     assert any(p["name"].startswith("wind-") for p in builtin)

@@ -3,7 +3,7 @@
 A policy emits a `StrategyAction` (primitive + tactical parameters); the
 `OrderProgramCompiler` deterministically lowers it through an `OrderProgram` into
 concrete order / cancel / replace intents. This replaces "an agent speaks only in raw
-OrderIntents" with a richer, bounded, interpretable action space that PPO and LLM-guided
+OrderRequests" with a richer, bounded, interpretable action space that PPO and LLM-guided
 policies can share.
 """
 

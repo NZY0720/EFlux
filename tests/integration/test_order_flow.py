@@ -14,6 +14,23 @@ async def _logged_in_headers(client) -> dict[str, str]:
     return {"Authorization": f"Bearer {r.json()['session_token']}"}
 
 
+async def _product_id(client) -> str:
+    rows = (await client.get("/market/products")).json()
+    return next(row["product_id"] for row in rows if row["is_open"])
+
+
+def _order(vpp_id: int, product_id: str, **overrides) -> dict:
+    return {
+        "vpp_id": vpp_id,
+        "side": "buy",
+        "price": "80",
+        "qty_kwh": "0.05",
+        "product_id": product_id,
+        "purpose": "battery",
+        **overrides,
+    }
+
+
 @pytest.mark.asyncio
 async def test_full_order_flow(client):
     headers = await _logged_in_headers(client)
@@ -29,12 +46,13 @@ async def test_full_order_flow(client):
     vpp_id = vpp["id"]
     assert vpp_id >= 1
     assert vpp["name"] == "test-vpp"
+    product_id = await _product_id(client)
 
     # Submit an order.
     r = await client.post(
         "/orders",
         headers=headers,
-        json={"vpp_id": vpp_id, "side": "buy", "price": "80", "qty": "0.05"},
+        json=_order(vpp_id, product_id),
     )
     assert r.status_code == 200, r.text
     order = r.json()
@@ -57,15 +75,16 @@ async def test_order_bounds_rejected_with_readable_errors(client):
     headers = await _logged_in_headers(client)
     r = await client.post("/vpps", headers=headers, json={"name": "bounds-vpp", "params": {}})
     vpp_id = r.json()["id"]
+    product_id = await _product_id(client)
 
     cases = [
-        {"side": "buy", "price": "80", "qty": "0.001"},  # below 0.01 kWh floor
-        {"side": "buy", "price": "80", "qty": "5000"},  # above 1000 kWh cap
-        {"side": "sell", "price": "99999", "qty": "1"},  # above 1000 $/kWh cap
-        {"side": "buy", "price": "0", "qty": "1"},  # non-positive price
+        {"qty_kwh": "0.001"},  # below 0.01 kWh floor
+        {"qty_kwh": "5000"},  # above 1000 kWh cap
+        {"side": "sell", "price": "99999", "qty_kwh": "1"},
+        {"price": "-151"},  # below signed market floor
     ]
     for case in cases:
-        r = await client.post("/orders", headers=headers, json={"vpp_id": vpp_id, **case})
+        r = await client.post("/orders", headers=headers, json=_order(vpp_id, product_id, **case))
         assert r.status_code == 422, f"{case} → {r.status_code}: {r.text}"
 
 
@@ -81,10 +100,11 @@ async def test_order_for_someone_elses_vpp_is_404(client):
     tok = r.json()["dev_token"]
     r = await client.post("/auth/consume", json={"token": tok})
     headers_b = {"Authorization": f"Bearer {r.json()['session_token']}"}
+    product_id = await _product_id(client)
 
     r = await client.post(
         "/orders",
         headers=headers_b,
-        json={"vpp_id": vpp_id, "side": "sell", "price": "50", "qty": "0.1"},
+        json=_order(vpp_id, product_id, side="sell", price="50", qty_kwh="0.1"),
     )
     assert r.status_code == 404

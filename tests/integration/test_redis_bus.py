@@ -59,8 +59,16 @@ async def test_publish_subscribe_round_trip():
     await asyncio.sleep(0.05)  # let XREAD register
 
     now = datetime.now(UTC)
-    producer.publish(TickEvent(kind=EventKind.TICK, sim_ts=now, wall_ts=now, tick_no=1))
-    producer.publish(TickEvent(kind=EventKind.TICK, sim_ts=now, wall_ts=now, tick_no=2))
+    tick_fields = {
+        "kind": EventKind.TICK,
+        "sim_ts": now,
+        "wall_ts": now,
+        "interval_id": "p2p:test",
+        "delivery_start": now,
+        "delivery_end": now,
+    }
+    producer.publish(TickEvent(**tick_fields, tick_no=1))
+    producer.publish(TickEvent(**tick_fields, tick_no=2))
     # Give the fire-and-forget XADD tasks time to land.
     await asyncio.sleep(0.5)
 
@@ -75,11 +83,14 @@ async def test_publish_subscribe_round_trip():
 async def test_lifespan_falls_back_when_redis_down(monkeypatch, db_session):
     """If EFLUX_BUS_BACKEND=redis but the URL doesn't resolve, lifespan should pick InMemoryBus."""
     monkeypatch.setenv("EFLUX_BUS_BACKEND", "redis")
-    monkeypatch.setenv("EFLUX_REDIS_URL", "redis://127.0.0.1:1/0")  # bogus port — guaranteed refused
+    monkeypatch.setenv(
+        "EFLUX_REDIS_URL", "redis://127.0.0.1:1/0"
+    )  # bogus port — guaranteed refused
 
     from eflux.bridge.bus import InMemoryBus
     from eflux.config import get_settings
     from eflux.db.session import get_engine, get_sessionmaker
+
     get_settings.cache_clear()
     get_engine.cache_clear()
     get_sessionmaker.cache_clear()

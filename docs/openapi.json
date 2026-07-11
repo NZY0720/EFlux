@@ -889,7 +889,7 @@
           "vpps"
         ],
         "summary": "Create Managed Vpp",
-        "description": "Provision a cloud-hosted, LLM-steered managed agent \u2014 Tier 0 of\ndocs/EXTERNAL_PARTICIPATION.md. The platform runs the HybridPolicyAgent (LLM strategist +\nPPO executor + Truthful oracle + RiskGate) autonomously on the user's behalf; the user\nsupplies only a DER endowment and an optional persona/preferences. Params and agent_params\nare validated against the same schema as the built-in roster (422 on bad input).",
+        "description": "Provision a cloud-hosted, LLM-steered managed agent \u2014 Tier 0 of\ndocs/EXTERNAL_PARTICIPATION.md. The platform runs the HybridPolicyAgent (LLM strategist +\nPPO executor + Truthful oracle + TradingGatewayV2) autonomously on the user's behalf; the user\nsupplies only a DER endowment and an optional persona/preferences. Params and agent_params\nare validated against the same schema as the built-in roster (422 on bad input).",
         "operationId": "create_managed_vpp_vpps_managed_post",
         "parameters": [
           {
@@ -1364,7 +1364,7 @@
           "vpps"
         ],
         "summary": "Put Guidance",
-        "description": "Steer your managed agent with your own model \u2014 Tier A3 of\ndocs/EXTERNAL_PARTICIPATION.md. The posted StrategyGuidance replaces the platform\nLLM strategist's steering (which stops being called \u2014 running your own model costs\nzero platform LLM budget) while the platform's PPO executor, order compiler, and\nRiskGate keep doing the execution. Guidance stays soft: clamped on arrival, biases\nbut never commands (DELETE the guidance to hand control back to the platform LLM).\nPersisted with the agent definition, so it survives a backend restart.",
+        "description": "Steer your managed agent with your own model \u2014 Tier A3 of\ndocs/EXTERNAL_PARTICIPATION.md. The posted StrategyGuidance replaces the platform\nLLM strategist's steering (which stops being called \u2014 running your own model costs\nzero platform LLM budget) while the platform's PPO executor, order compiler, and\nTradingGatewayV2 keep doing the execution. Guidance stays soft: clamped on arrival, biases\nbut never commands (DELETE the guidance to hand control back to the platform LLM).\nPersisted with the agent definition, so it survives a backend restart.",
         "operationId": "put_guidance_vpps_managed__managed_id__guidance_put",
         "parameters": [
           {
@@ -1708,7 +1708,7 @@
           "orders"
         ],
         "summary": "Submit Batch",
-        "description": "Agent Protocol v1 \u2014 submit and cancel a batch of orders in one authenticated call.\n\nThe envelope carries a protocol_version, an optional idempotency_key (a replay returns the\noriginal result rather than re-submitting), and an optional deadline (a stale batch is\nrejected). Every order's vpp_id must be owned by the caller; cancels only ever touch the\ncaller's own resting orders. Each order is risk-gated independently, so one rejection\ndoesn't abort the batch. Per-account rate limited (429).",
+        "description": "Agent Protocol v2 \u2014 submit and cancel a batch of orders in one authenticated call.\n\nThe envelope carries a protocol_version, an optional idempotency_key (a replay returns the\noriginal result rather than re-submitting), and an optional deadline (a stale batch is\nrejected). Every order's vpp_id must be owned by the caller; cancels only ever touch the\ncaller's own resting orders. Each order is risk-gated independently, so one rejection\ndoesn't abort the batch. Per-account rate limited (429).",
         "operationId": "submit_batch_orders_batch_post",
         "parameters": [
           {
@@ -1942,6 +1942,31 @@
         }
       }
     },
+    "/market/products": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "summary": "Products",
+        "operationId": "products_market_products_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DeliveryProductOut"
+                  },
+                  "type": "array",
+                  "title": "Response Products Market Products Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/market/participants": {
       "get": {
         "tags": [
@@ -2040,6 +2065,22 @@
               "default": 10,
               "title": "Depth"
             }
+          },
+          {
+            "name": "product_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Product Id"
+            }
           }
         ],
         "responses": {
@@ -2074,6 +2115,24 @@
         "summary": "Supply Curve",
         "description": "Resting orders with per-VPP attribution, best price first on each side.\n\nThis is the merit-order view: walking the asks cheapest-first shows which\ngeneration category sets the price at each cumulative quantity.",
         "operationId": "supply_curve_market_supply_curve_get",
+        "parameters": [
+          {
+            "name": "product_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Product Id"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful Response",
@@ -2081,6 +2140,16 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/SupplyCurveOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -2895,7 +2964,7 @@
           },
           "gas_cost_per_mwh": {
             "type": "number",
-            "title": "Gas Cost Per Kwh"
+            "title": "Gas Cost Per Mwh"
           },
           "pnl": {
             "type": "string",
@@ -3303,7 +3372,7 @@
               {
                 "type": "number",
                 "maximum": 1000.0,
-                "exclusiveMinimum": 0.0
+                "minimum": -150.0
               },
               {
                 "type": "string",
@@ -3312,7 +3381,7 @@
             ],
             "title": "Price"
           },
-          "qty": {
+          "qty_kwh": {
             "anyOf": [
               {
                 "type": "number",
@@ -3324,7 +3393,30 @@
                 "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d{0,4}0*$"
               }
             ],
-            "title": "Qty"
+            "title": "Qty Kwh"
+          },
+          "product_id": {
+            "type": "string",
+            "title": "Product Id"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/OrderPurpose"
+          },
+          "time_in_force": {
+            "$ref": "#/components/schemas/TimeInForce",
+            "default": "good_til_gate"
+          },
+          "ttl_sec": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Sec"
           },
           "client_ref": {
             "anyOf": [
@@ -3344,7 +3436,9 @@
           "vpp_id",
           "side",
           "price",
-          "qty"
+          "qty_kwh",
+          "product_id",
+          "purpose"
         ],
         "title": "BatchOrderItem"
       },
@@ -4117,6 +4211,94 @@
           "sources"
         ],
         "title": "DataSourceStatus"
+      },
+      "DeliveryProductOut": {
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "title": "Product Id"
+          },
+          "market": {
+            "type": "string",
+            "title": "Market"
+          },
+          "delivery_start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Delivery Start"
+          },
+          "delivery_end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Delivery End"
+          },
+          "gate_closure": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Gate Closure"
+          },
+          "opens_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Opens At"
+          },
+          "is_open": {
+            "type": "boolean",
+            "title": "Is Open"
+          },
+          "is_closed": {
+            "type": "boolean",
+            "title": "Is Closed"
+          },
+          "best_bid": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Bid"
+          },
+          "best_ask": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Ask"
+          },
+          "last_price": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Price"
+          }
+        },
+        "type": "object",
+        "required": [
+          "product_id",
+          "market",
+          "delivery_start",
+          "delivery_end",
+          "gate_closure",
+          "opens_at",
+          "is_open",
+          "is_closed",
+          "best_bid",
+          "best_ask",
+          "last_price"
+        ],
+        "title": "DeliveryProductOut"
       },
       "EndowmentIn": {
         "properties": {
@@ -5041,9 +5223,9 @@
             "type": "string",
             "title": "Qty"
           },
-          "cash": {
+          "cash_usd": {
             "type": "string",
-            "title": "Cash"
+            "title": "Cash Usd"
           },
           "counterparty": {
             "anyOf": [
@@ -5085,7 +5267,7 @@
           "side",
           "price",
           "qty",
-          "cash",
+          "cash_usd",
           "counterparty_vpp_id",
           "buy_vpp_id",
           "sell_vpp_id",
@@ -5810,6 +5992,25 @@
           },
           "balance": {
             "$ref": "#/components/schemas/MarketBalanceOut"
+          },
+          "product_id": {
+            "type": "string",
+            "title": "Product Id"
+          },
+          "delivery_start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Delivery Start"
+          },
+          "delivery_end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Delivery End"
+          },
+          "gate_closure": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Gate Closure"
           }
         },
         "type": "object",
@@ -5826,7 +6027,11 @@
           "session",
           "data_source",
           "external_market",
-          "balance"
+          "balance",
+          "product_id",
+          "delivery_start",
+          "delivery_end",
+          "gate_closure"
         ],
         "title": "MarketSnapshot"
       },
@@ -5884,6 +6089,16 @@
               }
             ],
             "title": "Expires At Sim"
+          },
+          "product_id": {
+            "type": "string",
+            "title": "Product Id"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/OrderPurpose"
+          },
+          "time_in_force": {
+            "$ref": "#/components/schemas/TimeInForce"
           }
         },
         "type": "object",
@@ -5892,7 +6107,10 @@
           "vpp_id",
           "side",
           "price",
-          "remaining_qty"
+          "remaining_qty",
+          "product_id",
+          "purpose",
+          "time_in_force"
         ],
         "title": "OpenOrderOut"
       },
@@ -5901,7 +6119,7 @@
           "protocol_version": {
             "type": "integer",
             "title": "Protocol Version",
-            "default": 1
+            "default": 2
           },
           "idempotency_key": {
             "anyOf": [
@@ -5960,6 +6178,18 @@
         ],
         "title": "OrderCancel"
       },
+      "OrderPurpose": {
+        "type": "string",
+        "enum": [
+          "balance",
+          "battery",
+          "dispatchable",
+          "flex_load",
+          "system_grid"
+        ],
+        "title": "OrderPurpose",
+        "description": "The physical source/sink backing an order, replacing ``dispatched: bool``."
+      },
       "OrderSubmit": {
         "properties": {
           "vpp_id": {
@@ -5979,7 +6209,7 @@
               {
                 "type": "number",
                 "maximum": 1000.0,
-                "exclusiveMinimum": 0.0
+                "minimum": -150.0
               },
               {
                 "type": "string",
@@ -5988,7 +6218,7 @@
             ],
             "title": "Price"
           },
-          "qty": {
+          "qty_kwh": {
             "anyOf": [
               {
                 "type": "number",
@@ -6000,7 +6230,42 @@
                 "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d{0,4}0*$"
               }
             ],
-            "title": "Qty"
+            "title": "Qty Kwh"
+          },
+          "product_id": {
+            "type": "string",
+            "title": "Product Id"
+          },
+          "purpose": {
+            "$ref": "#/components/schemas/OrderPurpose"
+          },
+          "time_in_force": {
+            "$ref": "#/components/schemas/TimeInForce",
+            "default": "good_til_gate"
+          },
+          "ttl_sec": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ttl Sec"
+          },
+          "client_ref": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Ref"
           }
         },
         "type": "object",
@@ -6008,7 +6273,9 @@
           "vpp_id",
           "side",
           "price",
-          "qty"
+          "qty_kwh",
+          "product_id",
+          "purpose"
         ],
         "title": "OrderSubmit"
       },
@@ -6034,16 +6301,14 @@
             ],
             "title": "Expires At Sim"
           },
+          "product_id": {
+            "type": "string",
+            "title": "Product Id"
+          },
           "trades": {
             "items": {
-              "anyOf": [
-                {
-                  "$ref": "#/components/schemas/TradeEvent"
-                },
-                {
-                  "$ref": "#/components/schemas/ExternalTradeEvent"
-                }
-              ]
+              "additionalProperties": true,
+              "type": "object"
             },
             "type": "array",
             "title": "Trades"
@@ -6053,6 +6318,7 @@
         "required": [
           "order_id",
           "remaining_qty",
+          "product_id",
           "trades"
         ],
         "title": "OrderSubmitResponse"
@@ -7022,6 +7288,15 @@
         ],
         "title": "SupplyCurveOut"
       },
+      "TimeInForce": {
+        "type": "string",
+        "enum": [
+          "good_til_gate",
+          "immediate_or_cancel",
+          "fill_or_kill"
+        ],
+        "title": "TimeInForce"
+      },
       "TradeEvent": {
         "properties": {
           "kind": {
@@ -7069,6 +7344,28 @@
             "type": "string",
             "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
             "title": "Qty"
+          },
+          "interval_id": {
+            "type": "string",
+            "title": "Interval Id"
+          },
+          "delivery_start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Delivery Start"
+          },
+          "delivery_end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Delivery End"
+          },
+          "buy_purpose": {
+            "type": "string",
+            "title": "Buy Purpose"
+          },
+          "sell_purpose": {
+            "type": "string",
+            "title": "Sell Purpose"
           }
         },
         "type": "object",
@@ -7081,7 +7378,12 @@
           "buy_vpp_id",
           "sell_vpp_id",
           "price",
-          "qty"
+          "qty",
+          "interval_id",
+          "delivery_start",
+          "delivery_end",
+          "buy_purpose",
+          "sell_purpose"
         ],
         "title": "TradeEvent"
       },

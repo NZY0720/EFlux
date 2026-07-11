@@ -1,7 +1,7 @@
 """Minimal EFlux market-making agent using the Python SDK (Tier A1).
 
 Each cycle it reads the market, quotes a two-sided spread around the mid, cancels its stale
-quotes, and submits the new quotes as ONE Agent Protocol v1 batch (cancels-first). Educational,
+quotes, and submits the new quotes as one Agent Protocol V2 batch (cancels-first). Educational,
 not tuned — a starting point for your own read -> decide -> submit_batch loop.
 
     PYTHONPATH=src python examples/market_maker.py --base-url http://localhost:8000 --email me@example.com
@@ -38,6 +38,8 @@ async def run(base_url: str, email: str, spread: float, size: float, sleep: floa
         print(f"market-making as vpp {vpp_id} (spread={spread}, size={size})")
 
         while True:
+            product = next(p for p in await c.products() if p["is_open"])
+            product_id = product["product_id"]
             snap = await c.market_snapshot()
             mid = _mid(snap.get("best_bid"), snap.get("best_ask"), snap.get("last_price"))
             if mid is None:
@@ -51,8 +53,8 @@ async def run(base_url: str, email: str, spread: float, size: float, sleep: floa
 
             res = await c.submit_batch(
                 orders=[
-                    Order(vpp_id, "buy", bid, size, client_ref="bid"),
-                    Order(vpp_id, "sell", ask, size, client_ref="ask"),
+                    Order(vpp_id, "buy", bid, size, product_id, "battery", client_ref="bid"),
+                    Order(vpp_id, "sell", ask, size, product_id, "battery", client_ref="ask"),
                 ],
                 cancels=stale,  # replace last cycle's quotes
                 idempotency_key=uuid.uuid4().hex,

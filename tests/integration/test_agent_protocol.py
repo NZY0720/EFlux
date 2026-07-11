@@ -1,6 +1,6 @@
-"""Agent Protocol v1 — batch orders, state read, and per-account governance (Tier A1).
+"""Agent Protocol v2 — products, physical purpose, batch state and governance.
 
-See docs/AGENT_SPEC.md §"Agent Protocol v1".
+See docs/AGENT_SPEC.md §"Agent Protocol v2".
 """
 
 from __future__ import annotations
@@ -20,16 +20,36 @@ async def _login(client, email: str = "proto@hku.hk") -> dict[str, str]:
 
 async def _make_vpp(client, auth: dict[str, str], name: str) -> int:
     r = await client.post(
-        "/vpps", headers=auth, json={"name": name, "params": {"pv_kw_peak": 4.0, "battery_kwh": 10.0}}
+        "/vpps",
+        headers=auth,
+        json={"name": name, "params": {"pv_kw_peak": 4.0, "battery_kwh": 10.0}},
     )
     assert r.status_code == 201, r.text
     return r.json()["id"]
+
+
+async def _product_id(client) -> str:
+    rows = (await client.get("/market/products")).json()
+    return next(row["product_id"] for row in rows if row["is_open"])
+
+
+def _sell(vpp_id: int, product_id: str, *, qty: float = 0.05, ref: str | None = None) -> dict:
+    return {
+        "vpp_id": vpp_id,
+        "side": "sell",
+        "price": 900,
+        "qty_kwh": qty,
+        "product_id": product_id,
+        "purpose": "battery",
+        **({"client_ref": ref} if ref else {}),
+    }
 
 
 @pytest.mark.asyncio
 async def test_batch_submit_open_cancel(client):
     auth = await _login(client, "batch@hku.hk")
     vpp_id = await _make_vpp(client, auth, "proto-vpp")
+    product_id = await _product_id(client)
 
     # Two valid sells (priced high so they rest as asks); per-item results echo client_ref.
     r = await client.post(
@@ -37,14 +57,14 @@ async def test_batch_submit_open_cancel(client):
         headers=auth,
         json={
             "orders": [
-                {"vpp_id": vpp_id, "side": "sell", "price": 900, "qty": 1, "client_ref": "a"},
-                {"vpp_id": vpp_id, "side": "sell", "price": 910, "qty": 1, "client_ref": "b"},
+                _sell(vpp_id, product_id, ref="a"),
+                {**_sell(vpp_id, product_id, ref="b"), "price": 910},
             ]
         },
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["protocol_version"] == 1 and isinstance(body["tick_id"], int)
+    assert body["protocol_version"] == 2 and isinstance(body["tick_id"], int)
     results = {x["client_ref"]: x for x in body["results"]}
     assert results["a"]["status"] == "accepted" and results["a"]["order_id"] is not None
     assert results["b"]["status"] == "accepted" and results["b"]["order_id"] is not None
@@ -59,7 +79,7 @@ async def test_batch_submit_open_cancel(client):
     r = await client.post(
         "/orders/batch",
         headers=auth,
-        json={"orders": [{"vpp_id": vpp_id, "side": "sell", "price": 2000, "qty": 1}]},
+        json={"orders": [{**_sell(vpp_id, product_id), "price": 2000}]},
     )
     assert r.status_code == 422
 
@@ -75,9 +95,10 @@ async def test_batch_submit_open_cancel(client):
 async def test_batch_idempotency_replay(client):
     auth = await _login(client, "idem@hku.hk")
     vpp_id = await _make_vpp(client, auth, "idem-vpp")
+    product_id = await _product_id(client)
     payload = {
         "idempotency_key": "abc-123",
-        "orders": [{"vpp_id": vpp_id, "side": "sell", "price": 900, "qty": 0.5, "client_ref": "x"}],
+        "orders": [_sell(vpp_id, product_id, ref="x")],
     }
     r1 = await client.post("/orders/batch", headers=auth, json=payload)
     assert r1.status_code == 200, r1.text
@@ -109,7 +130,7 @@ async def test_batch_idempotency_concurrent_duplicate_guard():
             return self
 
         def all(self):
-            return [vpp_id]
+            return [SimpleNamespace(id=vpp_id, name="test-vpp", params={})]
 
     class Session:
         async def execute(self, stmt):
@@ -126,8 +147,14 @@ async def test_batch_idempotency_concurrent_duplicate_guard():
     class Engine:
         book = Book()
 
+        def interval(self, product_id):
+            return product_id
+
     class Sim:
         engine = Engine()
+
+        def register_external_vpp(self, **kwargs):
+            del kwargs
 
         async def submit_external_batch(self, *, orders, cancels):
             nonlocal executions
@@ -151,7 +178,7 @@ async def test_batch_idempotency_concurrent_duplicate_guard():
 
     payload = orders_router.OrderBatch(
         idempotency_key="same-key",
-        orders=[{"vpp_id": vpp_id, "side": "sell", "price": "900", "qty": "1", "client_ref": "x"}],
+        orders=[_sell(vpp_id, "p2p:test", ref="x")],
     )
     kwargs = {
         "payload": payload,
@@ -174,18 +201,30 @@ async def test_batch_idempotency_concurrent_duplicate_guard():
 @pytest.mark.asyncio
 async def test_batch_ownership_and_validation(client):
     auth = await _login(client, "own@hku.hk")
+    product_id = await _product_id(client)
     # Order for a VPP the caller doesn't own → 404.
     r = await client.post(
         "/orders/batch",
         headers=auth,
-        json={"orders": [{"vpp_id": 999999, "side": "buy", "price": 40, "qty": 0.5}]},
+        json={
+            "orders": [
+                {
+                    "vpp_id": 999999,
+                    "side": "buy",
+                    "price": 40,
+                    "qty_kwh": 0.5,
+                    "product_id": product_id,
+                    "purpose": "balance",
+                }
+            ]
+        },
     )
     assert r.status_code == 404, r.text
     # Empty batch → 422.
     r = await client.post("/orders/batch", headers=auth, json={"orders": [], "cancels": []})
     assert r.status_code == 422
     # Unsupported protocol version → 400 (checked before anything else).
-    r = await client.post("/orders/batch", headers=auth, json={"protocol_version": 2, "orders": []})
+    r = await client.post("/orders/batch", headers=auth, json={"protocol_version": 1, "orders": []})
     assert r.status_code == 400
 
 
@@ -193,16 +232,13 @@ async def test_batch_ownership_and_validation(client):
 async def test_batch_rate_limit_429(client):
     auth = await _login(client, "rate@hku.hk")
     vpp_id = await _make_vpp(client, auth, "rate-vpp")
+    product_id = await _product_id(client)
     saw_429 = False
     for _ in range(20):  # 20 x 10 = 200 orders > the 120-token bucket → a 429 en route
         r = await client.post(
             "/orders/batch",
             headers=auth,
-            json={
-                "orders": [
-                    {"vpp_id": vpp_id, "side": "sell", "price": 900, "qty": 0.01} for _ in range(10)
-                ]
-            },
+            json={"orders": [_sell(vpp_id, product_id, qty=0.01) for _ in range(10)]},
         )
         if r.status_code == 429:
             saw_429 = True
@@ -215,24 +251,20 @@ async def test_batch_rate_limit_429(client):
 async def test_single_order_shares_batch_rate_limit_bucket(client):
     auth = await _login(client, "single-shared-rate@hku.hk")
     vpp_id = await _make_vpp(client, auth, "single-shared-rate-vpp")
+    product_id = await _product_id(client)
 
     for count in (50, 50, 20):
         r = await client.post(
             "/orders/batch",
             headers=auth,
-            json={
-                "orders": [
-                    {"vpp_id": vpp_id, "side": "sell", "price": 900, "qty": 0.01}
-                    for _ in range(count)
-                ]
-            },
+            json={"orders": [_sell(vpp_id, product_id, qty=0.01) for _ in range(count)]},
         )
         assert r.status_code == 200, r.text
 
     r = await client.post(
         "/orders",
         headers=auth,
-        json={"vpp_id": vpp_id, "side": "sell", "price": 900, "qty": 0.01},
+        json=_sell(vpp_id, product_id, qty=0.01),
     )
     assert r.status_code == 429
     assert r.json()["detail"].startswith("order rate limit exceeded")
