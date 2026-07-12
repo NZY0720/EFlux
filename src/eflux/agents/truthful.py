@@ -90,6 +90,17 @@ class TruthfulAgent(BaseAgent):
 
         return AgentDecision(orders=tuple(requests))
 
+    def _quote_price(
+        self, *, side: str, limit: float, ctx: AgentContext, sig: ValuationSignal
+    ) -> float:
+        """BaselinePolicy adapter: truthful quoting is exactly the fair-value limit."""
+        return limit
+
+    @staticmethod
+    def _rationalize(side: str, price_f: float, limit: float) -> float:
+        """Match the classical adapter's individual-rationality clamp."""
+        return max(price_f, limit) if side == "sell" else min(price_f, limit)
+
     def _append_balance_order(
         self,
         requests: list[OrderRequest],

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import random
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
@@ -127,6 +128,10 @@ class AgentContext:
     # Cumulative absolute post-delivery imbalance (kWh) through the previous
     # settled interval.  Slow strategists use the delta as realized feedback.
     realized_imbalance_abs_kwh_total: float = 0.0
+    # Runner-owned rolling silence histogram through the previous decision tick.
+    # The mapping is shared read-only to avoid copying it on the hot path.
+    silence_ticks: int = 0
+    silence_reasons: Mapping[str, int] | None = None
     # Latest platform forecast bundle. Phase-A only transports this signal; agents
     # ignore it until later phases opt in.
     forecast: ForecastBundle | None = None

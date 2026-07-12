@@ -41,7 +41,7 @@ export interface components {
     ExternalTradeEvent: { kind?: "external.trade"; sim_ts : string; wall_ts : string; external_trade_id : number; vpp_id : number; side : string; price : string; raw_lmp : string; qty : string; region : string; node : string; counterparty?: string; interval_start?: string | null; interval_end?: string | null; };
     ForecastSkillMetric: { n : number; mae : number | null; bias : number | null; persistence_mae : number | null; skill_vs_persistence : number | null; };
     ForecastSkillResponse: { as_of : string; persistence_baseline : string; windows : { [key: string]: { [key: string]: { [key: string]: components["schemas"]["ForecastSkillMetric"]; }; }; }; };
-    GuidanceIn: { preferred_modes?: Array<string>; avoid_modes?: Array<string>; mode_pin?: string | null; risk_budget?: number; price_bias_bps?: number; soc_target?: number; execution_style?: string; lesson?: string; meta_control?: { [key: string]: number; } | null; };
+    GuidanceIn: { preferred_modes?: Array<string>; avoid_modes?: Array<string>; mode_pin?: string | null; risk_budget?: number; price_bias_bps?: number; soc_target?: number | null; execution_style?: string; lesson?: string; meta_control?: { [key: string]: number; } | null; };
     GuidanceOut: { managed_id : number; guidance_source : string; applied : components["schemas"]["ReflectionEntryOut"]; applied_at : string; };
     HTTPValidationError: { detail?: Array<components["schemas"]["ValidationError"]>; };
     HistoryOut: { identity : string; session_id : number; points : Array<components["schemas"]["EquityPoint"]>; };

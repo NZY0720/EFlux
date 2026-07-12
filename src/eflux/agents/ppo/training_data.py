@@ -131,6 +131,16 @@ def _load_cached_weather_range(lat: float, lon: float, start: date, end: date):
     return pd.concat(frames).sort_index()
 
 
+def _cached_weather_range_complete(lat: float, lon: float, start: date, end: date) -> bool:
+    cache_dir = PROJECT_ROOT / "data" / "cache" / "weather"
+    day = start
+    while day <= end:
+        if not _cached_weather_path(cache_dir, lat, lon, day).exists():
+            return False
+        day += timedelta(days=1)
+    return True
+
+
 def load_real_market_data(
     *,
     days: int = 30,
@@ -200,7 +210,11 @@ def load_real_market_data(
     log.info("CAISO price points: %d", len(price))
 
     # --- Weather (per-day parquet cache lives in data.weather) ---
-    if start_date is not None and end_date is not None:
+    cached_weather_complete = _cached_weather_range_complete(lat, lon, start_d, end_d)
+    cached_wind_complete = _cached_weather_range_complete(wind_lat, wind_lon, start_d, end_d)
+    if (start_date is not None and end_date is not None) or (
+        cached_weather_complete and cached_wind_complete
+    ):
         weather = _load_cached_weather_range(lat, lon, start_d, end_d)
         wind = _load_cached_weather_range(wind_lat, wind_lon, start_d, end_d)
     else:

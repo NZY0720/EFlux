@@ -229,7 +229,7 @@ export interface ManagedTrade {
   price: string;
   raw_lmp?: string | null;
   qty: string;
-  cash: string;
+  cash_usd: string;
   counterparty?: string | null;
   counterparty_vpp_id: number;
   buy_vpp_id: number;
@@ -419,6 +419,8 @@ export interface TickEvent extends BaseEvent {
   best_ask: string | null;
   last_price: string | null;
   external_price: string | null;
+  import_price: string | null;
+  export_price: string | null;
   bid_depth: string;
   ask_depth: string;
 }
@@ -476,6 +478,9 @@ export interface LeaderboardRow {
   pnl_usd: string;
   /** Score v1 — endowment- and duration-normalized PnL (see backend stats/score.py). */
   score: number;
+  spread_capture: number | null;
+  realized_arb_profit: number | null;
+  oracle_arb_profit: number | null;
   trade_count: number;
   energy_bought_kwh: number;
   energy_sold_kwh: number;

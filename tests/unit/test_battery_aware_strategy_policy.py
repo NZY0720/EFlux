@@ -5,11 +5,17 @@ from __future__ import annotations
 import random
 from datetime import UTC, datetime
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
+from eflux.agents.aa_agent import AAAgent
 from eflux.agents.base import AgentContext, MarketSnapshot
-from eflux.agents.strategy.policy import BatteryAwareStrategyPolicy
+from eflux.agents.strategy.policy import (
+    BaselinePolicy,
+    BatteryAwareStrategyPolicy,
+    ScriptedStrategyPolicy,
+)
 from eflux.agents.strategy.primitives import build_program
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.agents.valuation import ValuationSignal
@@ -34,7 +40,9 @@ def _ctx(
         params=params,
         state=state,
         pv=PV(kw_peak=params.pv_kw_peak),
-        battery=Battery(capacity_kwh=params.battery_kwh, max_power_kw=params.battery_kw_max, soc_kwh=5.0),
+        battery=Battery(
+            capacity_kwh=params.battery_kwh, max_power_kw=params.battery_kw_max, soc_kwh=5.0
+        ),
         load=FlexibleLoad(base_kw=params.load_kw_base),
         market=MarketSnapshot(
             sim_ts=ts,
@@ -82,17 +90,23 @@ def _valuation(
 
 
 def test_deficit_covers_load_first():
-    action = BatteryAwareStrategyPolicy().select_action(_ctx(last=20.0), _valuation(deficit=0.5, soc=0.1))
+    action = BatteryAwareStrategyPolicy().select_action(
+        _ctx(last=20.0), _valuation(deficit=0.5, soc=0.1)
+    )
     assert action.mode is StrategyMode.COVER_DEFICIT
 
 
 def test_overflow_liquidates_at_fair_price():
-    action = BatteryAwareStrategyPolicy().select_action(_ctx(last=46.0), _valuation(surplus=0.5, fair_sell=45.0))
+    action = BatteryAwareStrategyPolicy().select_action(
+        _ctx(last=46.0), _valuation(surplus=0.5, fair_sell=45.0)
+    )
     assert action.mode is StrategyMode.LIQUIDATE_SURPLUS
 
 
 def test_overflow_noops_when_price_collapses():
-    action = BatteryAwareStrategyPolicy().select_action(_ctx(last=40.0), _valuation(surplus=0.5, fair_sell=45.0))
+    action = BatteryAwareStrategyPolicy().select_action(
+        _ctx(last=40.0), _valuation(surplus=0.5, fair_sell=45.0)
+    )
     assert action.mode is StrategyMode.NOOP
 
 
@@ -157,11 +171,65 @@ def test_forecast_spread_inside_margin_falls_through_to_legacy_band():
     assert action.mode is StrategyMode.NOOP
 
 
+def test_balanced_shared_policies_and_plain_baseline_take_clear_spread():
+    ctx = _ctx(last=50.0)
+    valuation = _valuation(
+        soc=0.4,
+        battery_buy=41.0,
+        battery_sell=55.0,
+        expected_1h=70.0,
+    )
+    actions = (
+        BaselinePolicy(AAAgent(), use_forecast=True).select_action(ctx, valuation),
+        ScriptedStrategyPolicy(use_forecast=True).select_action(ctx, valuation),
+    )
+    for action in actions:
+        program = build_program(action, ctx, valuation)
+        assert action.mode is StrategyMode.BATTERY_ARBITRAGE
+        assert action.soc_target != valuation.soc_frac
+        assert program.orders and program.orders[0].side == "buy"
+        assert Decimal("0.01") <= program.orders[0].qty <= Decimal("0.25")
+
+    plain = AAAgent()
+    plain._oracle = SimpleNamespace(estimate=lambda _ctx: valuation)
+    decision = plain.decide(ctx)
+    assert decision.orders and decision.orders[0].side == "buy"
+    assert decision.orders[0].purpose.value == "battery"
+    assert Decimal("0.01") <= decision.orders[0].qty_kwh <= Decimal("0.25")
+
+
+def test_balanced_shared_policies_and_plain_baseline_reject_weak_spread():
+    ctx = _ctx(last=50.0)
+    # Legacy thresholds stay silent; 4% forecast upside is below the 5% margin
+    # and does not clear the efficiency cross-term.
+    valuation = _valuation(
+        soc=0.5,
+        battery_buy=41.0,
+        battery_sell=55.0,
+        expected_1h=52.0,
+    )
+    assert (
+        BaselinePolicy(AAAgent(), use_forecast=True).select_action(ctx, valuation).mode
+        is StrategyMode.NOOP
+    )
+    assert (
+        ScriptedStrategyPolicy(use_forecast=True).select_action(ctx, valuation).mode
+        is StrategyMode.NOOP
+    )
+
+    plain = AAAgent()
+    plain._oracle = SimpleNamespace(estimate=lambda _ctx: valuation)
+    assert plain.decide(ctx).is_empty
+
+
 def test_forecast_spread_disabled_or_missing_preserves_legacy_band_behavior():
     ctx = _ctx(last=50.0)
     valuation = _valuation(soc=0.5, battery_buy=41.0, battery_sell=55.0, expected_1h=70.0)
 
-    assert BatteryAwareStrategyPolicy(use_forecast=False).select_action(ctx, valuation).mode is StrategyMode.NOOP
+    assert (
+        BatteryAwareStrategyPolicy(use_forecast=False).select_action(ctx, valuation).mode
+        is StrategyMode.NOOP
+    )
     assert (
         BatteryAwareStrategyPolicy(use_forecast=True)
         .select_action(ctx, _valuation(soc=0.5, battery_buy=41.0, battery_sell=55.0))

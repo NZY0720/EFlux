@@ -95,7 +95,7 @@ export default function Leaderboard() {
       cur.includes(identity) ? cur.filter((i) => i !== identity) : [...cur, identity].slice(-8),
     );
 
-  const th = (label: string, key?: SortKey, align = "text-right") => (
+  const th = (label: React.ReactNode, key?: SortKey, align = "text-right") => (
     <th
       className={`px-3 py-2 ${align} font-semibold ${key ? "cursor-pointer select-none hover:text-[var(--text)]" : ""}`}
       onClick={key ? () => setSortKey(key) : undefined}
@@ -196,6 +196,11 @@ export default function Leaderboard() {
                 {th("Type", undefined, "text-left")}
                 {th("Score v1", "score")}
                 {th("PnL ($)", "pnl")}
+                {th(
+                  <span title="Share of the battery-arbitrage profit a perfect-foresight oracle could have captured in the last 24 h">
+                    Spread capture
+                  </span>,
+                )}
                 {th("Trades", "trades")}
                 {th("Hours", "hours")}
                 {scope === "alltime" && th("Sessions")}
@@ -240,6 +245,9 @@ export default function Leaderboard() {
                     >
                       {fmtUsd(r.pnl_usd)}
                     </td>
+                    <td className="px-3 py-1.5 text-right text-[var(--text-muted)] tabular-nums">
+                      {r.spread_capture === null ? "-" : `${Math.round(r.spread_capture * 100)}%`}
+                    </td>
                     <td className="px-3 py-1.5 text-right text-[var(--text-muted)] tabular-nums">{r.trade_count}</td>
                     <td className="px-3 py-1.5 text-right text-[var(--text-muted)] tabular-nums">{r.hours.toFixed(1)}</td>
                     {scope === "alltime" && (
@@ -253,7 +261,7 @@ export default function Leaderboard() {
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="p-3">
+                  <td colSpan={scope === "alltime" ? 10 : 9} className="p-3">
                     <EmptyState
                       icon={Trophy}
                       title="No results recorded yet"

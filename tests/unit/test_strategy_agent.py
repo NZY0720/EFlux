@@ -65,8 +65,9 @@ def test_deficit_emits_buy_matching_truthful_balance_order():
     )
 
 
-def test_balanced_position_emits_nothing():
-    assert StrategyAgent().decide(_make_ctx(pv_kw=2.0, load_kw=2.0)).is_empty
+def test_balanced_position_emits_guarded_battery_order():
+    decision = StrategyAgent().decide(_make_ctx(pv_kw=2.0, load_kw=2.0))
+    assert decision.orders and decision.orders[0].purpose.value == "battery"
 
 
 def test_scripted_policy_skips_battery_band():

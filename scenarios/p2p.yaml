@@ -2,16 +2,17 @@
 #
 # Consumer, PV, wind, and mixed VPP cells are instantiated across the five non-LLM
 # strategies (truthful, zip, gd, aa, ppo). LLM strategists appear only in the VPP type
-# (4 heterogeneous, each mirrored by a strategist-less PPO twin for A/B attribution).
+# (5 heterogeneous incl. a battery-only pure trader, each mirrored by a strategist-less
+# PPO twin for A/B attribution).
 # Gas is kept as one storage-free Truthful backstop; the valuation oracle meters fuel
 # onto the sell side at marginal cost.
 #
 #   CONSUMER: ev | industrial | commercial | residential   (4 x 5 = 20)
 #   PROVIDER: pv | wind                                     (2 x 5 = 10)
 #             gas                                           (truthful only = 1)
-#   VPP:      5 non-LLM prosumers + 4 LLM (mirrored)         (9 declared + 4 mirrors)
-# Declared = 40, Live = 44 (40 + 4 mirrors). PPO learners: 7 standalone-equivalent
-# + 4 mirrored. Validated entry-by-entry as AgentSpec (src/eflux/simulator/agent_spec.py).
+#   VPP:      5 non-LLM prosumers + 5 LLM (each mirrored)    (10 declared + 5 mirrors)
+# Declared = 41, Live = 46 (41 + 5 mirrors). PPO learners: 8 standalone-equivalent
+# + 5 mirrored. Validated entry-by-entry as AgentSpec (src/eflux/simulator/agent_spec.py).
 #
 # price_ref is re-based to the trailing-month CAISO mean (jittered +/-6% for cost-based
 # agents; unjittered for ppo/hybrid to match the checkpoint scale). p2p never anchors its
@@ -210,7 +211,7 @@ vpps:
     agent_params: { demand_beta: 0.5 }
     executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v4.pt }
 
-  # ===================== VPP — LLM strategists (4 heterogeneous, each mirrored) =====================
+  # ===================== VPP — LLM strategists (5 heterogeneous, each mirrored) =====================
   - name: vpp-llm-solar-prosumer
     agent: hybrid
     seed: 241
@@ -261,4 +262,17 @@ vpps:
         You procure power for a commercial building. Minimize cost: charge the
         battery when prices dip toward the midday solar floor, avoid buying at
         evening peaks. Favor cover_deficit only when load is urgent, else hold.
+    mirror: true
+  - name: vpp-llm-pure-trader
+    agent: hybrid
+    seed: 245
+    params: { pv_kw_peak: 0.0, battery_kwh: 20.0, battery_kw_max: 5.0, load_kw_base: 0.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_p2p_v4.pt }
+    persona:
+      name: pure-battery-trader
+      prompt: >-
+        You trade only battery inventory. Buy low, sell high, and actively manage
+        state of charge for repeated arbitrage. Favor battery_arbitrage and
+        passive_market_make while keeping inventory risk controlled.
     mirror: true

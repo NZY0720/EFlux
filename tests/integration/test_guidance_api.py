@@ -103,6 +103,7 @@ async def test_release_restores_platform_and_is_idempotent(client):
         f"/vpps/managed/{managed_id}/guidance", headers=auth, json={"risk_budget": 0.4}
     )
     assert r.status_code == 200
+    assert r.json()["applied"]["soc_target"] is None
     r = await client.delete(f"/vpps/managed/{managed_id}/guidance", headers=auth)
     assert r.status_code == 204
     r = await client.get("/vpps/managed", headers=auth)

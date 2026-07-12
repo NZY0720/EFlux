@@ -215,7 +215,7 @@ export interface GuidancePayload {
   preferred_modes?: string[];
   avoid_modes?: string[];
   risk_budget?: number;
-  soc_target?: number;
+  soc_target?: number | null;
   execution_style?: string;
   lesson?: string;
   meta_control?: Record<string, number> | null;

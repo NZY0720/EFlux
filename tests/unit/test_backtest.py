@@ -50,12 +50,12 @@ def test_explicit_backtest_scenario_override_is_respected(tmp_path: Path):
     assert resolve_scenario_path("p2p", custom) == custom
 
 
-def test_latest_market_rosters_have_four_llm_agents_and_mirrors():
+def test_latest_market_rosters_have_five_llm_agents_each_mirrored():
     for market_mode in ("p2p", "realprice"):
         info = inspect_scenario(resolve_scenario_path(market_mode))
-        assert info.hybrid_count == 4
-        assert info.mirror_count == 4
-        assert len(info.hybrid_names) == 4
+        assert info.hybrid_count == 5
+        assert info.mirror_count == 5
+        assert len(info.hybrid_names) == 5
 
 
 def test_strict_llm_connection_probe_failure_exits(monkeypatch: pytest.MonkeyPatch):
@@ -63,7 +63,7 @@ def test_strict_llm_connection_probe_failure_exits(monkeypatch: pytest.MonkeyPat
         llm_api_key = "key"
         llm_key_file = "key.txt"
         llm_base_url = "https://example.invalid/v1"
-        llm_model = "deepseek-v4-pro"
+        llm_model = "deepseek-v4-flash"
         llm_provider = "opencode"
         llm_timeout_sec = 120.0
 

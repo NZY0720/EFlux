@@ -278,6 +278,12 @@ class HybridPolicyAgent(BaseAgent):
             return
         m = ctx.market
         grid = m.external_market
+        silence_window = None
+        if ctx.silence_ticks and ctx.silence_reasons:
+            silence_window = {
+                "silent_ticks": ctx.silence_ticks,
+                "reasons": dict(ctx.silence_reasons),
+            }
         self._reflection_task = loop.create_task(
             arefresh(
                 recent_pnl=[float(row["pnl_usd"]) for row in self._performance_window],
@@ -295,6 +301,7 @@ class HybridPolicyAgent(BaseAgent):
                 endowment=endowment_summary(ctx.params),
                 character=self.character.to_public(),
                 performance_window=list(self._performance_window),
+                silence_window=silence_window,
             )
         )
 

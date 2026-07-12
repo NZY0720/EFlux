@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -24,6 +25,22 @@ def _tick(n: int) -> TickEvent:
         delivery_start=product.start,
         delivery_end=product.end,
     )
+
+
+def test_tick_carries_grid_buy_sell_band():
+    tick = _tick(1).model_copy(
+        update={
+            "external_price": Decimal("46.57"),
+            "import_price": Decimal("48.57"),
+            "export_price": Decimal("44.57"),
+        }
+    )
+
+    payload = tick.model_dump(mode="json")
+
+    assert payload["external_price"] == "46.57"
+    assert payload["import_price"] == "48.57"
+    assert payload["export_price"] == "44.57"
 
 
 @pytest.mark.asyncio

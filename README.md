@@ -199,7 +199,7 @@ the same data as JSON.
 - The venv is at `.env/`, not uv's default `.venv/`; always `export UV_PROJECT_ENVIRONMENT=.env` first (the shell scripts already do this).
 - Env vars file is `config.env` (not `.env`) to avoid clashing with the venv dir.
 - `key.txt` holds the OpenAI-compatible LLM API key (gitignored). The default
-  model template is `deepseek-v4-pro` via the configured base URL. With
+  model template is `deepseek-v4-flash` via the configured base URL. With
   `EFLUX_REFLECTIVE_ENABLED=true` + base URL + model configured, the live LLM
   strategist refreshes every `EFLUX_REFLECTIVE_INTERVAL_TICKS` ticks;
   `EFLUX_LLM_TIMEOUT_SEC` (default 120) bounds each call.

@@ -16,6 +16,7 @@ from __future__ import annotations
 from decimal import ROUND_DOWN, Decimal
 
 from eflux.agents.base import AgentContext, MarketSnapshot
+from eflux.agents.decision import SilenceReason
 from eflux.agents.strategy.schema import (
     PRICE_MULT_MAX,
     PRICE_MULT_MIN,
@@ -152,6 +153,8 @@ def build_program(
         if current is None or reference is None or current >= reference * (1.0 - GRID_PRICE_MARGIN):
             return OrderProgram(mode=mode, orders=[])
         qty = _battery_qty_kwh(ctx, valuation, action, "buy")
+        if qty <= 0:
+            return OrderProgram(mode=mode, rationale=SilenceReason.ZERO_HEADROOM)
         price = max(_anchor(current, action), _q(current))
         return OrderProgram(
             mode,
@@ -166,6 +169,8 @@ def build_program(
         if current is None or reference is None or current <= reference * (1.0 + GRID_PRICE_MARGIN):
             return OrderProgram(mode=mode, orders=[])
         qty = _battery_qty_kwh(ctx, valuation, action, "sell")
+        if qty <= 0:
+            return OrderProgram(mode=mode, rationale=SilenceReason.ZERO_HEADROOM)
         price = min(_anchor(current, action), _q(current))
         return OrderProgram(
             mode,
@@ -192,6 +197,8 @@ def build_program(
         side = "sell" if valuation.soc_frac >= action.soc_target else "buy"
         base = valuation.battery_sell_price if side == "sell" else valuation.battery_buy_price
         qty = _battery_qty_kwh(ctx, valuation, action, side)
+        if qty <= 0:
+            return OrderProgram(mode=mode, rationale=SilenceReason.ZERO_HEADROOM)
         price = _effective_price(side, _anchor(base, action), action, market)
         return OrderProgram(
             mode,
@@ -298,6 +305,8 @@ def _market_make(
     half = Decimal(str(action.ladder_slope)) if action.ladder_slope > 0 else Decimal("0.02")
     sell_qty = _battery_qty_kwh(ctx, valuation, action, "sell")
     buy_qty = _battery_qty_kwh(ctx, valuation, action, "buy")
+    if sell_qty <= 0 and buy_qty <= 0:
+        return OrderProgram(action.mode, rationale=SilenceReason.ZERO_HEADROOM)
     specs: list[OrderSpec] = []
     ask = (mid * (Decimal("1") + half)).quantize(QUANT)
     bid = (mid * (Decimal("1") - half)).quantize(QUANT)

@@ -182,7 +182,10 @@ class VPPPrimitiveEnv(gym.Env):
         self._forecast_rng = np.random.default_rng(rseed + 0xF03ECA57)
         self._rseed = rseed
 
-        self._params = self._rng.choice(self._params_pool)
+        requested_params = (options or {}).get("params")
+        self._params = (
+            requested_params if requested_params is not None else self._rng.choice(self._params_pool)
+        )
         self._sim_ts = self._pick_start()
         initial_soc = self._params.battery_kwh * self._params.battery_initial_soc_frac
         self._state = VPPState(sim_ts=self._sim_ts, soc_kwh=initial_soc)

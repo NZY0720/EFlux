@@ -9,9 +9,26 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
+from enum import StrEnum
 
 from eflux.market.delivery import OrderPurpose
 from eflux.market.products import DeliveryInterval, TimeInForce
+
+
+class SilenceReason(StrEnum):
+    POLICY_HOLD = "policy_hold"
+    LLM_HOLD = "llm_hold"
+    ZERO_HEADROOM = "zero_headroom"
+    DUST = "dust"
+    REJECTED = "rejected"
+
+
+def classify_silence_reason(reason: str | None) -> SilenceReason:
+    """Map legacy/free-text hold rationales into the closed silence taxonomy."""
+    try:
+        return SilenceReason(reason)
+    except (TypeError, ValueError):
+        return SilenceReason.POLICY_HOLD
 
 
 @dataclass(frozen=True, slots=True)

@@ -28,7 +28,13 @@ from eflux.agents.base import (
     MarketSnapshot,
     OpenOrderView,
 )
-from eflux.agents.decision import AgentDecision, CancelRequest, OrderRequest
+from eflux.agents.decision import (
+    AgentDecision,
+    CancelRequest,
+    OrderRequest,
+    SilenceReason,
+    classify_silence_reason,
+)
 from eflux.agents.reflective.chat import build_chat_messages, clean_chat_line
 from eflux.bridge.bus import EventBus
 from eflux.config import get_settings
@@ -64,6 +70,8 @@ if TYPE_CHECKING:
     from eflux.forecasting.schema import ForecastBundle
 
 log = logging.getLogger(__name__)
+
+SILENCE_WINDOW_MAXLEN = 100
 
 # Agent chatroom cadence: every N ticks one LLM agent (round-robin) posts a line. Bounded
 # further by a single in-flight chat task + the shared strategist gate, so cost stays low.
@@ -213,6 +221,10 @@ class Simulator:
         self.veto_holds_by_vpp: dict[int, int] = {}
         self.decide_ticks_by_vpp: dict[int, int] = {}
         self.decision_failures_by_vpp: dict[int, int] = {}
+        self.silence_events_by_vpp: dict[
+            int, deque[tuple[datetime, SilenceReason]]
+        ] = {}
+        self.silence_counts_by_vpp: dict[int, dict[str, int]] = {}
         # Site-weather memo: several VPPs share coords (e.g. the HKU rooftop),
         # and today/future forecast days are deliberately not disk-cached.
         self._site_weather_cache: dict[tuple[float, float], object] = {}
@@ -1800,6 +1812,16 @@ class Simulator:
                             if self._external_market_quote.is_real_price
                             else None
                         ),
+                        import_price=(
+                            self._external_market_quote.import_price
+                            if self._external_market_quote.is_real_price
+                            else None
+                        ),
+                        export_price=(
+                            self._external_market_quote.export_price
+                            if self._external_market_quote.is_real_price
+                            else None
+                        ),
                         bid_depth=sum((Decimal(qty) for _, qty in bids), Decimal("0")),
                         ask_depth=sum((Decimal(qty) for _, qty in asks), Decimal("0")),
                         interval_id=primary.interval_id,
@@ -2224,6 +2246,8 @@ class Simulator:
                 realized_imbalance_abs_kwh_total=float(
                     self.imbalance_totals_by_vpp.get(vpp.vpp_id, {}).get("imbalance_kwh", 0.0)
                 ),
+                silence_ticks=len(self.silence_events_by_vpp.get(vpp.vpp_id, ())),
+                silence_reasons=self.silence_counts_by_vpp.get(vpp.vpp_id),
                 forecast=self._context_forecast(),
             )
 
@@ -2255,14 +2279,23 @@ class Simulator:
             self._record_rejections(scheduled.participant_id, len(execution.rejected))
             self._record_product_trades(execution.trades)
             vpp = self.vpps[scheduled.participant_id]
-            # If every new order in a tactical decision was rejected, the hybrid
-            # agent may opt into one safe fallback decision.  The fallback still
-            # traverses the same V2 gateway and physical reservations.
-            if (
+            all_orders_rejected = bool(
                 scheduled.decision.orders
                 and not execution.accepted_order_ids
                 and len(execution.rejected) >= len(scheduled.decision.orders)
-            ):
+            )
+            if scheduled.decision.is_empty:
+                self._record_silence(
+                    vpp.vpp_id,
+                    sim_ts,
+                    classify_silence_reason(scheduled.decision.rationale),
+                )
+            elif all_orders_rejected:
+                self._record_silence(vpp.vpp_id, sim_ts, SilenceReason.REJECTED)
+            # If every new order in a tactical decision was rejected, the hybrid
+            # agent may opt into one safe fallback decision.  The fallback still
+            # traverses the same V2 gateway and physical reservations.
+            if all_orders_rejected:
                 fallback = getattr(vpp.agent, "risk_fallback", None)
                 if fallback is None:
                     self.veto_holds_by_vpp[vpp.vpp_id] = (
@@ -2417,6 +2450,7 @@ class Simulator:
                         "price": str(trade.price),
                         "qty": str(trade.qty),
                         "cash_usd": str(cash if side == "sell" else -cash),
+                        "counterparty": "CAISO SP15" if counterparty == GRID_PARTICIPANT_ID else None,
                         "counterparty_vpp_id": counterparty,
                         "buy_vpp_id": trade.buy_vpp_id,
                         "sell_vpp_id": trade.sell_vpp_id,
@@ -2464,6 +2498,28 @@ class Simulator:
         if n:
             self.risk_rejections += n
             self.risk_rejections_by_vpp[vpp_id] = self.risk_rejections_by_vpp.get(vpp_id, 0) + n
+
+    def _record_silence(
+        self, vpp_id: int, sim_time: datetime, reason: SilenceReason
+    ) -> None:
+        events = self.silence_events_by_vpp.get(vpp_id)
+        counts = self.silence_counts_by_vpp.get(vpp_id)
+        if events is None:
+            events = deque(maxlen=SILENCE_WINDOW_MAXLEN)
+            counts = {}
+            self.silence_events_by_vpp[vpp_id] = events
+            self.silence_counts_by_vpp[vpp_id] = counts
+        assert counts is not None
+        if len(events) == SILENCE_WINDOW_MAXLEN:
+            expired = events[0][1].value
+            remaining = counts[expired] - 1
+            if remaining:
+                counts[expired] = remaining
+            else:
+                del counts[expired]
+        events.append((sim_time, reason))
+        code = reason.value
+        counts[code] = counts.get(code, 0) + 1
 
     def market_balance(self) -> MarketBalanceSummary:
         """Aggregate live supply/demand across built-in VPPs plus book depth —

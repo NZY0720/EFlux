@@ -3,12 +3,13 @@
 # Every agent is a pure price-taker against the live CAISO price (orders settle vs the grid
 # at import/export; agents never trade each other). So this is a strategy-vs-grid timing
 # testbed: a leaner slice of the taxonomy — fewer archetypes, NO gas (no merit-order book to
-# anchor), the same five strategies per cell, and the 4 mirrored LLM VPPs.
+# anchor), the same five strategies per cell, and 5 mirrored LLM VPPs (incl. a
+# battery-only pure trader).
 #
 #   CONSUMER: residential | ev          (2 x 5 = 10)
 #   PROVIDER: pv | wind                 (2 x 5 = 10)
-#   VPP:      5 non-LLM + 4 LLM (mirrored)  (9 declared + 4 mirrors)
-# Declared = 29, Live = 33 (29 + 4 mirrors).
+#   VPP:      5 non-LLM + 5 LLM (each mirrored)  (10 declared + 5 mirrors)
+# Declared = 30, Live = 35 (30 + 5 mirrors).
 #
 # price_ref (cost basis) is intentionally NOT pegged to the live CAISO LMP — agents trade on
 # the live-price-vs-cost spread, which is exactly the timing signal under test.
@@ -147,7 +148,7 @@ vpps:
     agent_params: { demand_beta: 0.5 }
     executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v4.pt }
 
-  # ===================== VPP — LLM strategists (4 heterogeneous, each mirrored) =====================
+  # ===================== VPP — LLM strategists (5 heterogeneous, each mirrored) =====================
   - name: vpp-llm-solar-prosumer
     agent: hybrid
     seed: 226
@@ -201,4 +202,17 @@ vpps:
         You procure power for a commercial building. Minimize cost: charge the
         battery when prices dip toward the midday solar floor, avoid buying at
         evening peaks. Favor cover_deficit only when load is urgent, else hold.
+    mirror: true
+  - name: vpp-llm-pure-trader
+    agent: hybrid
+    seed: 230
+    params: { pv_kw_peak: 0.0, battery_kwh: 20.0, battery_kw_max: 5.0, load_kw_base: 0.0, markup_floor: 0.4 }
+    agent_params: { demand_beta: 0.5 }
+    executor: { kind: ppo_online, checkpoint: checkpoints/bc_primitive_realprice_grid_v4.pt }
+    persona:
+      name: pure-battery-trader
+      prompt: >-
+        You trade only battery inventory against the real-time grid price. Charge
+        on dips, discharge on peaks, and preserve headroom for repeated arbitrage.
+        Favor grid_charge_on_dip, grid_discharge_on_peak, and battery_arbitrage.
     mirror: true

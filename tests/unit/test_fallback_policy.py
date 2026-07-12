@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from eflux.agents.base import AgentContext
+from eflux.agents.decision import SilenceReason
 from eflux.agents.hybrid import HybridPolicyAgent
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.agents.valuation import ValuationSignal
@@ -47,6 +48,7 @@ def test_hold_fallback_policy_counts_veto_hold_and_submits_nothing():
     assert sim.veto_holds_by_vpp[vpp.vpp_id] == 1
     assert sim.fallback_invocations_by_vpp.get(vpp.vpp_id, 0) == 0
     assert sim.decide_ticks_by_vpp[vpp.vpp_id] == 1
+    assert sim.silence_counts_by_vpp[vpp.vpp_id] == {SilenceReason.REJECTED.value: 1}
 
 
 def test_truthful_fallback_policy_requotes_and_counts_invocation():

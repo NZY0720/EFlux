@@ -12,7 +12,11 @@ score v1 (see eflux.stats.score); no owner emails are ever exposed.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import re
+import time
+import weakref
+from datetime import UTC, datetime, timedelta
+from statistics import median
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -21,6 +25,8 @@ from sqlalchemy import func, select
 
 from eflux.api.deps import DbSession, SimulatorDep
 from eflux.db.models import MarketSession, VppStatSnapshot
+from eflux.evaluation.arb_iq import oracle_arb_profit, realized_arb_profit, spread_capture
+from eflux.market.ledger import LedgerCategory
 from eflux.stats.score import revenue_scale_usd
 
 router = APIRouter(prefix="/leaderboard", tags=["leaderboard"])
@@ -33,6 +39,9 @@ _ENDOWMENT_FIELDS = (
     "load_kw_base",
     "gas_kw_max",
 )
+_ARB_CACHE_TTL_SEC = 60.0
+_TRADE_DETAIL_RE = re.compile(r"^(buy|sell) ([^ ]+) kWh @ ([^ ]+) USD/MWh$")
+_arb_cache: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 
 
 class SessionOut(BaseModel):
@@ -54,6 +63,9 @@ class LeaderboardRow(BaseModel):
     llm_model: str | None
     pnl_usd: str
     score: float  # score v1 — endowment- and duration-normalized (stats/score.py)
+    spread_capture: float | None
+    realized_arb_profit: float | None
+    oracle_arb_profit: float | None
     trade_count: int
     energy_bought_kwh: float
     energy_sold_kwh: float
@@ -98,6 +110,85 @@ def _identity(name: str, managed_def_id: int | None) -> str:
 
 def _elapsed_h(first: datetime, last: datetime) -> float:
     return max(0.0, (_as_utc(last) - _as_utc(first)).total_seconds() / 3600.0)
+
+
+async def _live_arb_metrics(sim) -> dict[str, dict[str, float | None]]:
+    """Compute trailing-24h metrics from live matching-engine and ledger state."""
+    cached = _arb_cache.get(sim)
+    now_mono = time.monotonic()
+    if cached is not None and now_mono - cached[0] < _ARB_CACHE_TTL_SEC:
+        return cached[1]
+
+    async with sim._lock:
+        now_sim = sim.clock.now_sim()
+        cutoff = now_sim - timedelta(hours=24)
+        priced_intervals = [
+            (interval, sim.engine.last_price(interval.interval_id))
+            for interval in sim.engine.intervals
+            if interval.market == sim.market_mode and interval.start >= cutoff
+        ]
+        prices = [float(price) for _, price in priced_intervals if price is not None]
+        durations = [
+            interval.duration_h for interval, price in priced_intervals if price is not None
+        ]
+        entries = [
+            entry
+            for entry in sim.gateway.ledger.entries
+            if entry.category == LedgerCategory.TRADE and entry.occurred_at >= cutoff
+        ]
+        specs = [
+            (
+                _identity(vpp.name, vpp.managed_def_id),
+                vpp.vpp_id,
+                vpp.params.battery_kwh,
+                vpp.params.battery_kw_max,
+                vpp.params.battery_eta_rt,
+                vpp.params.battery_initial_soc_frac,
+            )
+            for vpp in sim.vpps.values()
+        ]
+
+    trades_by_vpp: dict[int, list[dict[str, float | str]]] = {}
+    for entry in entries:
+        match = _TRADE_DETAIL_RE.fullmatch(entry.detail)
+        if match is None:
+            continue
+        side, qty, price = match.groups()
+        trades_by_vpp.setdefault(entry.participant_id, []).append(
+            {"side": side, "qty": float(qty), "price": float(price)}
+        )
+
+    interval_h = median(durations) if durations else None
+    result: dict[str, dict[str, float | None]] = {}
+    for identity, vpp_id, battery_kwh, battery_kw_max, eta_rt, initial_soc in specs:
+        if battery_kwh <= 0 or battery_kw_max <= 0:
+            result[identity] = {
+                "spread_capture": None,
+                "realized_arb_profit": None,
+                "oracle_arb_profit": None,
+            }
+            continue
+        realized = realized_arb_profit(trades_by_vpp.get(vpp_id, ()))
+        oracle = (
+            oracle_arb_profit(
+                prices,
+                battery_kwh=battery_kwh,
+                battery_kw_max=battery_kw_max,
+                interval_h=interval_h,
+                round_trip_eff=eta_rt,
+                start_soc=initial_soc,
+            )
+            if prices and interval_h is not None
+            else None
+        )
+        result[identity] = {
+            "spread_capture": spread_capture(realized, oracle),
+            "realized_arb_profit": realized,
+            "oracle_arb_profit": oracle,
+        }
+
+    _arb_cache[sim] = (now_mono, result)
+    return result
 
 
 async def _session_finals(
@@ -237,12 +328,14 @@ async def leaderboard(
         entry["sold"] += snap.energy_sold_kwh
         entry["sessions"] += 1
 
+    live_arb = await _live_arb_metrics(sim)
     rows: list[LeaderboardRow] = []
     for key, entry in by_identity.items():
         latest: VppStatSnapshot = entry["latest"]
         if category is not None and latest.category != category:
             continue
         score = entry["pnl"] / entry["denominator"] if entry["denominator"] > 0 else 0.0
+        arb = live_arb.get(key, {})
         rows.append(
             LeaderboardRow(
                 identity=key,
@@ -254,6 +347,9 @@ async def leaderboard(
                 llm_model=latest.llm_model,
                 pnl_usd=f"{entry['pnl']:.4f}",
                 score=score,
+                spread_capture=arb.get("spread_capture"),
+                realized_arb_profit=arb.get("realized_arb_profit"),
+                oracle_arb_profit=arb.get("oracle_arb_profit"),
                 trade_count=entry["trades"],
                 energy_bought_kwh=entry["bought"],
                 energy_sold_kwh=entry["sold"],

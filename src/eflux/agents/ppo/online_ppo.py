@@ -339,7 +339,9 @@ class OnlinePPOPolicy:
         self, ctx: AgentContext, valuation: ValuationSignal, guidance: object | None = None
     ) -> StrategyAction:
         if guidance is not None:
-            self.soc_target = float(getattr(guidance, "soc_target", self.soc_target))
+            guided_soc_target = getattr(guidance, "soc_target", None)
+            if guided_soc_target is not None:
+                self.soc_target = float(guided_soc_target)
 
         obs = encode_obs(ctx, valuation, obs_version=self.obs_version)
 

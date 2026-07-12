@@ -11,6 +11,11 @@ interface PricePoint {
   price: number;
 }
 
+interface GridQuotePoint extends PricePoint {
+  importPrice: number | null;
+  exportPrice: number | null;
+}
+
 interface Candle {
   t: number; // bucket-start ms
   o: number;
@@ -60,6 +65,8 @@ interface Props {
   events: MarketEvent[];
   initialPrice?: number | null;
   initialExternalPrice?: number | null;
+  initialImportPrice?: number | null;
+  initialExportPrice?: number | null;
   /**
    * "p2p" (default): blue emergent P2P line + dashed CAISO reference, with an
    * optional OHLC candle view.
@@ -89,6 +96,8 @@ export default function PriceChart({
   events,
   initialPrice,
   initialExternalPrice,
+  initialImportPrice,
+  initialExportPrice,
   variant = "p2p",
   myAgents,
   hiddenAgentIds,
@@ -123,16 +132,29 @@ export default function PriceChart({
     return pts;
   }, [events]);
 
-  const externalPoints = useMemo(() => {
-    const pts: PricePoint[] = [];
+  const gridQuotePoints = useMemo(() => {
+    const pts: GridQuotePoint[] = [];
     for (const e of events) {
       if (e.kind !== "tick" || e.external_price === null || e.external_price === undefined) continue;
       const price = Number(e.external_price);
-      if (Number.isFinite(price)) pts.push({ ts: new Date(e.wall_ts).getTime(), price });
+      const importPrice = e.import_price === null || e.import_price === undefined ? null : Number(e.import_price);
+      const exportPrice = e.export_price === null || e.export_price === undefined ? null : Number(e.export_price);
+      if (Number.isFinite(price)) {
+        pts.push({
+          ts: new Date(e.wall_ts).getTime(),
+          price,
+          importPrice: importPrice !== null && Number.isFinite(importPrice) ? importPrice : null,
+          exportPrice: exportPrice !== null && Number.isFinite(exportPrice) ? exportPrice : null,
+        });
+      }
     }
     pts.sort((a, b) => a.ts - b.ts);
     return pts;
   }, [events]);
+  const externalPoints = useMemo(
+    () => gridQuotePoints.map(({ ts, price }) => ({ ts, price })),
+    [gridQuotePoints],
+  );
 
   const linePoints = useMemo(() => {
     if (points.length === 0 && initialPrice !== null && initialPrice !== undefined) {
@@ -147,6 +169,32 @@ export default function PriceChart({
     }
     return externalPoints;
   }, [externalPoints, initialExternalPrice]);
+
+  const priceBandPoints = useMemo(() => {
+    const importOffset = initialExternalPrice !== null && initialExternalPrice !== undefined
+      && initialImportPrice !== null && initialImportPrice !== undefined
+      ? initialImportPrice - initialExternalPrice
+      : null;
+    const exportOffset = initialExternalPrice !== null && initialExternalPrice !== undefined
+      && initialExportPrice !== null && initialExportPrice !== undefined
+      ? initialExportPrice - initialExternalPrice
+      : null;
+    const pointsWithBand = gridQuotePoints.flatMap((point) => {
+      const importPrice = point.importPrice ?? (importOffset === null ? null : point.price + importOffset);
+      const exportPrice = point.exportPrice ?? (exportOffset === null ? null : point.price + exportOffset);
+      return importPrice !== null && exportPrice !== null
+        ? [{ ts: point.ts, importPrice, exportPrice }]
+        : [];
+    });
+    if (pointsWithBand.length > 0) return pointsWithBand;
+    if (
+      initialImportPrice !== null && initialImportPrice !== undefined
+      && initialExportPrice !== null && initialExportPrice !== undefined
+    ) {
+      return [{ ts: Date.now(), importPrice: initialImportPrice, exportPrice: initialExportPrice }];
+    }
+    return [];
+  }, [gridQuotePoints, initialExternalPrice, initialExportPrice, initialImportPrice]);
 
   const myTradeMarkers = useMemo(() => {
     if (!myAgents?.length) return [] as TradeMarker[];
@@ -274,6 +322,18 @@ export default function PriceChart({
   };
   const markerSeries = myAgents !== undefined ? [buyScatterSeries, sellScatterSeries] : [];
 
+  const priceBandSegments = priceBandPoints.slice(1).map((point, index) => {
+    const previous = priceBandPoints[index];
+    return [
+      previous.ts,
+      previous.exportPrice,
+      previous.importPrice,
+      point.ts,
+      point.exportPrice,
+      point.importPrice,
+    ];
+  });
+
   const baseAxis = chartAxis(theme);
   const zoomTheme = {
     bg: theme.surface,
@@ -287,7 +347,12 @@ export default function PriceChart({
 
   const lineOption = {
     backgroundColor: "transparent",
-    legend: { top: 0, right: 12, ...chartLegend(theme), data: [variant === "realprice" ? "CAISO (grid price)" : "P2P"] },
+    legend: {
+      top: 0,
+      right: 12,
+      ...chartLegend(theme),
+      data: variant === "realprice" ? ["Buy from grid", "CAISO LMP", "Sell to grid"] : ["P2P"],
+    },
     grid: { left: 50, right: 20, top: 32, bottom: 56 },
     xAxis: { type: "time", ...baseAxis },
     yAxis: {
@@ -302,16 +367,62 @@ export default function PriceChart({
     series: [
       ...(variant === "realprice"
         ? [
-            // Real-price market: the live CAISO price IS the market — make it primary.
+            {
+              type: "custom",
+              name: "Trading band",
+              silent: true,
+              tooltip: { show: false },
+              data: priceBandSegments,
+              z: 1,
+              renderItem: (_params: unknown, api: any) => {
+                const exportStart = api.coord([api.value(0), api.value(1)]);
+                const importStart = api.coord([api.value(0), api.value(2)]);
+                const exportEnd = api.coord([api.value(3), api.value(4)]);
+                const importEnd = api.coord([api.value(3), api.value(5)]);
+                return {
+                  type: "polygon",
+                  shape: {
+                    points: [
+                      exportStart,
+                      [exportEnd[0], exportStart[1]],
+                      exportEnd,
+                      importEnd,
+                      [importEnd[0], importStart[1]],
+                      importStart,
+                    ],
+                  },
+                  style: { fill: "rgba(245, 158, 11, 0.10)" },
+                };
+              },
+            },
             {
               type: "line",
-              name: "CAISO (grid price)",
+              name: "Sell to grid",
               showSymbol: false,
-              smooth: false,
+              step: "end",
+              data: priceBandPoints.map((p) => [p.ts, p.exportPrice]),
+              lineStyle: { color: theme.success, width: 1.4, type: "dashed" },
+              z: 3,
+            },
+            // Real-price market: CAISO LMP is the reference inside the side-specific execution band.
+            {
+              type: "line",
+              name: "CAISO LMP",
+              showSymbol: false,
+              step: "end",
               sampling: "lttb",
               data: lineExternalPoints.map((p) => [p.ts, p.price]),
               lineStyle: { color: theme.warning, width: 1.8 },
-              areaStyle: { color: "rgba(245, 158, 11, 0.12)" },
+              z: 4,
+            },
+            {
+              type: "line",
+              name: "Buy from grid",
+              showSymbol: false,
+              step: "end",
+              data: priceBandPoints.map((p) => [p.ts, p.importPrice]),
+              lineStyle: { color: theme.danger, width: 1.4, type: "dashed" },
+              z: 3,
             },
           ]
         : [

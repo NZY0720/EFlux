@@ -48,7 +48,9 @@ def _make_ctx(
         params=params,
         state=state,
         pv=PV(kw_peak=params.pv_kw_peak),
-        battery=Battery(capacity_kwh=params.battery_kwh, max_power_kw=params.battery_kw_max, soc_kwh=soc_kwh),
+        battery=Battery(
+            capacity_kwh=params.battery_kwh, max_power_kw=params.battery_kw_max, soc_kwh=soc_kwh
+        ),
         load=FlexibleLoad(base_kw=params.load_kw_base),
         market=market,
         rng=random.Random(7),
@@ -65,9 +67,12 @@ def test_all_baselines_side_follows_net_position():
         assert buy.orders and buy.orders[0].side == "buy", type(agent).__name__
 
 
-def test_all_baselines_balanced_position_no_order():
+def test_all_baselines_balanced_position_takes_guarded_battery_opportunity():
     for agent in (ZIPAgent(), GDAgent(), AAAgent()):
-        assert agent.decide(_make_ctx(pv_kw=2.0, load_kw=2.0)).is_empty, type(agent).__name__
+        decision = agent.decide(_make_ctx(pv_kw=2.0, load_kw=2.0))
+        assert decision.orders and decision.orders[0].purpose.value == "battery", type(
+            agent
+        ).__name__
 
 
 def test_all_baselines_respect_individual_rationality():
@@ -150,14 +155,21 @@ def test_gd_seller_captures_surplus_above_limit_when_bids_are_high():
     price = None
     for _ in range(3):
         decision = agent.decide(
-            _make_ctx(pv_kw=5.0, load_kw=1.0, best_bid=60.0, best_ask=62.0, last_price=60.0, recent_trades=trades)
+            _make_ctx(
+                pv_kw=5.0,
+                load_kw=1.0,
+                best_bid=60.0,
+                best_ask=62.0,
+                last_price=60.0,
+                recent_trades=trades,
+            )
         )
         if decision.orders:
             price = float(decision.orders[0].price)
     floor = 0.4 * 50.0
     assert price is not None
-    assert price > floor + 1e-6, price          # captured surplus above the floor
-    assert price >= floor - 1e-6                 # still individually rational
+    assert price > floor + 1e-6, price  # captured surplus above the floor
+    assert price >= floor - 1e-6  # still individually rational
 
 
 # --------------------------------------------------------------------------- AA
@@ -173,7 +185,11 @@ def test_aa_tracks_equilibrium_from_recent_trades():
 def test_aa_aggressiveness_stays_bounded():
     agent = AAAgent(price_ref=Decimal("50.0"))
     for last in (10.0, 90.0, 20.0, 80.0) * 5:
-        agent.decide(_make_ctx(pv_kw=0.5, load_kw=3.0, last_price=last, recent_trades=[{"price": last, "qty": 1.0}]))
+        agent.decide(
+            _make_ctx(
+                pv_kw=0.5, load_kw=3.0, last_price=last, recent_trades=[{"price": last, "qty": 1.0}]
+            )
+        )
         assert -1.0 <= agent._r <= 1.0
 
 
@@ -212,11 +228,12 @@ def test_baseline_policy_forwards_record_trade_to_base():
     assert base._pstar == 55.0  # the fill seeds the equilibrium estimate, proving learning flows
 
 
-def test_baseline_policy_balanced_position_is_noop():
+def test_baseline_policy_balanced_position_takes_guarded_battery_opportunity():
     from eflux.agents.strategy.policy import BaselinePolicy
     from eflux.agents.valuation import TruthfulValuationOracle
 
     ctx = _make_ctx(pv_kw=2.0, load_kw=2.0)  # balanced → no imbalance
     val = TruthfulValuationOracle(price_ref=Decimal("50.0")).estimate(ctx)
     action = BaselinePolicy(AAAgent(price_ref=Decimal("50.0"))).select_action(ctx, val, None)
-    assert action.mode.value == "noop"
+    assert action.mode.value == "battery_arbitrage"
+    assert action.soc_target != val.soc_frac

@@ -36,7 +36,7 @@ CURATED_MODELS: tuple[str, ...] = (
 class SharedLLM:
     client: LLMClient | None
     status: str  # human-readable, surfaced as llm_status on each managed VPP
-    strategy_suffix: str  # e.g. "opencode:deepseek-v4-pro" or "offline fallback"
+    strategy_suffix: str  # e.g. "opencode:deepseek-v4-flash" or "offline fallback"
     gate: asyncio.Semaphore = field(default_factory=lambda: asyncio.Semaphore(1))
     # Connection params retained so per-model clients can be built lazily — all sharing
     # the same endpoint/key + the single in-flight gate (Tier-0 per-agent model choice).

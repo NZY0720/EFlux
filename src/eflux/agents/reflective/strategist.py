@@ -2,7 +2,7 @@
 
 The LLM operates over a longer horizon than the tactical policy: it reads the regime,
 reviews the last window, and recommends/discourages strategy primitives, a risk budget,
-an optional binding mode pin, and an SOC target. Its output is `StrategyGuidance`,
+an optional binding mode pin, and an optional SOC target. Its output is `StrategyGuidance`,
 applied as clamped execution guidance (`apply_guidance`): binding levers can halt,
 veto modes, or force passive execution; the remaining fields bias execution. The guidance
 text is audit/UI metadata only (principle #9), never execution logic.
@@ -23,6 +23,7 @@ from dataclasses import fields as dataclass_fields
 from datetime import UTC, datetime
 from typing import Protocol, runtime_checkable
 
+from eflux.agents.decision import SilenceReason
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 
 log = logging.getLogger(__name__)
@@ -69,7 +70,7 @@ class StrategyGuidance:
     passive_only: bool = False  # binding maker-only execution: never cross
     risk_budget: float = 1.0  # [0,1.5] — scales order size / aggressiveness
     price_bias_bps: float = 0.0  # [-200,200] — shifts quotes off fair value
-    soc_target: float = 0.5  # [0,1] — desired battery state of charge
+    soc_target: float | None = None  # optional [0,1] — deliberate battery SOC steer
     execution_style: str = ""  # free text, audit/UI only
     lesson: str = ""  # persisted takeaway, audit/UI only
 
@@ -81,7 +82,7 @@ class StrategyGuidance:
                 -PRICE_BIAS_BPS_MAX,
                 min(PRICE_BIAS_BPS_MAX, float(self.price_bias_bps)),
             ),
-            soc_target=max(0.0, min(1.0, float(self.soc_target))),
+            soc_target=_optional_clamp(self.soc_target, 0.0, 1.0),
             execution_style=str(self.execution_style)[:200],
             lesson=str(self.lesson)[:GUIDANCE_LESSON_MAX],
         )
@@ -92,6 +93,15 @@ def _clamp(x: float, lo: float, hi: float, default: float) -> float:
         return max(lo, min(hi, float(x)))
     except (TypeError, ValueError):
         return default
+
+
+def _optional_clamp(x: object, lo: float, hi: float) -> float | None:
+    if x is None:
+        return None
+    try:
+        return max(lo, min(hi, float(x)))
+    except (TypeError, ValueError):
+        return None
 
 
 def _rounded_or_none(value: object) -> float | None:
@@ -209,7 +219,7 @@ Return ONLY a JSON object (no markdown, no commentary):
     "passive_only": <bool; BINDING: maker-only, never cross the spread. Use when liquidity is thin>,
     "risk_budget":     <float in [0,1.5]; 1 = full size, >1 = press harder, <1 = cautious>,
     "price_bias_bps":  <float in [-200,200]; shifts quotes off fair value; positive = quote higher>,
-    "soc_target":      <float in [0,1]; desired battery state of charge>,
+    "soc_target":      <OPTIONAL float in [0,1]; omit to keep the executor's target; set only to deliberately steer SOC>,
     "execution_style": "<short maker-vs-taker preference, <=120 chars>",
     "lesson":          "<one durable takeaway from the last window, <=200 chars>",
     "meta_control": {
@@ -230,11 +240,14 @@ Read `regime_note` in the input and act on extremes with the BINDING levers, not
 A `forecast` block may be present with 5m/1h/12h grid price, peer price, and irradiance.
 Act on it: charge or hold_energy ahead of forecast price spikes, be patient selling into a
 rising forecast, and press or de-risk ahead of a forecast collapse.
+For battery_arbitrage, omit soc_target to preserve the executor's chosen target. Set it only
+when you deliberately want to steer SOC toward a different level.
 
 A `performance_window` may contain recent real-USD PnL deltas, fills, rejection deltas,
 realized absolute imbalance, residual contract exposure, SOC, and open-order counts.
 Use changes across the window—not just the latest cumulative PnL—to diagnose whether the
 previous guidance improved execution. Avoid increasing risk after worsening imbalance or rejects.
+A `silence_window` may summarize empty/rejected ticks. Persistent zero_headroom means your soc_target equals current SOC — set a different soc_target or omit it.
 
 If the policy is learning well, omit "meta_control" or leave it at the defaults.
 mode_pin, halt, passive_only, and avoid_modes are BINDING; the other fields are soft, clamped priors — the tactical policy may override those, and out-of-range knobs are clipped. Stay within bounds."""
@@ -270,7 +283,7 @@ Return ONLY a JSON object (no markdown, no commentary):
     "passive_only": <bool; no effect in this market (there is no book to quote into); leave false>,
     "risk_budget":     <float in [0,1.5]; 1 = full size, >1 = press harder, <1 = cautious>,
     "price_bias_bps":  <float in [-200,200]; shifts quotes off fair value; positive = quote higher>,
-    "soc_target":      <float in [0,1]; desired battery state of charge>,
+    "soc_target":      <OPTIONAL float in [0,1]; omit to keep the executor's target; set only to deliberately steer SOC>,
     "execution_style": "<short grid-price timing preference, <=120 chars>",
     "lesson":          "<one durable takeaway from the last window, <=200 chars>",
     "meta_control": {
@@ -291,11 +304,14 @@ Read `regime_note` in the input and act on extremes with the BINDING levers, not
 A `forecast` block may be present with 5m/1h/12h grid price, peer price, and irradiance.
 Act on it: charge or hold_energy ahead of forecast price spikes, be patient selling into a
 rising forecast, and press or de-risk ahead of a forecast collapse.
+For battery_arbitrage and grid battery modes, omit soc_target to preserve the executor's
+chosen target. Set it only when you deliberately want to steer SOC toward a different level.
 
 A `performance_window` may contain recent real-USD PnL deltas, fills, rejection deltas,
 realized absolute imbalance, residual contract exposure, SOC, and open-order counts.
 Use changes across the window—not just the latest cumulative PnL—to diagnose whether the
 previous guidance improved execution. Avoid increasing risk after worsening imbalance or rejects.
+A `silence_window` may summarize empty/rejected ticks. Persistent zero_headroom means your soc_target equals current SOC — set a different soc_target or omit it.
 
 If the policy is learning well, omit "meta_control" or leave it at the defaults. The market
 input's best_bid/best_ask are null here (no order book) — that is normal, not an error.
@@ -368,6 +384,7 @@ def build_strategist_user_message(
     endowment: dict | None = None,
     character: dict | None = None,
     performance_window: list[dict] | None = None,
+    silence_window: dict | None = None,
 ) -> str:
     payload = {
         "market_mode": market_mode,
@@ -402,6 +419,8 @@ def build_strategist_user_message(
         # The producer already rounds and bounds the schema; slicing here is a
         # final prompt-size guard for third-party strategist callers.
         payload["performance_window"] = performance_window[-20:]
+    if silence_window and int(silence_window.get("silent_ticks", 0)) > 0:
+        payload["silence_window"] = silence_window
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
@@ -482,7 +501,7 @@ def parse_guidance(content: str, *, market_mode: str = "p2p") -> StrategyGuidanc
                 PRICE_BIAS_BPS_MAX,
                 d.price_bias_bps,
             ),
-            soc_target=_clamp(data.get("soc_target", d.soc_target), 0.0, 1.0, d.soc_target),
+            soc_target=_optional_clamp(data.get("soc_target"), 0.0, 1.0),
             execution_style=str(data.get("execution_style", "")),
             lesson=str(data.get("lesson", "")),
         ).clamped()
@@ -517,7 +536,7 @@ def external_guidance_from_dict(
             PRICE_BIAS_BPS_MAX,
             d.price_bias_bps,
         ),
-        soc_target=_clamp(data.get("soc_target", d.soc_target), 0.0, 1.0, d.soc_target),
+        soc_target=_optional_clamp(data.get("soc_target"), 0.0, 1.0),
         execution_style=str(data.get("execution_style") or ""),
         lesson=str(data.get("lesson") or ""),
     ).clamped()
@@ -544,16 +563,21 @@ def apply_guidance(action: StrategyAction, guidance: StrategyGuidance | None) ->
 
     Binding precedence is mode_pin > halt > avoid_modes. risk_budget scales
     size/aggressiveness, passive_only forces maker-only aggressiveness, price_bias_bps
-    shifts the quote, and soc_target is adopted.
+    shifts the quote, and an explicit soc_target is adopted.
     """
     if guidance is None:
         return action
     mode = guidance.mode_pin if guidance.mode_pin is not None else action.mode
+    silence_reason = action.silence_reason
     if guidance.mode_pin is None:
         if guidance.halt:
             mode = StrategyMode.HOLD_ENERGY
+            silence_reason = SilenceReason.LLM_HOLD
         elif mode in guidance.avoid_modes:
             mode = StrategyMode.HOLD_ENERGY
+            silence_reason = SilenceReason.LLM_HOLD
+    elif mode in {StrategyMode.NOOP, StrategyMode.HOLD_ENERGY, StrategyMode.WAIT_FOR_BETTER}:
+        silence_reason = SilenceReason.LLM_HOLD
     qty = action.qty_fraction * guidance.risk_budget
     aggr = min(1.0, action.aggressiveness * guidance.risk_budget)
     if guidance.passive_only:
@@ -565,7 +589,8 @@ def apply_guidance(action: StrategyAction, guidance: StrategyGuidance | None) ->
         qty_fraction=qty,
         aggressiveness=aggr,
         price_offset_bps=bps,
-        soc_target=guidance.soc_target,
+        soc_target=action.soc_target if guidance.soc_target is None else guidance.soc_target,
+        silence_reason=silence_reason,
     )
 
 
@@ -712,6 +737,7 @@ class LLMStrategist:
         endowment: dict | None = None,
         character: dict | None = None,
         performance_window: list[dict] | None = None,
+        silence_window: dict | None = None,
     ) -> StrategyGuidance | None:
         if self.llm_gate is not None:
             if self.llm_gate.locked():
@@ -734,6 +760,7 @@ class LLMStrategist:
                     endowment=endowment,
                     character=character,
                     performance_window=performance_window,
+                    silence_window=silence_window,
                 )
         return await self._refresh_once(
             recent_pnl=recent_pnl,
@@ -751,6 +778,7 @@ class LLMStrategist:
             endowment=endowment,
             character=character,
             performance_window=performance_window,
+            silence_window=silence_window,
         )
 
     async def _refresh_once(
@@ -771,6 +799,7 @@ class LLMStrategist:
         endowment: dict | None = None,
         character: dict | None = None,
         performance_window: list[dict] | None = None,
+        silence_window: dict | None = None,
     ) -> StrategyGuidance | None:
         messages = [
             {
@@ -797,6 +826,7 @@ class LLMStrategist:
                     endowment=endowment,
                     character=character,
                     performance_window=performance_window,
+                    silence_window=silence_window,
                 ),
             },
         ]

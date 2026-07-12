@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from decimal import Decimal
 
 from eflux.agents.base import AgentContext, OpenOrderView
-from eflux.agents.decision import CancelRequest, OrderRequest, ReplaceRequest
+from eflux.agents.decision import CancelRequest, OrderRequest, ReplaceRequest, SilenceReason
 from eflux.agents.strategy.primitives import build_program
 from eflux.agents.strategy.schema import (
     CancelPolicy,
@@ -38,6 +38,13 @@ class OrderProgramCompiler:
     ) -> CompiledProgram:
         program = build_program(action, ctx, valuation)
         specs = [s for s in program.orders if s.price.is_finite() and s.qty >= self.min_qty]
+        rationale = program.rationale
+        if not specs and program.orders and any(
+            s.price.is_finite() and s.qty < self.min_qty for s in program.orders
+        ):
+            rationale = SilenceReason.DUST
+        elif not program.orders and rationale is None:
+            rationale = action.silence_reason or SilenceReason.POLICY_HOLD
 
         cancel_requests, replace_requests, consumed = self._expand_cancels(
             ctx, program.cancel_policy, specs
@@ -48,7 +55,7 @@ class OrderProgramCompiler:
             cancel_requests=cancel_requests,
             replace_requests=replace_requests,
             mode=program.mode,
-            rationale=program.rationale,
+            rationale=rationale,
         )
 
     def _expand_cancels(

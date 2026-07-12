@@ -12,6 +12,7 @@ import pytest
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.hybrid import HybridPolicyAgent
 from eflux.agents.reflective.strategist import StaticStrategist, StrategyGuidance
+from eflux.agents.strategy.policy import BaselinePolicy
 from eflux.agents.strategy.schema import StrategyMode
 from eflux.agents.truthful import TruthfulAgent
 from eflux.vpp.base import VPPParams, VPPState
@@ -93,6 +94,20 @@ def test_hybrid_guidance_mode_pin_flows_into_compiled_orders():
     assert decision.orders[0].purpose.value == "battery"
     # Default 3 kW inverter over a five-minute product can deliver 0.25 kWh.
     assert decision.orders[0].qty_kwh == Decimal("0.2500")
+
+
+def test_managed_truthful_llm_adapter_emits_deficit_order_without_error():
+    """The managed truthful+LLM assembly uses TruthfulAgent inside BaselinePolicy."""
+    agent = HybridPolicyAgent(
+        price_ref=Decimal("50.0"),
+        executor=BaselinePolicy(TruthfulAgent(price_ref=Decimal("50.0"))),
+        strategist=StaticStrategist(StrategyGuidance(price_bias_bps=10.0)),
+    )
+
+    decision = agent.decide(_make_ctx(pv_kw=0.0, load_kw=3.0))
+
+    assert decision.orders and decision.orders[0].side == "buy"
+    assert decision.orders[0].purpose.value == "balance"
 
 
 def test_hybrid_influence_stats_count_guidance_changes():

@@ -844,7 +844,7 @@ class GuidanceIn(BaseModel):
     mode_pin: str | None = None
     risk_budget: float = 1.0
     price_bias_bps: float = 0.0
-    soc_target: float = 0.5
+    soc_target: float | None = None
     execution_style: str = Field(default="", max_length=200)
     lesson: str = Field(default="", max_length=200)
     meta_control: dict[str, float] | None = None

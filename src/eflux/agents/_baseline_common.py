@@ -8,10 +8,10 @@ quote relative to their limit and the observed market — which is exactly the v
 we want to compare against ZI / Truthful / PPO.
 
 Side convention mirrors ZI / Truthful: positive accumulated balance ⇒ sell at or above
-marginal cost; negative ⇒ buy at or below marginal value; balanced ⇒ no order. Individual
-rationality is enforced centrally (a seller never prices below its marginal cost, a buyer
-never above its marginal value), so a subclass's learning rule can never quote a losing
-trade no matter how it adapts.
+marginal cost; negative ⇒ buy at or below marginal value; balanced ⇒ take only a guarded
+battery opportunity. Individual rationality is enforced centrally (a seller never prices
+below its marginal cost, a buyer never above its marginal value), so a subclass's learning
+rule can never quote a losing trade no matter how it adapts.
 """
 
 from __future__ import annotations
@@ -70,6 +70,12 @@ class BaselineAgent(BaseAgent):
         elif sig.deficit_kwh >= min_qty_f:
             side, qty_f, limit = "buy", sig.deficit_kwh, sig.fair_buy_price
         else:
+            from eflux.agents.strategy.compiler import OrderProgramCompiler
+            from eflux.agents.strategy.policy import evaluate_battery_opportunity
+
+            action = evaluate_battery_opportunity(ctx, sig, use_forecast=True)
+            if action is not None:
+                return OrderProgramCompiler().compile(ctx, action, sig).as_decision()
             return AgentDecision.hold("no projected balance above minimum quantity")
         price_f = self._quote_price(side=side, limit=limit, ctx=ctx, sig=sig)
         purpose = sig.supply_purpose if side == "sell" else OrderPurpose.BALANCE

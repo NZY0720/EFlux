@@ -20,6 +20,7 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from eflux.agents.base import AgentContext
+from eflux.agents.decision import SilenceReason
 from eflux.agents.strategy.schema import (
     PRICE_MULT_MAX,
     PRICE_MULT_MIN,
@@ -167,18 +168,16 @@ def _tilt_price_mult(
 class StrategyPolicy(Protocol):
     def select_action(
         self, ctx: AgentContext, valuation: ValuationSignal, guidance: object | None = None
-    ) -> StrategyAction:
-        ...
+    ) -> StrategyAction: ...
 
 
 @dataclass
 class ScriptedStrategyPolicy:
-    """Deterministic baseline policy: trade the ambient imbalance, else stand down.
+    """Deterministic baseline policy: trade imbalance, then guarded battery opportunity.
 
     Mirrors the Truthful agent's primary behaviour within the one-action-per-tick
     contract that PPO will inherit — surplus → liquidate, deficit → cover, balanced →
-    no-op. Battery-band arbitrage is left to the learned policy (the primitive exists
-    and is gated; sizing it well across cadences is exactly what PPO should learn)."""
+    battery opportunity or no-op."""
 
     min_qty: float = 0.01
     use_forecast: bool = False
@@ -208,8 +207,20 @@ class ScriptedStrategyPolicy:
                 valuation,
                 enabled=self.use_forecast,
             )
+        battery_action = evaluate_battery_opportunity(
+            ctx, valuation, use_forecast=self.use_forecast
+        )
+        if battery_action is not None:
+            return battery_action
         return _tilt_soc_target(
-            self._guided(StrategyAction(mode=StrategyMode.NOOP), "neutral", guidance),
+            self._guided(
+                StrategyAction(
+                    mode=StrategyMode.NOOP,
+                    silence_reason=SilenceReason.POLICY_HOLD,
+                ),
+                "neutral",
+                guidance,
+            ),
             ctx,
             valuation,
             enabled=self.use_forecast,
@@ -268,6 +279,198 @@ def _action_for_preferred(mode: StrategyMode) -> StrategyAction:
     return StrategyAction(mode=mode)
 
 
+def _last_price(ctx: AgentContext) -> float | None:
+    if ctx.market.last_price is not None:
+        return float(ctx.market.last_price)
+    if ctx.market.mid_price is not None:
+        return float(ctx.market.mid_price)
+    return None
+
+
+def _battery_qty_clears_floor(
+    ctx: AgentContext,
+    valuation: ValuationSignal,
+    *,
+    side: str,
+    soc_target: float,
+    min_qty: float = 0.01,
+) -> bool:
+    """Mirror battery primitive sizing far enough to avoid emitting compiler dust."""
+    cap = max(0.0, float(ctx.battery.capacity_kwh))
+    soc = max(0.0, min(1.0, float(valuation.soc_frac or 0.0)))
+    cell_head = (soc - soc_target) * cap if side == "sell" else (soc_target - soc) * cap
+    eta = max(0.01, float(ctx.battery.eta_rt)) ** 0.5
+    terminal_head = max(0.0, cell_head) * eta if side == "sell" else max(0.0, cell_head) / eta
+    interval_limit = max(0.0, float(ctx.battery.max_power_kw)) * ctx.primary_interval.duration_h
+    return min(terminal_head, interval_limit) >= max(0.0, float(min_qty))
+
+
+def evaluate_battery_opportunity(
+    ctx: AgentContext,
+    valuation: ValuationSignal,
+    *,
+    use_forecast: bool = False,
+    battery_buy_price_mult: float = 1.2,
+    battery_sell_price_mult: float = 1.0,
+    battery_aggressiveness: float = 1.0,
+    spread_margin: float = 0.05,
+    arb_soc_high: float = 0.9,
+    arb_soc_low: float = 0.2,
+    _include_forecast: bool = True,
+    _include_legacy: bool = True,
+) -> StrategyAction | None:
+    """Select a guarded battery trade for a balanced position, if one exists.
+
+    This is the shared form of BatteryAwareStrategyPolicy's forecast-spread and
+    legacy valuation-band logic. It returns only market-native battery modes and
+    suppresses actions whose SOC headroom would compile below the 0.01 kWh floor.
+    """
+    soc = max(0.0, min(1.0, float(valuation.soc_frac or 0.0)))
+    aggressiveness = float(battery_aggressiveness)
+
+    if ctx.market.market_mode == "realprice":
+        reference = _forecast_reference(ctx, valuation)
+        buy_price = _current_grid_buy_price(ctx, valuation)
+        sell_price = _current_grid_sell_price(ctx, valuation)
+        if _include_forecast and reference is not None:
+            trend = _price_trend(ctx, valuation)
+            if (
+                buy_price is not None
+                and buy_price < reference * (1.0 - GRID_PRICE_MARGIN)
+                and trend > 0.0
+                and soc < 0.9
+                and _battery_qty_clears_floor(ctx, valuation, side="buy", soc_target=0.9)
+            ):
+                return StrategyAction(
+                    mode=StrategyMode.GRID_CHARGE_ON_DIP,
+                    aggressiveness=aggressiveness,
+                    soc_target=0.9,
+                )
+            if (
+                sell_price is not None
+                and sell_price > reference * (1.0 + GRID_PRICE_MARGIN)
+                and soc > 0.2
+                and _battery_qty_clears_floor(ctx, valuation, side="sell", soc_target=0.2)
+            ):
+                return StrategyAction(
+                    mode=StrategyMode.GRID_DISCHARGE_ON_PEAK,
+                    aggressiveness=aggressiveness,
+                    soc_target=0.2,
+                )
+        if not _include_legacy:
+            return None
+        battery_buy = float(valuation.battery_buy_price or 0.0)
+        battery_sell = float(valuation.battery_sell_price or 0.0)
+        if (
+            buy_price is not None
+            and battery_buy > 0.0
+            and buy_price <= battery_buy * battery_buy_price_mult
+            and soc < 0.9
+            and _battery_qty_clears_floor(ctx, valuation, side="buy", soc_target=0.9)
+        ):
+            return StrategyAction(
+                mode=StrategyMode.GRID_CHARGE_ON_DIP,
+                aggressiveness=aggressiveness,
+                soc_target=0.9,
+            )
+        if (
+            sell_price is not None
+            and battery_sell > 0.0
+            and sell_price >= battery_sell * battery_sell_price_mult
+            and soc > 0.2
+            and _battery_qty_clears_floor(ctx, valuation, side="sell", soc_target=0.2)
+        ):
+            return StrategyAction(
+                mode=StrategyMode.GRID_DISCHARGE_ON_PEAK,
+                aggressiveness=aggressiveness,
+                soc_target=0.2,
+            )
+        return None
+
+    last = _last_price(ctx)
+    if last is None:
+        return None
+    if _include_forecast:
+        expected_1h = getattr(valuation, "expected_ref_1h", None)
+        if use_forecast and expected_1h is not None:
+            expected_1h = float(expected_1h)
+            margin = max(0.0, float(spread_margin))
+            soc_high = max(0.0, min(1.0, float(arb_soc_high)))
+            soc_low = max(0.0, min(1.0, float(arb_soc_low)))
+            battery_buy = float(valuation.battery_buy_price or 0.0)
+            battery_sell = float(valuation.battery_sell_price or float("inf"))
+            # These cross-terms require the spread to clear round-trip efficiency.
+            if (
+                expected_1h >= last * (1.0 + margin)
+                and expected_1h * battery_buy > last * battery_sell
+                and soc < soc_high
+                and _battery_qty_clears_floor(ctx, valuation, side="buy", soc_target=soc_high)
+            ):
+                return _tilt_soc_target(
+                    StrategyAction(
+                        mode=StrategyMode.BATTERY_ARBITRAGE,
+                        aggressiveness=aggressiveness,
+                        soc_target=soc_high,
+                    ),
+                    ctx,
+                    valuation,
+                    enabled=use_forecast,
+                )
+            if (
+                expected_1h <= last * (1.0 - margin)
+                and last * battery_buy > expected_1h * battery_sell
+                and soc > soc_low
+                and _battery_qty_clears_floor(ctx, valuation, side="sell", soc_target=soc_low)
+            ):
+                return _tilt_soc_target(
+                    StrategyAction(
+                        mode=StrategyMode.BATTERY_ARBITRAGE,
+                        aggressiveness=aggressiveness,
+                        soc_target=soc_low,
+                    ),
+                    ctx,
+                    valuation,
+                    enabled=use_forecast,
+                )
+    if not _include_legacy:
+        return None
+    battery_buy = float(valuation.battery_buy_price or 0.0)
+    battery_sell = float(valuation.battery_sell_price or 0.0)
+    if (
+        battery_buy > 0.0
+        and last <= battery_buy * battery_buy_price_mult
+        and soc < 0.9
+        and _battery_qty_clears_floor(ctx, valuation, side="buy", soc_target=0.9)
+    ):
+        return _tilt_soc_target(
+            StrategyAction(
+                mode=StrategyMode.BATTERY_ARBITRAGE,
+                aggressiveness=aggressiveness,
+                soc_target=0.9,
+            ),
+            ctx,
+            valuation,
+            enabled=use_forecast,
+        )
+    if (
+        battery_sell > 0.0
+        and last >= battery_sell * battery_sell_price_mult
+        and soc > 0.2
+        and _battery_qty_clears_floor(ctx, valuation, side="sell", soc_target=0.2)
+    ):
+        return _tilt_soc_target(
+            StrategyAction(
+                mode=StrategyMode.BATTERY_ARBITRAGE,
+                aggressiveness=aggressiveness,
+                soc_target=0.2,
+            ),
+            ctx,
+            valuation,
+            enabled=use_forecast,
+        )
+    return None
+
+
 @dataclass
 class BatteryAwareStrategyPolicy:
     """Deterministic PPO-space demonstrator for the battery-buffer environment.
@@ -298,8 +501,7 @@ class BatteryAwareStrategyPolicy:
         min_qty = max(0.0, float(self.min_qty))
         surplus = max(0.0, float(valuation.surplus_kwh or 0.0))
         deficit = max(0.0, float(valuation.deficit_kwh or 0.0))
-        soc = max(0.0, min(1.0, float(valuation.soc_frac or 0.0)))
-        last = self._last_price(ctx)
+        last = _last_price(ctx)
 
         if deficit >= min_qty:
             return _tilt_soc_target(
@@ -325,72 +527,19 @@ class BatteryAwareStrategyPolicy:
                 enabled=self.use_forecast,
             )
 
-        if last is not None:
-            expected_1h = getattr(valuation, "expected_ref_1h", None)
-            if self.use_forecast and expected_1h is not None:
-                expected_1h = float(expected_1h)
-                spread_margin = max(0.0, float(self.spread_margin))
-                arb_soc_high = max(0.0, min(1.0, float(self.arb_soc_high)))
-                arb_soc_low = max(0.0, min(1.0, float(self.arb_soc_low)))
-                battery_buy = float(valuation.battery_buy_price or 0.0)
-                battery_sell = float(valuation.battery_sell_price or float("inf"))
-                # battery_buy/battery_sell = pr·√η ÷ pr/√η = η, so the cross-terms
-                # below require the spread to clear the round-trip efficiency loss.
-                if (
-                    expected_1h >= last * (1.0 + spread_margin)
-                    and expected_1h * battery_buy > last * battery_sell
-                    and soc < arb_soc_high
-                ):
-                    return _tilt_soc_target(
-                        StrategyAction(
-                            mode=StrategyMode.BATTERY_ARBITRAGE,
-                            aggressiveness=self.battery_aggressiveness,
-                            soc_target=arb_soc_high,
-                        ),
-                        ctx,
-                        valuation,
-                        enabled=self.use_forecast,
-                    )
-                if (
-                    expected_1h <= last * (1.0 - spread_margin)
-                    and last * battery_buy > expected_1h * battery_sell
-                    and soc > arb_soc_low
-                ):
-                    return _tilt_soc_target(
-                        StrategyAction(
-                            mode=StrategyMode.BATTERY_ARBITRAGE,
-                            aggressiveness=self.battery_aggressiveness,
-                            soc_target=arb_soc_low,
-                        ),
-                        ctx,
-                        valuation,
-                        enabled=self.use_forecast,
-                    )
-
-            battery_buy = float(valuation.battery_buy_price or 0.0)
-            battery_sell = float(valuation.battery_sell_price or 0.0)
-            if battery_buy > 0.0 and last <= battery_buy * self.battery_buy_price_mult and soc < 0.9:
-                return _tilt_soc_target(
-                    StrategyAction(
-                        mode=StrategyMode.BATTERY_ARBITRAGE,
-                        aggressiveness=self.battery_aggressiveness,
-                        soc_target=0.9,
-                    ),
-                    ctx,
-                    valuation,
-                    enabled=self.use_forecast,
-                )
-            if battery_sell > 0.0 and last >= battery_sell * self.battery_sell_price_mult and soc > 0.2:
-                return _tilt_soc_target(
-                    StrategyAction(
-                        mode=StrategyMode.BATTERY_ARBITRAGE,
-                        aggressiveness=self.battery_aggressiveness,
-                        soc_target=0.2,
-                    ),
-                    ctx,
-                    valuation,
-                    enabled=self.use_forecast,
-                )
+        battery_action = evaluate_battery_opportunity(
+            ctx,
+            valuation,
+            use_forecast=self.use_forecast,
+            battery_buy_price_mult=self.battery_buy_price_mult,
+            battery_sell_price_mult=self.battery_sell_price_mult,
+            battery_aggressiveness=self.battery_aggressiveness,
+            spread_margin=self.spread_margin,
+            arb_soc_high=self.arb_soc_high,
+            arb_soc_low=self.arb_soc_low,
+        )
+        if battery_action is not None:
+            return battery_action
 
         return _tilt_soc_target(
             StrategyAction(mode=StrategyMode.NOOP),
@@ -398,13 +547,6 @@ class BatteryAwareStrategyPolicy:
             valuation,
             enabled=self.use_forecast,
         )
-
-    def _last_price(self, ctx: AgentContext) -> float | None:
-        if ctx.market.last_price is not None:
-            return float(ctx.market.last_price)
-        if ctx.market.mid_price is not None:
-            return float(ctx.market.mid_price)
-        return None
 
     def _select_realprice_action(
         self, ctx: AgentContext, valuation: ValuationSignal
@@ -414,37 +556,25 @@ class BatteryAwareStrategyPolicy:
         deficit = max(0.0, float(valuation.deficit_kwh or 0.0))
         soc = max(0.0, min(1.0, float(valuation.soc_frac or 0.0)))
         trend = _price_trend(ctx, valuation)
-        reference = _forecast_reference(ctx, valuation)
-        buy_price = _current_grid_buy_price(ctx, valuation)
-        sell_price = _current_grid_sell_price(ctx, valuation)
-
         if surplus >= min_qty and trend > WAIT_FOR_BETTER_MARGIN and soc < 0.95:
             return StrategyAction(mode=StrategyMode.WAIT_FOR_BETTER)
         if deficit >= min_qty and trend < -WAIT_FOR_BETTER_MARGIN and soc > 0.05:
             return StrategyAction(mode=StrategyMode.WAIT_FOR_BETTER)
 
-        if reference is not None:
-            if (
-                buy_price is not None
-                and buy_price < reference * (1.0 - GRID_PRICE_MARGIN)
-                and trend > 0.0
-                and soc < 0.9
-            ):
-                return StrategyAction(
-                    mode=StrategyMode.GRID_CHARGE_ON_DIP,
-                    aggressiveness=self.battery_aggressiveness,
-                    soc_target=0.9,
-                )
-            if (
-                sell_price is not None
-                and sell_price > reference * (1.0 + GRID_PRICE_MARGIN)
-                and soc > 0.2
-            ):
-                return StrategyAction(
-                    mode=StrategyMode.GRID_DISCHARGE_ON_PEAK,
-                    aggressiveness=self.battery_aggressiveness,
-                    soc_target=0.2,
-                )
+        forecast_action = evaluate_battery_opportunity(
+            ctx,
+            valuation,
+            use_forecast=self.use_forecast,
+            battery_buy_price_mult=self.battery_buy_price_mult,
+            battery_sell_price_mult=self.battery_sell_price_mult,
+            battery_aggressiveness=self.battery_aggressiveness,
+            spread_margin=self.spread_margin,
+            arb_soc_high=self.arb_soc_high,
+            arb_soc_low=self.arb_soc_low,
+            _include_legacy=False,
+        )
+        if forecast_action is not None:
+            return forecast_action
 
         if deficit >= min_qty:
             return _tilt_soc_target(
@@ -462,20 +592,20 @@ class BatteryAwareStrategyPolicy:
                 enabled=self.use_forecast,
             )
 
-        battery_buy = float(valuation.battery_buy_price or 0.0)
-        battery_sell = float(valuation.battery_sell_price or 0.0)
-        if buy_price is not None and battery_buy > 0.0 and buy_price <= battery_buy * self.battery_buy_price_mult and soc < 0.9:
-            return StrategyAction(
-                mode=StrategyMode.GRID_CHARGE_ON_DIP,
-                aggressiveness=self.battery_aggressiveness,
-                soc_target=0.9,
-            )
-        if sell_price is not None and battery_sell > 0.0 and sell_price >= battery_sell * self.battery_sell_price_mult and soc > 0.2:
-            return StrategyAction(
-                mode=StrategyMode.GRID_DISCHARGE_ON_PEAK,
-                aggressiveness=self.battery_aggressiveness,
-                soc_target=0.2,
-            )
+        legacy_action = evaluate_battery_opportunity(
+            ctx,
+            valuation,
+            use_forecast=self.use_forecast,
+            battery_buy_price_mult=self.battery_buy_price_mult,
+            battery_sell_price_mult=self.battery_sell_price_mult,
+            battery_aggressiveness=self.battery_aggressiveness,
+            spread_margin=self.spread_margin,
+            arb_soc_high=self.arb_soc_high,
+            arb_soc_low=self.arb_soc_low,
+            _include_forecast=False,
+        )
+        if legacy_action is not None:
+            return legacy_action
 
         return StrategyAction(mode=StrategyMode.NOOP)
 
@@ -507,6 +637,11 @@ class BaselinePolicy:
         elif valuation.deficit_kwh >= min_qty:
             side, limit, mode = "buy", valuation.fair_buy_price, StrategyMode.COVER_DEFICIT
         else:
+            battery_action = evaluate_battery_opportunity(
+                ctx, valuation, use_forecast=self.use_forecast
+            )
+            if battery_action is not None:
+                return battery_action
             return StrategyAction(mode=StrategyMode.NOOP)
         anchor = float(limit)
         if anchor <= 0:
@@ -526,4 +661,6 @@ class BaselinePolicy:
         return StrategyAction(mode=mode, price_target_mult=mult)
 
     def record_trade(self, record: dict) -> None:
-        self.base.record_trade(record)
+        fwd = getattr(self.base, "record_trade", None)
+        if callable(fwd):
+            fwd(record)

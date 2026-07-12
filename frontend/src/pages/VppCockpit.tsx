@@ -70,7 +70,9 @@ export default function VppCockpit() {
 function VppActivity({ id, name }: { id: number; name: string }) {
   const { recent, snapshot } = useMarket();
   const { mode } = useMarketMode();
-  return <DashboardCard className="lg:col-span-2"><CardTitle icon={Bot}>Trading activity</CardTitle><PriceChart variant={mode === "realprice" ? "realprice" : "p2p"} events={recent} myAgents={[{ id, name, color: "#059669" }]} hiddenAgentIds={[]} initialPrice={snapshot?.last_price ? Number(snapshot.last_price) : null} initialExternalPrice={mode === "realprice" && snapshot?.external_market && (snapshot.external_market.status === "real" || snapshot.external_market.status === "fallback") && snapshot.external_market.raw_lmp ? Number(snapshot.external_market.raw_lmp) : null} /><p className="mt-2 text-xs text-[var(--text-muted)]">▲ buys ▼ sells · fills at the same timestamp are shown at their average price</p></DashboardCard>;
+  const quote = snapshot?.external_market;
+  const gridQuote = mode === "realprice" && quote && (quote.status === "real" || quote.status === "fallback") ? quote : null;
+  return <DashboardCard className="lg:col-span-2"><CardTitle icon={Bot}>Trading activity</CardTitle><PriceChart variant={mode === "realprice" ? "realprice" : "p2p"} events={recent} myAgents={[{ id, name, color: "#059669" }]} hiddenAgentIds={[]} initialPrice={snapshot?.last_price ? Number(snapshot.last_price) : null} initialExternalPrice={gridQuote ? Number(gridQuote.raw_lmp) : null} initialImportPrice={gridQuote ? Number(gridQuote.import_price) : null} initialExportPrice={gridQuote ? Number(gridQuote.export_price) : null} /><p className="mt-2 text-xs text-[var(--text-muted)]">▲ buys ▼ sells · fills at the same timestamp are shown at their average price</p></DashboardCard>;
 }
 
 function ManualOrder({ vpp, onError }: { vpp: VPP; onError: (message: string | null) => void }) {

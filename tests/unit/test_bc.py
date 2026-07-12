@@ -7,6 +7,7 @@ policy drops into a StrategyAgent and trades cleanly on the M3 benchmark.
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 pytest.importorskip("torch")
@@ -49,6 +50,48 @@ def test_collect_demonstrations_shapes():
     assert obs.shape[0] == acts.shape[0] > 0
     assert obs.shape[1] == OBS_DIM
     assert acts.shape[1] == ACTION_DIM_V2
+
+
+def test_demo_curriculum_reserves_battery_only_episodes_with_finite_observations(monkeypatch):
+    from eflux.agents.ppo.bc import (
+        DEMO_BATTERY_ONLY_FRACTION,
+        _battery_only_demo_params,
+        collect_demonstrations,
+    )
+    from eflux.agents.ppo.primitive_env import VPPPrimitiveEnv
+    from eflux.agents.strategy.policy import ScriptedStrategyPolicy
+
+    params_by_episode = _battery_only_demo_params(40, seed=20260711)
+    assert len(params_by_episode) == round(40 * DEMO_BATTERY_ONLY_FRACTION) == 9
+    assert all(
+        params.pv_kw_peak == params.wind_kw_rated == params.load_kw_base == 0.0
+        and 10.0 <= params.battery_kwh <= 30.0
+        and 3.0 <= params.battery_kw_max <= 6.0
+        for params in params_by_episode.values()
+    )
+
+    seen = []
+    original_reset = VPPPrimitiveEnv.reset
+
+    def recording_reset(self, *args, **kwargs):
+        result = original_reset(self, *args, **kwargs)
+        seen.append(self._params)
+        return result
+
+    monkeypatch.setattr(VPPPrimitiveEnv, "reset", recording_reset)
+    obs, _acts = collect_demonstrations(
+        ScriptedStrategyPolicy(), n_episodes=40, seed=20260711,
+        env_config={"episode_ticks": 1},
+        battery_only_fraction=DEMO_BATTERY_ONLY_FRACTION,
+    )
+
+    pure_traders = [
+        params
+        for params in seen
+        if params.pv_kw_peak == params.wind_kw_rated == params.load_kw_base == 0.0
+    ]
+    assert len(pure_traders) == 9
+    assert np.isfinite(obs).all()
 
 
 def test_bc_version_plumbing_uses_v2_width():

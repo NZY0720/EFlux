@@ -86,6 +86,9 @@ async def test_session_leaderboard_ranks_by_normalized_score(client, db_session)
     # Ranked by score, not raw PnL — the equal-PnL big endowment sits below.
     assert [row["name"] for row in body["rows"]] == ["small", "big"]
     assert rows["small"]["pnl_usd"].startswith("5.")
+    assert "spread_capture" in rows["small"]
+    assert "realized_arb_profit" in rows["small"]
+    assert "oracle_arb_profit" in rows["small"]
     assert rows["small"]["trade_count"] == 100  # final row's cumulative counter
     assert rows["small"]["hours"] == pytest.approx(10.0)
 

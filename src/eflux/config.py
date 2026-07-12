@@ -161,7 +161,7 @@ class Settings(BaseSettings):
     llm_provider: str = "opencode"
     llm_key_file: str = "key.txt"
     llm_base_url: str = ""
-    llm_model: str = "deepseek-v4-pro"
+    llm_model: str = "deepseek-v4-flash"
     # Reasoning models can take >30s per completion; the old 30s default made
     # most reflections die with ReadTimeout.
     llm_timeout_sec: float = 120.0

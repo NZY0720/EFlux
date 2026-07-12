@@ -89,6 +89,8 @@ def test_external_guidance_round_trips_v2_fields():
     assert entry["halt"] is True
     assert entry["passive_only"] is True
     assert entry["price_bias_bps"] == 42.0
+    assert g.soc_target is None
+    assert entry["soc_target"] is None
 
 
 def test_entry_shape_matches_llm_strategist():

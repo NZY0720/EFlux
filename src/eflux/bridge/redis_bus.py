@@ -48,7 +48,16 @@ def _deserialize(payload: dict[str, str]) -> MarketEvent:
         return TickEvent.model_validate(
             _decimalize(
                 data,
-                ["best_bid", "best_ask", "last_price", "external_price", "bid_depth", "ask_depth"],
+                [
+                    "best_bid",
+                    "best_ask",
+                    "last_price",
+                    "external_price",
+                    "import_price",
+                    "export_price",
+                    "bid_depth",
+                    "ask_depth",
+                ],
             )
         )
     return OrderEvent.model_validate(_decimalize(data, ["price", "qty", "remaining_qty"]))

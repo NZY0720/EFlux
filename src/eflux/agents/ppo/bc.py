@@ -13,6 +13,7 @@ initialization for the PPO module (same obs/action encoding).
 from __future__ import annotations
 
 import logging
+import random
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -54,6 +55,32 @@ log = logging.getLogger(__name__)
 # Valuation config the demonstrations are collected under — matched to VPPPrimitiveEnv's
 # own oracle so the cloned policy warm-starts PPO consistently in the env PPO trains in.
 _DEMO_DEMAND_BETA = 0.5
+# Reserve a stable slice of primitive demonstrations for zero-endowment pure traders.
+DEMO_BATTERY_ONLY_FRACTION = 0.225
+
+
+def _battery_only_demo_params(
+    n_episodes: int, seed: int, *, fraction: float = DEMO_BATTERY_ONLY_FRACTION
+) -> dict[int, object]:
+    """Deterministically assign uniformly sampled battery-only cells to demo episodes."""
+    from eflux.vpp.base import VPPParams
+
+    count = round(max(0, n_episodes) * max(0.0, min(1.0, fraction)))
+    if count == 0:
+        return {}
+    rng = random.Random(seed ^ 0xBA77E2)
+    episode_indexes = rng.sample(range(n_episodes), count)
+    return {
+        episode: VPPParams(
+            pv_kw_peak=0.0,
+            wind_kw_rated=0.0,
+            load_kw_base=0.0,
+            battery_kwh=rng.uniform(10.0, 30.0),
+            battery_kw_max=rng.uniform(3.0, 6.0),
+            markup_floor=0.4,
+        )
+        for episode in episode_indexes
+    }
 
 
 class BCNet(nn.Module):
@@ -106,6 +133,7 @@ def collect_demonstrations(
     encoding_version: int = ENCODING_V2,
     obs_version: int = OBS_V4,
     action_profile: str | None = None,
+    battery_only_fraction: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Roll the expert through VPPPrimitiveEnv, recording (obs, encoded-action) pairs.
 
@@ -132,8 +160,12 @@ def collect_demonstrations(
     )
     obs_rows: list[np.ndarray] = []
     act_rows: list[np.ndarray] = []
+    battery_only_params = _battery_only_demo_params(
+        n_episodes, seed, fraction=battery_only_fraction
+    )
     for ep in range(n_episodes):
-        env.reset(seed=seed + ep)
+        params = battery_only_params.get(ep)
+        env.reset(seed=seed + ep, options={"params": params} if params is not None else None)
         for _ in range(env._episode_ticks):
             ctx = env._make_ctx()
             valuation = oracle.estimate(ctx)

@@ -163,7 +163,7 @@ def _validated_external_guidance(cfg: dict, *, market_mode: str) -> tuple[dict |
         return None, scrubbed, True
     try:
         for key in ("risk_budget", "price_bias_bps", "soc_target"):
-            if key in guidance:
+            if key in guidance and guidance[key] is not None:
                 float(guidance[key])
         external_guidance_from_dict(guidance, market_mode=market_mode)
     except Exception:

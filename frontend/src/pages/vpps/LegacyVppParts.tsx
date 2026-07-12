@@ -687,7 +687,7 @@ export function ManagedPerformancePanel({ data }: { data?: ManagedVPPPerformance
                     </td>
                     <td className="px-2 py-1.5 text-right text-[var(--text)] tabular-nums">{Number(t.price).toFixed(2)}</td>
                     <td className="px-2 py-1.5 text-right text-[var(--text)] tabular-nums">{Number(t.qty).toFixed(4)}</td>
-                    <td className="px-2 py-1.5 text-right text-[var(--text)] tabular-nums">{Number(t.cash).toFixed(4)}</td>
+                    <td className="px-2 py-1.5 text-right text-[var(--text)] tabular-nums">{Number(t.cash_usd).toFixed(4)}</td>
                     <td className="px-2 py-1.5 text-right text-[var(--text-muted)]">
                       {t.counterparty ?? nameOf(t.counterparty_vpp_id)}
                     </td>

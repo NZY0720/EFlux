@@ -51,6 +51,7 @@ def test_parse_guidance_clamps_out_of_range_and_drops_unknown_modes():
 def test_parse_guidance_handles_code_fences():
     g = parse_guidance('```json\n{"risk_budget": 0.7}\n```')
     assert g.risk_budget == 0.7
+    assert g.soc_target is None
 
 
 def test_realprice_prompt_uses_grid_price_taker_context():
@@ -73,6 +74,7 @@ def test_prompts_describe_binding_extreme_regime_levers():
         assert "does NOT itself charge the battery" in prompt
         assert "never stores energy by itself" in prompt
         assert "Read `regime_note` in the input and act on extremes" in prompt
+        assert "omit soc_target to preserve the executor's" in prompt
     # passive_only is a book-market lever: BINDING maker-only in p2p, inert in realprice.
     assert '"passive_only": <bool; BINDING: maker-only, never cross the spread' in p2p
     assert "mode_pin, halt, passive_only, and avoid_modes are BINDING" in p2p
@@ -172,6 +174,15 @@ def test_apply_guidance_scales_size_by_risk_budget():
     assert out.qty_fraction == 0.5 and out.aggressiveness == pytest.approx(0.4)
     assert out.soc_target == 0.6
     assert out.mode is StrategyMode.LIQUIDATE_SURPLUS  # primitive untouched
+
+
+def test_guidance_without_soc_target_preserves_executor_target():
+    action = StrategyAction(mode=StrategyMode.BATTERY_ARBITRAGE, soc_target=0.9)
+
+    parsed = parse_guidance('{"risk_budget": 0.5}')
+    assert parsed.soc_target is None
+    assert apply_guidance(action, parsed).soc_target == 0.9
+    assert apply_guidance(action, StrategyGuidance(soc_target=0.2)).soc_target == 0.2
 
 
 def test_parse_guidance_round_trips_binding_levers():

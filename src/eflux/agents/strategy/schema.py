@@ -17,7 +17,13 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from enum import StrEnum
 
-from eflux.agents.decision import AgentDecision, CancelRequest, OrderRequest, ReplaceRequest
+from eflux.agents.decision import (
+    AgentDecision,
+    CancelRequest,
+    OrderRequest,
+    ReplaceRequest,
+    SilenceReason,
+)
 from eflux.market.delivery import OrderPurpose
 
 PRICE_MULT_MIN = 0.25
@@ -69,6 +75,8 @@ class StrategyAction:
     cancel_age_ticks: int = 0
     # Desired battery state of charge (0..1) — biases battery participation.
     soc_target: float = 0.5
+    # Set only when an upstream source deliberately selects a non-ordering action.
+    silence_reason: SilenceReason | None = None
 
 
 @dataclass(frozen=True)

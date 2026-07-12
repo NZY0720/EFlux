@@ -9,10 +9,15 @@ import TradeTape from "./TradeTape";
 
 type TabId = "book" | "trades" | "agents";
 
-const TABS: { id: TabId; label: string }[] = [
+const P2P_TABS: { id: TabId; label: string }[] = [
   { id: "book", label: "Order book" },
   { id: "trades", label: "Trade activity" },
-  { id: "agents", label: "Agent Activity" },
+  { id: "agents", label: "Agent activity" },
+];
+
+const REALPRICE_TABS: { id: TabId; label: string }[] = [
+  { id: "trades", label: "Grid trades" },
+  { id: "agents", label: "Agent activity" },
 ];
 
 export default function MarketActivityRail({
@@ -24,19 +29,20 @@ export default function MarketActivityRail({
   events: MarketEvent[];
   variant: "p2p" | "realprice";
 }) {
-  const [active, setActive] = useState<TabId>("book");
+  const tabs = variant === "realprice" ? REALPRICE_TABS : P2P_TABS;
+  const [active, setActive] = useState<TabId>(variant === "realprice" ? "trades" : "book");
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const title = variant === "realprice" ? "Market activity" : "Order flow";
+  const title = variant === "realprice" ? "Grid exchange" : "Order flow";
 
   const onTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let next: number | null = null;
-    if (event.key === "ArrowRight") next = (index + 1) % TABS.length;
-    if (event.key === "ArrowLeft") next = (index - 1 + TABS.length) % TABS.length;
+    if (event.key === "ArrowRight") next = (index + 1) % tabs.length;
+    if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length;
     if (event.key === "Home") next = 0;
-    if (event.key === "End") next = TABS.length - 1;
+    if (event.key === "End") next = tabs.length - 1;
     if (next === null) return;
     event.preventDefault();
-    setActive(TABS[next].id);
+    setActive(tabs[next].id);
     tabRefs.current[next]?.focus();
   };
 
@@ -44,7 +50,7 @@ export default function MarketActivityRail({
     <DashboardCard className="min-w-0">
       <CardTitle icon={active === "agents" ? MessagesSquare : active === "trades" ? ListChecks : Scale}>{title}</CardTitle>
       <div className="inline-flex w-full overflow-hidden rounded-md border border-[var(--border)] bg-[var(--surface-inset)]" role="tablist" aria-label={`${title} views`}>
-        {TABS.map((tab, index) => {
+        {tabs.map((tab, index) => {
           const selected = active === tab.id;
           return (
             <button

@@ -61,6 +61,7 @@ def run_training(
     mean and stamped into the checkpoint, so serve-time restores the exact scale (train/serve
     parity) — and the scale stays a constant, never the live tick."""
     from eflux.agents.ppo.bc import (
+        DEMO_BATTERY_ONLY_FRACTION,
         BCPolicy,
         collect_demonstrations,
         collect_scenario_demonstrations,
@@ -126,6 +127,7 @@ def run_training(
         encoding_version=encoding_version,
         obs_version=obs_version,
         action_profile=action_profile,
+        battery_only_fraction=DEMO_BATTERY_ONLY_FRACTION,
     )
     if scenario_episodes > 0 and scenario_intervals > 0:
         log.info(

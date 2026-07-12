@@ -80,6 +80,8 @@ class TickEvent(_Base):
     best_ask: Decimal | None = None
     last_price: Decimal | None = None
     external_price: Decimal | None = None
+    import_price: Decimal | None = None
+    export_price: Decimal | None = None
     bid_depth: Decimal = Decimal("0")
     ask_depth: Decimal = Decimal("0")
     interval_id: str

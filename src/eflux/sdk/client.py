@@ -207,7 +207,7 @@ class EFluxClient:
         preferred_modes: list[str] | tuple[str, ...] = (),
         avoid_modes: list[str] | tuple[str, ...] = (),
         risk_budget: float = 1.0,
-        soc_target: float = 0.5,
+        soc_target: float | None = None,
         execution_style: str = "",
         lesson: str = "",
         meta_control: dict | None = None,
@@ -215,18 +215,20 @@ class EFluxClient:
         """Steer your managed agent with your own model (Tier A3). The platform LLM
         stops being consulted while your guidance is active; values are clamped
         server-side and the response echoes what was applied. ~2/min rate limit."""
+        payload = {
+            "preferred_modes": list(preferred_modes),
+            "avoid_modes": list(avoid_modes),
+            "risk_budget": risk_budget,
+            "execution_style": execution_style,
+            "lesson": lesson,
+            "meta_control": meta_control,
+        }
+        if soc_target is not None:
+            payload["soc_target"] = soc_target
         return await self._request(
             "PUT",
             f"/vpps/managed/{managed_id}/guidance",
-            json={
-                "preferred_modes": list(preferred_modes),
-                "avoid_modes": list(avoid_modes),
-                "risk_budget": risk_budget,
-                "soc_target": soc_target,
-                "execution_style": execution_style,
-                "lesson": lesson,
-                "meta_control": meta_control,
-            },
+            json=payload,
         )
 
     async def release_guidance(self, managed_id: int) -> None:

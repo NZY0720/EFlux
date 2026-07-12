@@ -29,7 +29,7 @@ async def _login(client) -> tuple[str, int]:
 
 
 class _FakeLLMClient:
-    def __init__(self, model: str = "deepseek-v4-pro") -> None:
+    def __init__(self, model: str = "deepseek-v4-flash") -> None:
         self.model = model
 
     async def chat(self, messages, *, temperature=0.2, max_tokens=None):
@@ -250,7 +250,7 @@ async def test_rehydrate_retired_model_falls_back_to_default(client, db_session)
     await _rehydrate_managed_vpps(fresh)
 
     vpp = fresh.my_managed_vpps(user_id)[0]
-    assert vpp.agent.strategist.client.model == "deepseek-v4-pro"
+    assert vpp.agent.strategist.client.model == "deepseek-v4-flash"
 
 
 @pytest.mark.asyncio
