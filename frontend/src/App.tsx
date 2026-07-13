@@ -1,5 +1,5 @@
 import { lazy, Suspense } from "react";
-import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation, useParams } from "react-router-dom";
 
 import ConnectionBanner from "./components/ConnectionBanner";
 import AgentDock from "./components/AgentDock";
@@ -9,7 +9,10 @@ import { MarketModeProvider } from "./state/marketMode";
 import { MarketStreamProvider } from "./state/marketStream";
 import { ThemeProvider } from "./state/theme";
 
-const Arena = lazy(() => import("./pages/Arena"));
+const AgentReleaseDetail = lazy(() => import("./pages/AgentReleaseDetail"));
+const AgentReleases = lazy(() => import("./pages/AgentReleases"));
+const BehaviorDatasetDetail = lazy(() => import("./pages/BehaviorDatasetDetail"));
+const BehaviorDatasets = lazy(() => import("./pages/BehaviorDatasets"));
 const Benchmarks = lazy(() => import("./pages/Benchmarks"));
 const Competitions = lazy(() => import("./pages/Competitions"));
 const CompetitionDetail = lazy(() => import("./pages/CompetitionDetail"));
@@ -22,6 +25,7 @@ const VppOverview = lazy(() => import("./pages/VppOverview"));
 const VppDeploy = lazy(() => import("./pages/VppDeploy"));
 const VppCockpit = lazy(() => import("./pages/VppCockpit"));
 const DeveloperConsole = lazy(() => import("./pages/DeveloperConsole"));
+const EvaluationRuns = lazy(() => import("./pages/EvaluationRuns"));
 const Participants = lazy(() => import("./pages/Participants"));
 const ProveOut = lazy(() => import("./pages/ProveOut"));
 const ProveOutRun = lazy(() => import("./pages/ProveOutRun"));
@@ -43,6 +47,16 @@ function RequireAuth({ children }: { children: React.ReactElement }) {
   return children;
 }
 
+function EvaluateHome() {
+  return <Navigate to="/evaluate/runs" replace />;
+}
+
+function LegacyDetailRedirect({ target }: { target: string }) {
+  const params = useParams();
+  const id = params.id ?? params.runId;
+  return <Navigate to={id ? `${target}/${id}` : target} replace />;
+}
+
 function Shell() {
   const loc = useLocation();
   const isWelcome = loc.pathname === "/";
@@ -59,16 +73,29 @@ function Shell() {
             <Route path="/market" element={<MarketOverview />} />
             <Route path="/participants" element={<Participants />} />
             <Route path="/leaderboard" element={<Leaderboard />} />
-            <Route path="/arena" element={<Arena />} />
-            <Route path="/benchmarks" element={<Benchmarks />} />
-            <Route path="/benchmarks/:runId" element={<Benchmarks />} />
+            <Route path="/arena" element={<Navigate to="/leaderboard?view=llm" replace />} />
+            <Route path="/evaluate" element={<EvaluateHome />} />
+            <Route path="/evaluate/quick-test" element={<RequireAuth><ProveOut /></RequireAuth>} />
+            <Route path="/evaluate/quick-test/runs/:id" element={<RequireAuth><ProveOutRun /></RequireAuth>} />
+            <Route path="/evaluate/runs" element={<EvaluationRuns />} />
+            <Route path="/evaluate/runs/:runId" element={<Benchmarks />} />
+            <Route path="/agents" element={<AgentReleases />} />
+            <Route path="/agents/releases/:id" element={<AgentReleaseDetail />} />
+            <Route path="/agents/training-data" element={<BehaviorDatasets />} />
+            <Route path="/agents/training-data/:id" element={<BehaviorDatasetDetail />} />
+            <Route path="/benchmarks" element={<Navigate to="/evaluate/runs" replace />} />
+            <Route path="/benchmarks/:runId" element={<LegacyDetailRedirect target="/evaluate/runs" />} />
+            <Route path="/agent-releases" element={<Navigate to="/agents" replace />} />
+            <Route path="/agent-releases/:id" element={<LegacyDetailRedirect target="/agents/releases" />} />
+            <Route path="/behavior-datasets" element={<Navigate to="/agents/training-data" replace />} />
+            <Route path="/behavior-datasets/:id" element={<LegacyDetailRedirect target="/agents/training-data" />} />
             <Route path="/competitions" element={<Competitions />} />
             <Route path="/competitions/:slug" element={<CompetitionDetail />} />
             <Route path="/competitions/:slug/submit" element={<RequireAuth><CompetitionSubmit /></RequireAuth>} />
             <Route path="/submissions/:id" element={<RequireAuth><SubmissionStatus /></RequireAuth>} />
             <Route path="/forecasts" element={<ForecastHub />} />
-            <Route path="/prove-out" element={<RequireAuth><ProveOut /></RequireAuth>} />
-            <Route path="/prove-out/runs/:id" element={<RequireAuth><ProveOutRun /></RequireAuth>} />
+            <Route path="/prove-out" element={<Navigate to="/evaluate/quick-test" replace />} />
+            <Route path="/prove-out/runs/:id" element={<LegacyDetailRedirect target="/evaluate/quick-test/runs" />} />
             <Route
               path="/vpps"
               element={

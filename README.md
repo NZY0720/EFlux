@@ -27,6 +27,10 @@ VPP agents trade in a continuous double auction electricity market. Heterogeneou
 
 Full click-by-click pitch script: [docs/DEMO.md](docs/DEMO.md).
 
+Agent Releases, condition-bound evaluation evidence, and the runnable
+Release → publish → evaluate example are documented in
+[docs/AGENT_ECOSYSTEM.md](docs/AGENT_ECOSYSTEM.md).
+
 ## Architecture
 
 ```mermaid

@@ -15,7 +15,7 @@ from statistics import fmean, median
 
 from eflux.agents.base import BaseAgent
 from eflux.agents.bench.metrics import EpisodeMetrics
-from eflux.agents.bench.run import score
+from eflux.agents.bench.run import measure_episode, run_episode, score
 from eflux.vpp.base import VPPParams
 
 
@@ -30,6 +30,8 @@ class PairedSeedResult:
     rejection_reduction: int
     energy_traded_delta_kwh: float
     final_soc_delta: float
+    treatment_market_evidence: dict | None = None
+    control_market_evidence: dict | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +80,8 @@ def evaluate_paired_worlds(
     candidate_params: VPPParams | None = None,
     market_price_ref: Decimal | None = None,
     market_mode: str = "p2p",
+    counter_roster_factory: Callable[[], list] | None = None,
+    market_evidence_factory: Callable[[object, object], dict] | None = None,
 ) -> PairedEvaluationReport:
     """Run isolated treatment/control worlds and aggregate paired deltas."""
 
@@ -91,28 +95,62 @@ def evaluate_paired_worlds(
 
     pairs: list[PairedSeedResult] = []
     for seed in seed_values:
-        treatment = score(
-            treatment_name,
-            treatment_factory,
-            n_ticks=interval_count,
-            tick_h=5.0 / 60.0,
-            forecasts_enabled=forecasts_enabled,
-            episode_seed=seed,
-            candidate_params=candidate_params,
-            market_price_ref=market_price_ref,
-            market_mode=market_mode,
-        )
-        control = score(
-            control_name,
-            control_factory,
-            n_ticks=interval_count,
-            tick_h=5.0 / 60.0,
-            forecasts_enabled=forecasts_enabled,
-            episode_seed=seed,
-            candidate_params=candidate_params,
-            market_price_ref=market_price_ref,
-            market_mode=market_mode,
-        )
+        if market_evidence_factory is None:
+            treatment = score(
+                treatment_name,
+                treatment_factory,
+                n_ticks=interval_count,
+                tick_h=5.0 / 60.0,
+                forecasts_enabled=forecasts_enabled,
+                episode_seed=seed,
+                candidate_params=candidate_params,
+                market_price_ref=market_price_ref,
+                market_mode=market_mode,
+                counter_roster_factory=counter_roster_factory,
+            )
+            control = score(
+                control_name,
+                control_factory,
+                n_ticks=interval_count,
+                tick_h=5.0 / 60.0,
+                forecasts_enabled=forecasts_enabled,
+                episode_seed=seed,
+                candidate_params=candidate_params,
+                market_price_ref=market_price_ref,
+                market_mode=market_mode,
+                counter_roster_factory=counter_roster_factory,
+            )
+            treatment_market_evidence = None
+            control_market_evidence = None
+        else:
+            treatment_sim, treatment_vpp = run_episode(
+                treatment_factory,
+                n_ticks=interval_count,
+                tick_h=5.0 / 60.0,
+                forecasts_enabled=forecasts_enabled,
+                episode_seed=seed,
+                candidate_params=candidate_params,
+                market_price_ref=market_price_ref,
+                market_mode=market_mode,
+                counter_roster_factory=counter_roster_factory,
+            )
+            control_sim, control_vpp = run_episode(
+                control_factory,
+                n_ticks=interval_count,
+                tick_h=5.0 / 60.0,
+                forecasts_enabled=forecasts_enabled,
+                episode_seed=seed,
+                candidate_params=candidate_params,
+                market_price_ref=market_price_ref,
+                market_mode=market_mode,
+                counter_roster_factory=counter_roster_factory,
+            )
+            treatment = measure_episode(
+                treatment_name, treatment_sim, treatment_vpp, interval_count
+            )
+            control = measure_episode(control_name, control_sim, control_vpp, interval_count)
+            treatment_market_evidence = market_evidence_factory(treatment_sim, treatment_vpp)
+            control_market_evidence = market_evidence_factory(control_sim, control_vpp)
         pairs.append(
             PairedSeedResult(
                 seed=seed,
@@ -126,6 +164,8 @@ def evaluate_paired_worlds(
                 rejection_reduction=control.risk_rejections - treatment.risk_rejections,
                 energy_traded_delta_kwh=(treatment.energy_traded_kwh - control.energy_traded_kwh),
                 final_soc_delta=treatment.final_soc_frac - control.final_soc_frac,
+                treatment_market_evidence=treatment_market_evidence,
+                control_market_evidence=control_market_evidence,
             )
         )
 

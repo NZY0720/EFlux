@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -19,6 +20,7 @@ from eflux.api.routers import (
     auth,
     benchmarks,
     competitions,
+    ecosystem,
     forecasts,
     health,
     leaderboard,
@@ -57,20 +59,24 @@ _SEASON_0_RULES = {
 }
 
 
-async def _apply_pending_migrations_if_managed(engine) -> None:
-    """Upgrade an alembic-managed dev DB to head before create_all runs.
+async def _apply_pending_migrations_if_managed(engine) -> bool:
+    """Upgrade an Alembic-managed dev DB and report whether it is managed.
 
-    Forgiving on purpose: a failed upgrade logs loudly and the boot continues on
-    create_all, so a drifted dev database never bricks startup — but new columns
-    on pre-existing tables stay missing until the DB is reconciled manually.
+    A managed database must never fall through to metadata.create_all: create_all
+    can create missing tables but cannot add columns to existing ones, which turns
+    a migration failure into a deceptively healthy server with runtime 500s.
     """
     from sqlalchemy import inspect as sa_inspect
 
     async with engine.connect() as conn:
-        managed = await conn.run_sync(lambda sync_conn: sa_inspect(sync_conn).has_table("alembic_version"))
+        managed = await conn.run_sync(
+            lambda sync_conn: sa_inspect(sync_conn).has_table("alembic_version")
+        )
     if not managed:
-        log.info("DB is not alembic-managed; create_all only (run `alembic stamp head` to adopt migrations)")
-        return
+        log.info(
+            "DB is not alembic-managed; create_all only (run `alembic stamp head` to adopt migrations)"
+        )
+        return False
 
     def _upgrade() -> None:
         from alembic.config import Config as AlembicConfig
@@ -84,20 +90,17 @@ async def _apply_pending_migrations_if_managed(engine) -> None:
         cfg.attributes["skip_logging_config"] = True
         command.upgrade(cfg, "head")
 
-    try:
-        await asyncio.to_thread(_upgrade)
-        log.info("Alembic migrations applied (head)")
-    except Exception:
-        log.exception(
-            "Alembic auto-upgrade failed — continuing on create_all; new columns on "
-            "existing tables may be missing until the DB is reconciled"
-        )
+    await asyncio.to_thread(_upgrade)
+    log.info("Alembic migrations applied (head)")
+    return True
 
 
 async def _seed_default_competition() -> None:
     """Create the first public competition once, including its auditable seed event."""
     async with get_sessionmaker()() as session:
-        if (await session.execute(select(Competition.id).limit(1))).scalar_one_or_none() is not None:
+        if (
+            await session.execute(select(Competition.id).limit(1))
+        ).scalar_one_or_none() is not None:
             return
         competition = Competition(
             slug="season-0",
@@ -127,6 +130,41 @@ async def _seed_default_competition() -> None:
         await session.commit()
 
 
+async def _seed_builtin_population_packs() -> None:
+    """Materialize the nine versioned built-in P2P populations once."""
+
+    from eflux.db.models import PopulationPack
+    from eflux.ecosystem.catalog import list_builtin_population_packs
+
+    async with get_sessionmaker()() as session:
+        for definition in list_builtin_population_packs():
+            exists = (
+                await session.execute(
+                    select(PopulationPack.id).where(
+                        PopulationPack.owner_id.is_(None),
+                        PopulationPack.name == definition["name"],
+                        PopulationPack.version == definition["version"],
+                    )
+                )
+            ).scalar_one_or_none()
+            if exists is not None:
+                continue
+            session.add(
+                PopulationPack(
+                    owner_id=None,
+                    name=definition["name"],
+                    version=definition["version"],
+                    description=definition["description"],
+                    visibility="public",
+                    status="published",
+                    spec={**definition["spec"], "catalog_id": definition["id"]},
+                    content_sha256=definition["content_sha256"],
+                    published_at=datetime.now(UTC),
+                )
+            )
+        await session.commit()
+
+
 async def _build_bus(settings) -> EventBus:
     if settings.bus_backend == "redis":
         from eflux.bridge.redis_bus import RedisStreamBus
@@ -137,7 +175,9 @@ async def _build_bus(settings) -> EventBus:
             log.info("Using RedisStreamBus at %s", settings.redis_url)
             return bus
         except Exception as e:
-            log.warning("Redis at %s unreachable (%s) — falling back to InMemoryBus", settings.redis_url, e)
+            log.warning(
+                "Redis at %s unreachable (%s) — falling back to InMemoryBus", settings.redis_url, e
+            )
             await bus.close()
     log.info("Using InMemoryBus")
     return InMemoryBus()
@@ -222,6 +262,10 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                         seed=cfg.get("seed"),
                         model=_rehydrate_model(cfg.get("model")),
                         managed_def_id=row.id,
+                        release_id=row.release_id,
+                        release_content_sha256=row.release_content_sha256,
+                        checkpoint=cfg.get("checkpoint"),
+                        deployment_mode=cfg.get("deployment_mode", "live"),
                         algorithm=algorithm,
                         llm_enabled=llm_enabled,
                         online_learning=online_learning,
@@ -233,9 +277,7 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                     apply_chat_prefs(vpp, cfg.get("chat"))
                     count += 1
                 except Exception:
-                    log.exception(
-                        "Failed to rehydrate managed VPP id=%s name=%s", row.id, row.name
-                    )
+                    log.exception("Failed to rehydrate managed VPP id=%s name=%s", row.id, row.name)
             if scrubbed_any:
                 await session.commit()
     except Exception:
@@ -250,22 +292,35 @@ async def lifespan(app: FastAPI):
     logging.basicConfig(level=settings.log_level)
     log.info("EFlux starting (env=%s, market_speed=%sx)", settings.env, settings.market_speed)
 
-    # 1. Init DB schema. For alembic-managed DBs, apply pending migrations first —
-    #    create_all alone adds new TABLES but silently skips new COLUMNS on
-    #    existing ones (2026-07-10: users.role absent at stamp 0002 → 500 on
-    #    sign-in). Fresh DBs (no alembic_version — e.g. test databases) keep the
-    #    plain create_all path. Production sets EFLUX_AUTO_CREATE_SCHEMA=false
-    #    and relies on alembic exclusively.
+    # 1. Init DB schema. Managed databases use Alembic exclusively and fail startup
+    #    if an upgrade fails. Fresh unmanaged dev/test databases retain create_all.
+    #    Mixing both mechanisms on one database causes partial schemas and runtime
+    #    500s because create_all cannot add columns to existing tables.
     if settings.env == "dev" and settings.auto_create_schema:
         engine = get_engine()
-        await _apply_pending_migrations_if_managed(engine)
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
-        log.info("DB schema ensured (dev create_all)")
+        managed = await _apply_pending_migrations_if_managed(engine)
+        if managed:
+            log.info("DB schema ensured (dev alembic)")
+        else:
+            async with engine.begin() as conn:
+                await conn.run_sync(Base.metadata.create_all)
+            log.info("DB schema ensured (dev create_all)")
     else:
-        log.info("Skipping create_all (auto_create_schema=%s, env=%s) — run alembic upgrade head", settings.auto_create_schema, settings.env)
+        log.info(
+            "Skipping create_all (auto_create_schema=%s, env=%s) — run alembic upgrade head",
+            settings.auto_create_schema,
+            settings.env,
+        )
 
     await _seed_default_competition()
+    await _seed_builtin_population_packs()
+    from eflux.ecosystem.examples import seed_builtin_agent_example
+
+    example = await seed_builtin_agent_example()
+    if example is None:
+        log.warning(
+            "Built-in Agent example was skipped because no repository revision is available"
+        )
 
     # 2. Event bus. Selects InMemoryBus or RedisStreamBus per settings; if Redis
     #    is configured but unreachable, log a warning and fall back to memory.
@@ -323,6 +378,7 @@ def create_app() -> FastAPI:
     app.include_router(competitions.router)
     app.include_router(competitions.submissions_router)
     app.include_router(competitions.evaluations_router)
+    app.include_router(ecosystem.router)
     app.include_router(vpps.router)
     app.include_router(orders.router)
     app.include_router(proveout.router)

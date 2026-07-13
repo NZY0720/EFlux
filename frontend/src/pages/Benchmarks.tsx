@@ -14,6 +14,7 @@ import {
 import { benchmarkChartUrl, fetchBenchmarkComparison, fetchBenchmarkDetail, fetchBenchmarks } from "../api/client";
 import type { BenchmarkComparison, BenchmarkDetail, BenchmarkParticipant, BenchmarkSummary } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
+import { EvaluationNav } from "../components/WorkspaceNav";
 
 const fmtWindow = (s: string | null, e: string | null) =>
   s && e ? `${s.slice(0, 10)} → ${e.slice(0, 10)}` : "—";
@@ -85,11 +86,12 @@ function RunList() {
 
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-6 px-4 py-5 md:p-6">
+      <EvaluationNav />
       <div>
-        <h1 className="flex items-center gap-2 text-2xl font-semibold text-[var(--text)]">
-          <FlaskConical size={22} className="text-[var(--accent)]" />
-          Benchmarks
-        </h1>
+        <h2 className="flex items-center gap-2 text-xl font-semibold text-[var(--text)]">
+          <FlaskConical size={20} className="text-[var(--accent)]" />
+          Reference runs
+        </h2>
         <p className="mt-1 text-sm text-[var(--text-muted)]">
           Reproducible offline backtests — fixed historical windows, manifest-stamped scenarios,
           strict LLM accounting. The durable counterpart to the live market.
@@ -111,7 +113,7 @@ function RunList() {
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           {runs.map((run) => (
-            <Link key={run.run_id} to={`/benchmarks/${run.run_id}`} className="block">
+            <Link key={run.run_id} to={`/evaluate/runs/${run.run_id}`} className="block">
               <DashboardCard className="h-full transition-transform hover:-translate-y-0.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="font-mono text-sm text-[var(--text)]">{run.run_id}</span>
@@ -195,12 +197,13 @@ function RunDetail({ runId }: { runId: string }) {
 
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-6 px-4 py-5 md:p-6">
+      <EvaluationNav />
       <div className="flex items-center gap-3">
-        <Link to="/benchmarks" className="eflux-btn h-9 px-3">
+        <Link to="/evaluate/runs" className="eflux-btn h-9 px-3">
           <ArrowLeft size={15} />
           All runs
         </Link>
-        <h1 className="font-mono text-xl font-semibold text-[var(--text)]">{runId}</h1>
+        <h2 className="font-mono text-xl font-semibold text-[var(--text)]">{runId}</h2>
       </div>
 
       {error && <p className="text-sm text-[var(--danger)]">{error}</p>}

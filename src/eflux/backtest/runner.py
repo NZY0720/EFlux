@@ -39,7 +39,7 @@ from eflux.simulator.scenario_spec import load_scenario_spec
 from eflux.simulator.scenarios import load_default_scenario
 from eflux.vpp.base import VPPParams
 
-MarketMode = Literal["p2p", "realprice"]
+MarketMode = Literal["p2p", "realprice", "hybrid"]
 LLMMode = Literal["live-strict"]
 
 # Flat price ($/MWh) used only when a strict historical replay was requested but no real
@@ -1111,7 +1111,8 @@ def _participant_metrics(sim: Simulator) -> list[dict]:
     open_net = sim._open_orders_net_by_vpp()
     for vpp in sim.vpps.values():
         pending = vpp.state.pending_net_kwh
-        mark_to_market = float(vpp.state.pnl) + (pending + vpp.battery.soc_kwh) * last
+        # Inventory is kWh while market price is USD/MWh.
+        mark_to_market = float(vpp.state.pnl) + (pending + vpp.battery.soc_kwh) * last / 1000.0
         rows.append(
             {
                 "vpp_id": vpp.vpp_id,

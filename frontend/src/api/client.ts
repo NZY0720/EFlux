@@ -84,6 +84,11 @@ api.interceptors.response.use(undefined, (error) => {
       .filter(Boolean)
       .join("; ");
   }
+  if (!msg && error?.response?.status >= 500) {
+    msg = import.meta.env.DEV
+      ? `Server error (${error.response.status}). Check .run/backend.log for the failing request.`
+      : `Server error (${error.response.status}). Please retry in a moment.`;
+  }
   if (msg && error instanceof Error) error.message = msg;
   if (
     error?.response?.status === 401 &&

@@ -20,41 +20,37 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "market_audit_events",
-        sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
-        sa.Column("session_id", sa.Integer(), nullable=False),
-        sa.Column("sequence_no", sa.Integer(), nullable=False),
-        sa.Column("kind", sa.String(length=48), nullable=False),
-        sa.Column("interval_id", sa.String(length=160)),
-        sa.Column("participant_id", sa.Integer()),
-        sa.Column("reference_id", sa.String(length=128)),
-        sa.Column("sim_ts", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("wall_ts", sa.DateTime(timezone=True), nullable=False),
-        sa.Column("payload", sa.JSON(), nullable=False),
-        sa.ForeignKeyConstraint(
-            ["session_id"], ["market_sessions.id"], ondelete="CASCADE"
-        ),
-        sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "session_id", "sequence_no", name="uq_market_audit_sequence"
-        ),
-    )
-    op.create_index(
-        "ix_market_audit_events_session_id",
-        "market_audit_events",
-        ["session_id"],
-    )
-    op.create_index(
-        "ix_market_audit_interval",
-        "market_audit_events",
-        ["session_id", "interval_id", "sequence_no"],
-    )
-    op.create_index(
-        "ix_market_audit_participant",
-        "market_audit_events",
-        ["session_id", "participant_id", "sequence_no"],
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    if not inspector.has_table("market_audit_events"):
+        op.create_table(
+            "market_audit_events",
+            sa.Column("id", sa.Integer(), autoincrement=True, nullable=False),
+            sa.Column("session_id", sa.Integer(), nullable=False),
+            sa.Column("sequence_no", sa.Integer(), nullable=False),
+            sa.Column("kind", sa.String(length=48), nullable=False),
+            sa.Column("interval_id", sa.String(length=160)),
+            sa.Column("participant_id", sa.Integer()),
+            sa.Column("reference_id", sa.String(length=128)),
+            sa.Column("sim_ts", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("wall_ts", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("payload", sa.JSON(), nullable=False),
+            sa.ForeignKeyConstraint(["session_id"], ["market_sessions.id"], ondelete="CASCADE"),
+            sa.PrimaryKeyConstraint("id"),
+            sa.UniqueConstraint("session_id", "sequence_no", name="uq_market_audit_sequence"),
+        )
+
+    # Older dev startup code could create this table via metadata.create_all
+    # before Alembic reached 0009. Reconcile that valid table instead of failing
+    # with "already exists", while still ensuring the migration-owned indexes.
+    indexes = {item["name"] for item in sa.inspect(bind).get_indexes("market_audit_events")}
+    for name, columns in (
+        ("ix_market_audit_events_session_id", ["session_id"]),
+        ("ix_market_audit_interval", ["session_id", "interval_id", "sequence_no"]),
+        ("ix_market_audit_participant", ["session_id", "participant_id", "sequence_no"]),
+    ):
+        if name not in indexes:
+            op.create_index(name, "market_audit_events", columns)
 
 
 def downgrade() -> None:

@@ -107,6 +107,9 @@ class ManagedVPPOut(BaseModel):
     algorithm: str = "ppo"
     # Whether the LLM strategist is layered on the base algorithm (drives the "LLM + <ALGO>" label).
     llm_enabled: bool = False
+    release_id: int | None = None
+    release_content_sha256: str | None = None
+    deployment_mode: Literal["shadow", "paper", "live"] = "live"
     agent_kind: str
     strategy: str
     llm_live: bool
@@ -262,6 +265,9 @@ def _managed_vpp_out(vpp) -> ManagedVPPOut:
         is_external=False,
         algorithm=getattr(vpp, "algorithm", None) or "ppo",
         llm_enabled=getattr(vpp, "llm_enabled", False),
+        release_id=getattr(vpp, "release_id", None),
+        release_content_sha256=getattr(vpp, "release_content_sha256", None),
+        deployment_mode=getattr(vpp, "deployment_mode", "live"),
         agent_kind=vpp.agent.__class__.__name__,
         strategy=vpp.strategy,
         llm_live=vpp.llm_live,
@@ -377,6 +383,16 @@ class AlgorithmsOut(BaseModel):
 # "LLM + PPO" (the classic Hybrid stack), "LLM + AA", etc. Params are the base agent's own knobs;
 # the strategist adds no extra user knobs (its fallback defaults to "hold").
 _ALGORITHM_ROSTER = {
+    "scripted": {
+        "label": "Scripted",
+        "description": "Deterministic structured-action policy shipped with EFlux.",
+        "supports_online_learning": False,
+        "factory": None,
+        "params": {
+            "demand_beta": ("float", 0.0, 0.0, 5.0, "Scarcity sensitivity for buy bids."),
+            "price_cap_mult": ("float", 1.5, 1.0, 10.0, "Maximum scarcity bid multiple."),
+        },
+    },
     "ppo": {
         "label": "PPO",
         "description": "Structured-policy tactical executor over the shared action space.",
@@ -439,7 +455,7 @@ def _algorithm_factory_fields(algorithm: str) -> set[str]:
         from eflux.agents.hybrid import HybridPolicyAgent
 
         factory = HybridPolicyAgent
-    elif algorithm == "ppo":
+    elif algorithm in {"ppo", "scripted"}:
         from eflux.agents.hybrid import StrategyAgent
 
         factory = StrategyAgent
@@ -654,6 +670,11 @@ async def update_managed_vpp(
     ).scalar_one_or_none()
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "managed agent not found")
+    if row.release_id is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "an Agent Release deployment is immutable; fork a new Release and deploy a new instance",
+        )
 
     cfg = dict(row.managed_config or {})
     algorithm, llm_enabled = normalize_managed_config(cfg)
@@ -740,6 +761,10 @@ async def update_managed_vpp(
             seed=new_seed,
             model=new_model,
             managed_def_id=managed_id,
+            release_id=row.release_id,
+            release_content_sha256=row.release_content_sha256,
+            checkpoint=cfg.get("checkpoint"),
+            deployment_mode=cfg.get("deployment_mode", "live"),
             algorithm=algorithm,
             llm_enabled=llm_enabled,
             online_learning=cfg.get("online_learning", True),

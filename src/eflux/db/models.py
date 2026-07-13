@@ -65,6 +65,16 @@ class User(Base):
     prove_out_runs: Mapped[list[ProveOutRun]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
+    agent_releases: Mapped[list[AgentRelease]] = relationship(
+        back_populates="owner",
+        cascade="all, delete-orphan",
+        foreign_keys="AgentRelease.owner_id",
+    )
+    behavior_datasets: Mapped[list[BehaviorDataset]] = relationship(
+        back_populates="owner",
+        cascade="all, delete-orphan",
+        foreign_keys="BehaviorDataset.owner_id",
+    )
     audit_events: Mapped[list[AuditEvent]] = relationship(back_populates="actor_user")
 
 
@@ -138,6 +148,13 @@ class VPP(Base):
     # re-instantiate it on restart: {"persona": str|None, "agent_params": {...}, "seed": int|None}.
     is_managed: Mapped[bool] = mapped_column(default=False, nullable=False)
     managed_config: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Immutable release attribution. A fork creates a new VPP row and copies the
+    # release recipe/state into managed_config; the hash prevents later metadata
+    # edits from silently changing what was deployed.
+    release_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_releases.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    release_content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -244,6 +261,13 @@ class VppStatSnapshot(Base):
     battery_kw_max: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     load_kw_base: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
     gas_kw_max: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    release_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    release_content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    imbalance_kwh: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    degradation_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    llm_cost_usd: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+    gateway_rejections: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    fallback_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     session: Mapped[MarketSession] = relationship(back_populates="snapshots")
 
@@ -271,6 +295,233 @@ class ForecastOutcome(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+
+
+class AgentRelease(Base):
+    """Immutable, versioned publication unit for one deployable agent recipe/state."""
+
+    __tablename__ = "agent_releases"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name", "version", name="uq_agent_release_version"),
+        CheckConstraint(
+            "market IN ('realprice', 'p2p', 'hybrid')", name="ck_agent_releases_market"
+        ),
+        CheckConstraint(
+            "visibility IN ('public', 'private')", name="ck_agent_releases_visibility"
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'published', 'verified')", name="ck_agent_releases_status"
+        ),
+        Index("ix_agent_releases_market_status", "market", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    market: Mapped[str] = mapped_column(String(16), nullable=False)
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="private")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    recipe: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    state: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    compatibility: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    environment: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    badges: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    parent_release_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_releases.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    owner: Mapped[User] = relationship(back_populates="agent_releases", foreign_keys=[owner_id])
+    evaluations: Mapped[list[ReleaseEvaluation]] = relationship(
+        back_populates="release", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class ReleaseEvaluation(Base):
+    """One evidence-bearing replay, forward/live observation, or tournament result."""
+
+    __tablename__ = "release_evaluations"
+    __table_args__ = (
+        CheckConstraint(
+            "kind IN ('deterministic_replay', 'fresh_llm_replay', 'forward_shadow', "
+            "'verified_live', 'p2p_tournament', 'hybrid_evaluation')",
+            name="ck_release_evaluations_kind",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'done', 'failed')",
+            name="ck_release_evaluations_status",
+        ),
+        CheckConstraint(
+            "provenance IN ('platform_verified', 'externally_attested', 'self_reported')",
+            name="ck_release_evaluations_provenance",
+        ),
+        Index("ix_release_eval_release_created", "release_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    release_id: Mapped[int] = mapped_column(
+        ForeignKey("agent_releases.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    requested_by_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    provenance: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="platform_verified"
+    )
+    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    metrics: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    evidence_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    release: Mapped[AgentRelease] = relationship(back_populates="evaluations")
+
+
+class BehaviorDataset(Base):
+    """Versioned decision-trajectory artifact plus its provenance/data card."""
+
+    __tablename__ = "behavior_datasets"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name", "version", name="uq_behavior_dataset_version"),
+        CheckConstraint(
+            "market IN ('realprice', 'p2p', 'hybrid')", name="ck_behavior_datasets_market"
+        ),
+        CheckConstraint(
+            "visibility IN ('public', 'private')", name="ck_behavior_datasets_visibility"
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'published', 'verified')", name="ck_behavior_datasets_status"
+        ),
+        Index("ix_behavior_datasets_market_status", "market", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    market: Mapped[str] = mapped_column(String(16), nullable=False)
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="private")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    schema_version: Mapped[str] = mapped_column(String(32), nullable=False, default="1")
+    manifest: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    artifact_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    artifact_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    license: Mapped[str] = mapped_column(String(100), nullable=False, default="EFlux-Research-1.0")
+    parent_dataset_id: Mapped[int | None] = mapped_column(
+        ForeignKey("behavior_datasets.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    source_release_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_releases.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    owner: Mapped[User] = relationship(
+        back_populates="behavior_datasets", foreign_keys=[owner_id]
+    )
+    training_runs: Mapped[list[DatasetTrainingRun]] = relationship(
+        back_populates="dataset", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class DatasetTrainingRun(Base):
+    __tablename__ = "dataset_training_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "algorithm IN ('bc_warm_start', 'ppo_finetune')",
+            name="ck_dataset_training_algorithm",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'succeeded', 'failed')",
+            name="ck_dataset_training_status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dataset_id: Mapped[int] = mapped_column(
+        ForeignKey("behavior_datasets.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    algorithm: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
+    config: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    metrics: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    output_release_id: Mapped[int | None] = mapped_column(
+        ForeignKey("agent_releases.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    dataset: Mapped[BehaviorDataset] = relationship(back_populates="training_runs")
+
+
+class PopulationPack(Base):
+    """Versioned P2P opponent/scenario population used by tournament evaluations."""
+
+    __tablename__ = "population_packs"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "name", "version", name="uq_population_pack_version"),
+        CheckConstraint(
+            "visibility IN ('public', 'private')", name="ck_population_packs_visibility"
+        ),
+        CheckConstraint(
+            "status IN ('draft', 'published', 'verified')", name="ck_population_packs_status"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    owner_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    version: Mapped[str] = mapped_column(String(64), nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False, default="private")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
+    spec: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=False
+    )
+    published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Competition(Base):

@@ -113,6 +113,10 @@ export async function fetchProveOutRun(id: string): Promise<ProveOutRunDetail> {
   return data;
 }
 
+export async function deleteProveOutRun(id: string): Promise<void> {
+  await api.delete(`/prove-out/runs/${encodeURIComponent(id)}`);
+}
+
 export async function downloadProveOutEvidence(id: string): Promise<void> {
   const { data } = await api.get<Blob>(`/prove-out/runs/${encodeURIComponent(id)}/evidence`, {
     responseType: "blob",

@@ -22,7 +22,7 @@ class ScenarioSpecV1(BaseModel):
     schema_version: Literal["1"] = "1"
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2000)
-    market_mode: Literal["p2p", "realprice", "any"] = "any"
+    market_mode: Literal["p2p", "realprice", "hybrid", "any"] = "any"
     participants: list[AgentSpec] = Field(min_length=1)
     metadata: dict[str, Any] = Field(default_factory=dict)
 

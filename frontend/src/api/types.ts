@@ -174,6 +174,9 @@ export interface ManagedVPP {
   llm_enabled: boolean;
   agent_kind: string;
   strategy: string;
+  release_id?: number | null;
+  release_content_sha256?: string | null;
+  deployment_mode?: "shadow" | "paper" | "live";
   llm_live: boolean;
   llm_status: string;
   llm_health_state: "live" | "degraded" | "offline" | string;

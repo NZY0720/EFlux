@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -64,14 +65,17 @@ def run_episode(
     candidate_params: VPPParams | None = None,
     market_price_ref: Decimal | None = None,
     market_mode: str = "p2p",
+    counter_roster_factory: Callable[[], list] | None = None,
+    market_price_path: Sequence[Decimal] | None = None,
+    market_price_source: str = "paired-world fixed grid",
 ) -> tuple[Simulator, object]:
     """One episode: counter-roster + the candidate in the test slot, stepped n_ticks
     through the exact gate path the live loop uses."""
     sim = Simulator(bus=InMemoryBus(), sim_epoch=BENCH_EPOCH)
-    if market_mode not in {"p2p", "realprice"}:
+    if market_mode not in {"p2p", "realprice", "hybrid"}:
         raise ValueError(f"unsupported benchmark market_mode {market_mode!r}")
     sim.market_mode = market_mode
-    if market_mode == "realprice":
+    if market_mode in {"realprice", "hybrid"}:
         sim._external_market_quote = synthetic_quote(
             price=market_price_ref or Decimal("50"),
             status="real",
@@ -85,7 +89,12 @@ def run_episode(
     sim.order_ttl_sec = tick_h * 3600.0 * 4
     if forecasts_enabled:
         sim.forecast_service = ForecastService()
-    for spec in counter_roster(price_ref=market_price_ref or Decimal("50")):
+    roster = (
+        counter_roster_factory()
+        if counter_roster_factory is not None
+        else counter_roster(price_ref=market_price_ref or Decimal("50"))
+    )
+    for spec in roster:
         sim.add_builtin_vpp(
             spec.name,
             spec.params,
@@ -104,11 +113,23 @@ def run_episode(
         raise CandidateEpisodeError("candidate construction failed") from exc
 
     sim_ts = sim.clock.now_sim()
-    for _ in range(n_ticks):
+    if market_price_path is not None and len(market_price_path) < n_ticks:
+        raise ValueError("market_price_path must contain at least n_ticks values")
+    for tick_index in range(n_ticks):
+        if market_mode in {"realprice", "hybrid"} and market_price_path is not None:
+            sim._external_market_quote = synthetic_quote(
+                price=Decimal(market_price_path[tick_index]),
+                status="real",
+                source=market_price_source,
+                now=sim_ts,
+                transaction_fee=Decimal("2"),
+            )
         _observe_and_refresh_forecast(sim, sim_ts)
         sim_ts = sim.run_interval_once(sim_ts)
         if sim.decision_failures_by_vpp.get(test_vpp.vpp_id, 0):
-            raise CandidateEpisodeError("candidate execution failed")
+            detail = sim.decision_errors_by_vpp.get(test_vpp.vpp_id)
+            suffix = "" if not detail else f": {detail}"
+            raise CandidateEpisodeError(f"candidate execution failed{suffix}")
     return sim, test_vpp
 
 
@@ -148,6 +169,7 @@ def score(
     candidate_params: VPPParams | None = None,
     market_price_ref: Decimal | None = None,
     market_mode: str = "p2p",
+    counter_roster_factory: Callable[[], list] | None = None,
 ) -> EpisodeMetrics:
     """Run one candidate through an episode and measure it (shared by the benchmark
     and the PPO eval so they score identically)."""
@@ -160,6 +182,7 @@ def score(
         candidate_params=candidate_params,
         market_price_ref=market_price_ref,
         market_mode=market_mode,
+        counter_roster_factory=counter_roster_factory,
     )
     return measure_episode(name, sim, vpp, n_ticks)
 

@@ -50,13 +50,14 @@ from eflux.data.electricity_market import (
     disabled_quote,
     synthetic_quote,
 )
+from eflux.datasets.trajectory import serialize_agent_context, serialize_decision_execution
 from eflux.forecasting.models import MARKET_TIMEZONE, AnchorForecast, HourlyEwmaProfile
 from eflux.forecasting.service import ForecastService
 from eflux.market.clock import RollingClock
 from eflux.market.delivery import OrderPurpose
 from eflux.market.events import EventKind, ExternalTradeEvent, TickEvent, TradeEvent
 from eflux.market.gateway import DecisionExecution, GatewayRejected, TradingGatewayV2
-from eflux.market.ledger import usd_for_energy
+from eflux.market.ledger import LedgerCategory, usd_for_energy
 from eflux.market.metering import IntervalMeterBook
 from eflux.market.product_engine import ProductMatchingEngine, ProductOrderEvent, ProductTrade
 from eflux.market.products import (
@@ -145,6 +146,10 @@ class SimulatorVPP:
     # Stable DB id (vpps.id) of the managed-agent definition this VPP was provisioned from, so
     # the API can address it across restarts (the negative vpp_id is reassigned on each boot).
     managed_def_id: int | None = None
+    # Immutable ecosystem artifact identity bound when this managed agent was forked/deployed.
+    release_id: int | None = None
+    release_content_sha256: str | None = None
+    deployment_mode: str = "live"
     # Chatroom presence (Tier-0 owner preferences): a chat-only voice hint for the LLM,
     # and a display color/emoji surfaced with the agent's messages.
     chat_style: str | None = None
@@ -228,9 +233,8 @@ class Simulator:
         self.veto_holds_by_vpp: dict[int, int] = {}
         self.decide_ticks_by_vpp: dict[int, int] = {}
         self.decision_failures_by_vpp: dict[int, int] = {}
-        self.silence_events_by_vpp: dict[
-            int, deque[tuple[datetime, SilenceReason]]
-        ] = {}
+        self.decision_errors_by_vpp: dict[int, str] = {}
+        self.silence_events_by_vpp: dict[int, deque[tuple[datetime, SilenceReason]]] = {}
         self.silence_counts_by_vpp: dict[int, dict[str, int]] = {}
         # Site-weather memo: several VPPs share coords (e.g. the HKU rooftop),
         # and today/future forecast days are deliberately not disk-cached.
@@ -975,7 +979,10 @@ class Simulator:
         # poll there to avoid needless external calls.
         if (
             settings.external_market_enabled
-            and (self.market_mode == "realprice" or settings.forecast_poll_realprice_in_p2p)
+            and (
+                self.market_mode in {"realprice", "hybrid"}
+                or settings.forecast_poll_realprice_in_p2p
+            )
             and self._external_market_task is None
         ):
             self._external_market_task = asyncio.create_task(
@@ -1972,6 +1979,13 @@ class Simulator:
         for vpp in self.vpps.values():
             strategist = getattr(vpp.agent, "strategist", None)
             client = getattr(strategist, "client", None) if strategist is not None else None
+            llm_cost_usd = sum(
+                float((entry.get("usage_delta") or {}).get("estimated_cost_usd", 0.0))
+                for entry in getattr(strategist, "replay_archive", ())
+            )
+            degradation = self.gateway.ledger.breakdown(vpp.vpp_id).get(
+                LedgerCategory.BATTERY_DEGRADATION, Decimal("0")
+            )
             p = vpp.params
             rows.append(
                 {
@@ -1979,6 +1993,8 @@ class Simulator:
                     "vpp_id": vpp.vpp_id,
                     "name": vpp.name,
                     "managed_def_id": vpp.managed_def_id,
+                    "release_id": vpp.release_id,
+                    "release_content_sha256": vpp.release_content_sha256,
                     "owner_id": vpp.owner_id,
                     "strategy": vpp.strategy,
                     "category": agent_category(vpp),
@@ -1993,6 +2009,13 @@ class Simulator:
                     "energy_bought_kwh": vpp.state.cumulative_energy_bought_kwh,
                     "energy_sold_kwh": vpp.state.cumulative_energy_sold_kwh,
                     "trade_count": vpp.trade_count,
+                    "imbalance_kwh": self.imbalance_totals_by_vpp.get(vpp.vpp_id, {}).get(
+                        "imbalance_kwh", 0.0
+                    ),
+                    "degradation_cost_usd": max(0.0, -float(degradation)),
+                    "llm_cost_usd": llm_cost_usd,
+                    "gateway_rejections": self.risk_rejections_by_vpp.get(vpp.vpp_id, 0),
+                    "fallback_count": self.fallback_invocations_by_vpp.get(vpp.vpp_id, 0),
                     "pv_kw_peak": p.pv_kw_peak,
                     "wind_kw_rated": p.wind_kw_rated,
                     "battery_kwh": p.battery_kwh,
@@ -2111,7 +2134,7 @@ class Simulator:
         each decision round makes quote changes atomic from agents' perspective.
         """
 
-        if self.market_mode != "realprice":
+        if self.market_mode not in {"realprice", "hybrid"}:
             return
         if GRID_PARTICIPANT_ID not in self.gateway.participants:
             self.gateway.register_system_participant(participant_id=GRID_PARTICIPANT_ID)
@@ -2270,9 +2293,10 @@ class Simulator:
             self.decide_ticks_by_vpp[pid] = self.decide_ticks_by_vpp.get(pid, 0) + 1
             try:
                 return vpp.agent.decide(ctx)
-            except Exception:
+            except Exception as exc:
                 log.exception("VPP %s (%d) decision failed", vpp.name, pid)
                 self.decision_failures_by_vpp[pid] = self.decision_failures_by_vpp.get(pid, 0) + 1
+                self.decision_errors_by_vpp[pid] = f"{type(exc).__name__}: {exc}"[:1000]
                 return AgentDecision.hold("agent decision raised")
 
         decision_round = self.decision_scheduler.collect(
@@ -2284,16 +2308,26 @@ class Simulator:
         )
         wall_ts = datetime.now(UTC)
         for scheduled in decision_round.decisions:
+            vpp = self.vpps[scheduled.participant_id]
+            diagnostics = getattr(vpp.agent, "diagnostics", {})
+            diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
             execution = self._execute_audited_decision(
                 participant_id=scheduled.participant_id,
                 decision=scheduled.decision,
                 sim_ts=sim_ts,
                 wall_ts=wall_ts,
-                source="scheduled",
+                source=(
+                    "scheduled"
+                    if vpp.deployment_mode == "live"
+                    else f"{vpp.deployment_mode}_shadow"
+                ),
+                context=contexts[scheduled.participant_id],
+                llm_guidance=diagnostics.get("guidance"),
+                policy_sample=diagnostics.get("training_sample"),
+                dry_run=vpp.deployment_mode != "live",
             )
             self._record_rejections(scheduled.participant_id, len(execution.rejected))
             self._record_product_trades(execution.trades)
-            vpp = self.vpps[scheduled.participant_id]
             all_orders_rejected = bool(
                 scheduled.decision.orders
                 and not execution.accepted_order_ids
@@ -2321,12 +2355,19 @@ class Simulator:
                         self.fallback_invocations_by_vpp.get(vpp.vpp_id, 0) + 1
                     )
                     fallback_decision = fallback.decide(contexts[vpp.vpp_id])
+                    fallback_diagnostics = getattr(fallback, "diagnostics", {})
+                    fallback_diagnostics = (
+                        fallback_diagnostics if isinstance(fallback_diagnostics, dict) else {}
+                    )
                     fallback_execution = self._execute_audited_decision(
                         participant_id=vpp.vpp_id,
                         decision=fallback_decision,
                         sim_ts=sim_ts,
                         wall_ts=wall_ts,
                         source="risk_fallback",
+                        context=contexts[vpp.vpp_id],
+                        fallback=True,
+                        policy_sample=fallback_diagnostics.get("training_sample"),
                     )
                     self._record_rejections(vpp.vpp_id, len(fallback_execution.rejected))
                     self._record_product_trades(fallback_execution.trades)
@@ -2349,6 +2390,7 @@ class Simulator:
             "time_in_force": request.time_in_force.value,
             "ttl_sec": request.ttl_sec,
             "client_ref": request.client_ref,
+            "route": request.route,
         }
 
     def _execute_audited_decision(
@@ -2359,6 +2401,11 @@ class Simulator:
         sim_ts: datetime,
         wall_ts: datetime,
         source: str,
+        context: AgentContext | None = None,
+        llm_guidance: dict | None = None,
+        policy_sample: dict | None = None,
+        fallback: bool = False,
+        dry_run: bool = False,
     ) -> DecisionExecution:
         decision_id = f"{sim_ts.astimezone(UTC).isoformat()}:{participant_id}:{source}"
         self._append_audit(
@@ -2370,6 +2417,9 @@ class Simulator:
                 "decision_id": decision_id,
                 "source": source,
                 "rationale": decision.rationale,
+                "observation": None if context is None else serialize_agent_context(context),
+                "llm_guidance": llm_guidance,
+                "policy_sample": policy_sample,
                 "orders": [self._audit_order_request(order) for order in decision.orders],
                 "cancels": [cancel.order_id for cancel in decision.cancels],
                 "replaces": [
@@ -2381,11 +2431,15 @@ class Simulator:
                 ],
             },
         )
-        execution = self.gateway.execute_decision(
-            participant_id=participant_id,
-            decision=decision,
-            sim_ts=sim_ts,
-            wall_ts=wall_ts,
+        execution = (
+            DecisionExecution((), (), (), ())
+            if dry_run
+            else self.gateway.execute_decision(
+                participant_id=participant_id,
+                decision=decision,
+                sim_ts=sim_ts,
+                wall_ts=wall_ts,
+            )
         )
         accepted_requests = [
             *(replacement.replacement for replacement in decision.replaces),
@@ -2404,6 +2458,7 @@ class Simulator:
             reference_id=decision_id,
             payload={
                 "decision_id": decision_id,
+                "dry_run": dry_run,
                 "accepted_order_ids": list(execution.accepted_order_ids),
                 "accepted_orders": [
                     {"order_id": order_id, **self._audit_order_request(request)}
@@ -2416,7 +2471,16 @@ class Simulator:
                 "open_order_ids": [
                     order.order_id for order in self.engine.open_orders_for_vpp(participant_id)
                 ],
-                "reserved_cash_usd": str(sum(runtime.reserved_cash_by_order.values(), Decimal("0"))),
+                "reserved_cash_usd": str(
+                    sum(runtime.reserved_cash_by_order.values(), Decimal("0"))
+                ),
+                "execution_result": serialize_decision_execution(
+                    execution,
+                    participant_id=participant_id,
+                    mid_price=None if context is None else context.market.mid_price,
+                    fallback=fallback,
+                    grid_participant_id=GRID_PARTICIPANT_ID,
+                ),
             },
         )
         if execution.rejected:
@@ -2568,7 +2632,9 @@ class Simulator:
                         "price": str(trade.price),
                         "qty": str(trade.qty),
                         "cash_usd": str(cash if side == "sell" else -cash),
-                        "counterparty": "CAISO SP15" if counterparty == GRID_PARTICIPANT_ID else None,
+                        "counterparty": "CAISO SP15"
+                        if counterparty == GRID_PARTICIPANT_ID
+                        else None,
                         "counterparty_vpp_id": counterparty,
                         "buy_vpp_id": trade.buy_vpp_id,
                         "sell_vpp_id": trade.sell_vpp_id,
@@ -2617,9 +2683,7 @@ class Simulator:
             self.risk_rejections += n
             self.risk_rejections_by_vpp[vpp_id] = self.risk_rejections_by_vpp.get(vpp_id, 0) + n
 
-    def _record_silence(
-        self, vpp_id: int, sim_time: datetime, reason: SilenceReason
-    ) -> None:
+    def _record_silence(self, vpp_id: int, sim_time: datetime, reason: SilenceReason) -> None:
         events = self.silence_events_by_vpp.get(vpp_id)
         counts = self.silence_counts_by_vpp.get(vpp_id)
         if events is None:

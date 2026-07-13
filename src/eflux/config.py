@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -26,6 +26,10 @@ class Settings(BaseSettings):
     # Keep private evaluation seeds independent from login/session signing.
     # Development may fall back to secret_key; non-dev deployments must set this.
     evaluation_seed_key: str = ""
+    # Trusted external dataset providers sign the canonical attestation payload
+    # with a per-provider HMAC secret. Configure as a JSON object in
+    # EFLUX_EXTERNAL_ATTESTATION_KEYS; values are never returned by the API.
+    external_attestation_keys: dict[str, str] = Field(default_factory=dict)
 
     db_url: str = "sqlite+aiosqlite:///./eflux_dev.db"
     # Dev convenience: have lifespan run `Base.metadata.create_all` so a fresh
@@ -57,8 +61,9 @@ class Settings(BaseSettings):
     # launchers). "p2p" = peer-to-peer continuous double auction; CAISO is a
     # reference line only and never anchors agent prices. "realprice" = pure
     # price-taking against the live CAISO price (every order settles vs the grid at
-    # import/export; agents never trade each other and don't move the price).
-    market_mode: Literal["p2p", "realprice"] = "p2p"
+    # import/export; agents never trade each other and don't move the price). "hybrid"
+    # exposes peer liquidity and the external grid in the same best-execution book.
+    market_mode: Literal["p2p", "realprice", "hybrid"] = "p2p"
     external_market_enabled: bool = True
     external_market_poll_sec: float = 60.0
     external_market_node: str = "TH_SP15_GEN-APND"

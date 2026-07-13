@@ -60,6 +60,15 @@ class MarketSnapshot:
     # never cross the grid spread if valuations were pinned to the lmp. Defaults True
     # so unit-test snapshots keep the legacy anchoring behavior.
     anchor_to_external: bool = True
+    # Canonical depth for behavior datasets and policies that need more than the
+    # top of book. Values remain Decimal in-process and are serialized explicitly
+    # at the dataset/audit boundary.
+    bids: list[tuple[Decimal, Decimal]] = field(default_factory=list)
+    asks: list[tuple[Decimal, Decimal]] = field(default_factory=list)
+    interval_id: str | None = None
+    delivery_start: datetime | None = None
+    delivery_end: datetime | None = None
+    gate_closure: datetime | None = None
 
     @classmethod
     def from_engine(
@@ -84,6 +93,24 @@ class MarketSnapshot:
             market_mode=market_mode,
             external_market=external_market,
             anchor_to_external=anchor_to_external,
+            bids=[(Decimal(price), Decimal(qty)) for price, qty in snapshot.get("bids", ())],
+            asks=[(Decimal(price), Decimal(qty)) for price, qty in snapshot.get("asks", ())],
+            interval_id=snapshot.get("interval_id"),
+            delivery_start=(
+                datetime.fromisoformat(snapshot["delivery_start"])
+                if snapshot.get("delivery_start")
+                else None
+            ),
+            delivery_end=(
+                datetime.fromisoformat(snapshot["delivery_end"])
+                if snapshot.get("delivery_end")
+                else None
+            ),
+            gate_closure=(
+                datetime.fromisoformat(snapshot["gate_closure"])
+                if snapshot.get("gate_closure")
+                else None
+            ),
         )
 
 

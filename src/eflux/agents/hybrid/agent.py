@@ -33,6 +33,33 @@ from eflux.agents.truthful import TruthfulAgent
 from eflux.agents.valuation import TruthfulValuationOracle
 
 
+def _policy_training_sample(ctx, valuation, action) -> dict | None:
+    """Best-effort portable PPO/BC sample; core agents still run without AI extras."""
+
+    try:
+        from eflux.agents.ppo.primitive_encoding import (
+            ENCODING_V2,
+            OBS_V4,
+            action_profile_for_market,
+            encode_action,
+            encode_obs,
+        )
+
+        profile = action_profile_for_market(ctx.market.market_mode)
+        return {
+            "encoding_version": ENCODING_V2,
+            "observation_version": OBS_V4,
+            "action_profile": profile,
+            "observation_vector": encode_obs(ctx, valuation, obs_version=OBS_V4).tolist(),
+            "action_vector": encode_action(
+                action, version=ENCODING_V2, action_profile=profile
+            ).tolist(),
+            "mode": action.mode.value,
+        }
+    except (ImportError, ValueError):
+        return None
+
+
 @dataclass
 class StrategyAgent(BaseAgent):
     price_ref: Decimal = Decimal("50.0")
@@ -55,15 +82,21 @@ class StrategyAgent(BaseAgent):
             min_qty=float(self.min_qty), use_forecast=self.use_forecast
         )
         self._compiler = OrderProgramCompiler(min_qty=self.min_qty)
+        self._last_training_sample: dict | None = None
 
     def decide(self, ctx: AgentContext) -> AgentDecision:
         valuation = self._oracle.estimate(ctx)
         action = self._policy.select_action(ctx, valuation)
         action = self.character.apply(action)
+        self._last_training_sample = _policy_training_sample(ctx, valuation, action)
         compiled = self._compiler.compile(ctx, action, valuation)
         # The scripted policy emits no cancel/replace intents; those flow once a
         # repricing policy (CANCEL_REPRICE) is wired through the runner.
         return compiled.as_decision()
+
+    @property
+    def diagnostics(self) -> dict:
+        return {"training_sample": self._last_training_sample}
 
 
 @dataclass
@@ -116,6 +149,7 @@ class HybridPolicyAgent(BaseAgent):
                 price_cap_mult=self.price_cap_mult,
             )
         self._last_guidance: StrategyGuidance | None = None
+        self._last_training_sample: dict | None = None
         self._ticks = 0
         self._guided_ticks = 0
         self._guidance_changed = 0
@@ -153,6 +187,7 @@ class HybridPolicyAgent(BaseAgent):
             if action.mode != pre.mode:
                 self._mode_overrides += 1
         action = self.character.apply(action)
+        self._last_training_sample = _policy_training_sample(ctx, valuation, action)
         compiled = self._compiler.compile(ctx, action, valuation)
         self._maybe_online_update(ctx)
         return compiled.as_decision()
@@ -198,7 +233,10 @@ class HybridPolicyAgent(BaseAgent):
             else float(ctx.state.pending_net_kwh)
         )
         row = {
-            "sim_ts": ctx.state.sim_ts.isoformat(),
+            # The first synchronous benchmark tick can inherit sub-millisecond
+            # wall-clock startup jitter from RollingClock. Prompts and transcript
+            # hashes operate at the decision protocol's one-second precision.
+            "sim_ts": ctx.state.sim_ts.replace(microsecond=0).isoformat(),
             "pnl_usd": round(pnl, 6),
             "pnl_delta_usd": round(pnl_delta, 6),
             "trade_count": self._feedback_trade_count,
@@ -346,6 +384,7 @@ class HybridPolicyAgent(BaseAgent):
         """Current guidance as audit/UI metadata (principle #9) — never execution logic."""
         g = self._last_guidance
         return {
+            "training_sample": self._last_training_sample,
             "guidance": None
             if g is None
             else {

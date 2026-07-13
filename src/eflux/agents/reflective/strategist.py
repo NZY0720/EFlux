@@ -15,8 +15,10 @@ ReflectiveAgent.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import time
 from collections import deque
 from dataclasses import asdict, dataclass, field, replace
 from dataclasses import fields as dataclass_fields
@@ -636,6 +638,9 @@ class ExternalStrategist:
     client: object | None = None
     # Passed in from prior at swap time so the audit timeline stays continuous.
     reflection_log: deque = field(default_factory=lambda: deque(maxlen=50))
+    # Exact prompt/response envelopes make transcript replay deterministic and
+    # let Fresh-LLM results disclose model drift, date, tokens, and cost.
+    replay_archive: deque = field(default_factory=lambda: deque(maxlen=50))
     ok_count: int = 0
     fail_count: int = 0
     skipped_count: int = 0
@@ -692,6 +697,10 @@ class LLMStrategist:
     client: object  # duck-typed: async chat(messages, *, temperature) -> str
     persona_prompt: str | None = None
     temperature: float = 0.3
+    max_tokens: int = 4096
+    system_prompt_override: str | None = None
+    prompt_template_override: str | None = None
+    prompt_template_version: str = "strategist-v1"
     hard_timeout_sec: float = 180.0
     # Shared across all LLM-managed agents: at most one strategist call in flight.
     llm_gate: asyncio.Semaphore | None = None
@@ -702,6 +711,7 @@ class LLMStrategist:
     # Audit/health trail, shaped similarly to ReflectiveAgent.reflection_log so
     # existing API health code can reason about either implementation.
     reflection_log: deque = field(default_factory=lambda: deque(maxlen=50))
+    replay_archive: deque = field(default_factory=lambda: deque(maxlen=50))
     ok_count: int = 0
     fail_count: int = 0
     skipped_count: int = 0
@@ -801,40 +811,58 @@ class LLMStrategist:
         performance_window: list[dict] | None = None,
         silence_window: dict | None = None,
     ) -> StrategyGuidance | None:
+        system_message = self.system_prompt_override or build_strategist_system_prompt(
+            self.persona_prompt, market_mode=market_mode
+        )
+        structured_user_message = build_strategist_user_message(
+            recent_pnl=recent_pnl,
+            soc_frac=soc_frac,
+            best_bid=best_bid,
+            best_ask=best_ask,
+            last_price=last_price,
+            regime_note=regime_note,
+            market_mode=market_mode,
+            grid_raw_lmp=grid_raw_lmp,
+            grid_import_price=grid_import_price,
+            grid_export_price=grid_export_price,
+            grid_status=grid_status,
+            forecast=forecast,
+            endowment=endowment,
+            character=character,
+            performance_window=performance_window,
+            silence_window=silence_window,
+        )
+        user_message = (
+            structured_user_message
+            if self.prompt_template_override is None
+            else f"{self.prompt_template_override.rstrip()}\n\n{structured_user_message}"
+        )
         messages = [
             {
                 "role": "system",
-                "content": build_strategist_system_prompt(
-                    self.persona_prompt, market_mode=market_mode
-                ),
+                "content": system_message,
             },
             {
                 "role": "user",
-                "content": build_strategist_user_message(
-                    recent_pnl=recent_pnl,
-                    soc_frac=soc_frac,
-                    best_bid=best_bid,
-                    best_ask=best_ask,
-                    last_price=last_price,
-                    regime_note=regime_note,
-                    market_mode=market_mode,
-                    grid_raw_lmp=grid_raw_lmp,
-                    grid_import_price=grid_import_price,
-                    grid_export_price=grid_export_price,
-                    grid_status=grid_status,
-                    forecast=forecast,
-                    endowment=endowment,
-                    character=character,
-                    performance_window=performance_window,
-                    silence_window=silence_window,
-                ),
+                "content": user_message,
             },
         ]
+        content: str | None = None
+        error_text: str | None = None
+        called_at = datetime.now(UTC)
+        started = time.perf_counter()
+        usage_before = getattr(self.client, "usage", None)
         try:
-            content = await asyncio.wait_for(
-                self.client.chat(messages, temperature=self.temperature),
-                timeout=self.hard_timeout_sec,
+            chat_call = (
+                self.client.chat(messages, temperature=self.temperature)
+                if self.max_tokens == 4096
+                else self.client.chat(
+                    messages,
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens,
+                )
             )
+            content = await asyncio.wait_for(chat_call, timeout=self.hard_timeout_sec)
             content = str(content)
             if not content.strip():
                 raise RuntimeError("empty LLM response")
@@ -846,13 +874,14 @@ class LLMStrategist:
             self.last_ok_ts = datetime.now(UTC)
             self.reflection_log.append(self._entry(ok=True, guidance=guidance, meta=meta))
         except Exception as e:  # network error or unparseable response — keep prior
+            error_text = f"{type(e).__name__}: {e}"
             self.fail_count += 1
             self.reflection_log.append(
                 self._entry(
                     ok=False,
                     guidance=self._guidance,
                     meta=self._meta,
-                    error=f"{type(e).__name__}: {e}",
+                    error=error_text,
                 )
             )
             if self.raise_errors:
@@ -861,6 +890,38 @@ class LLMStrategist:
                 )
                 raise
             log.warning("strategist refresh failed (%s); keeping prior guidance", type(e).__name__)
+        finally:
+            prompt_json = json.dumps(messages, sort_keys=True, separators=(",", ":"))
+            response_text = content or ""
+            usage_after = getattr(self.client, "usage", None)
+            usage_delta = None
+            if isinstance(usage_before, dict) and isinstance(usage_after, dict):
+                usage_delta = {
+                    key: max(0, usage_after.get(key, 0) - usage_before.get(key, 0))
+                    for key in (
+                        "calls",
+                        "prompt_tokens",
+                        "completion_tokens",
+                        "estimated_cost_usd",
+                    )
+                }
+            self.replay_archive.append(
+                {
+                    "called_at": called_at.isoformat(),
+                    "latency_ms": round((time.perf_counter() - started) * 1000, 3),
+                    "model": getattr(self.client, "model", "unknown"),
+                    "temperature": self.temperature,
+                    "max_tokens": self.max_tokens,
+                    "prompt_template_version": self.prompt_template_version,
+                    "messages": messages,
+                    "prompt_sha256": hashlib.sha256(prompt_json.encode()).hexdigest(),
+                    "response": content,
+                    "response_sha256": hashlib.sha256(response_text.encode()).hexdigest(),
+                    "usage": usage_after,
+                    "usage_delta": usage_delta,
+                    "error": error_text,
+                }
+            )
         return self._guidance
 
     def _entry(

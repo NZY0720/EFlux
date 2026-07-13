@@ -41,6 +41,10 @@ class OrderRequest:
     time_in_force: TimeInForce = TimeInForce.GOOD_TIL_GATE
     ttl_sec: float | None = None
     client_ref: str | None = None
+    # Hybrid runs currently use best execution across peer and grid liquidity.
+    # The explicit field keeps routing intent in training/evidence artifacts and
+    # leaves room for venue-constrained execution without changing the schema.
+    route: str = "auto"
 
     def __post_init__(self) -> None:
         if self.side not in {"buy", "sell"}:
@@ -57,6 +61,8 @@ class OrderRequest:
             raise ValueError("flexible load can only back buy orders")
         if self.client_ref is not None and len(self.client_ref) > 64:
             raise ValueError("client_ref cannot exceed 64 characters")
+        if self.route not in {"auto", "peer", "grid"}:
+            raise ValueError("route must be 'auto', 'peer', or 'grid'")
 
 
 @dataclass(frozen=True, slots=True)

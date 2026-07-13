@@ -23,7 +23,7 @@ from eflux.agents.gd_agent import GDAgent
 from eflux.agents.hybrid import HybridPolicyAgent, StrategyAgent
 from eflux.agents.reflective.pool import SharedLLM
 from eflux.agents.reflective.strategist import LLMStrategist
-from eflux.agents.strategy.policy import BaselinePolicy, StrategyPolicy
+from eflux.agents.strategy.policy import BaselinePolicy, ScriptedStrategyPolicy, StrategyPolicy
 from eflux.agents.truthful import TruthfulAgent
 from eflux.agents.zip_agent import ZIPAgent
 from eflux.config import PROJECT_ROOT, get_settings
@@ -51,6 +51,9 @@ AGENT_FACTORIES: dict[str, type[BaseAgent]] = {
 # Any base can be paired with the LLM strategist via the llm_enabled toggle: "ppo" + LLM is
 # the classic Hybrid stack; a baseline + LLM wraps that baseline as a BaselinePolicy executor.
 MANAGED_ALGORITHMS = ("ppo", "truthful", "zip", "gd", "aa")
+# Immutable Releases may select the platform's deterministic structured policy,
+# but it is intentionally not added to the legacy user-facing managed-agent picker.
+RUNTIME_MANAGED_ALGORITHMS = (*MANAGED_ALGORITHMS, "scripted")
 MANAGED_BASELINE_FACTORIES: dict[str, type[BaseAgent]] = {
     "truthful": TruthfulAgent,
     "zip": ZIPAgent,
@@ -135,8 +138,10 @@ def _build_executor(name: str, executor, *, seed: int = 0, auto_update: bool = T
     return None
 
 
-def _managed_executor_spec(*, online_learning: bool) -> ExecutorSpec:
-    checkpoint = get_settings().managed_ppo_checkpoint or None
+def _managed_executor_spec(
+    *, online_learning: bool, checkpoint: str | None = None
+) -> ExecutorSpec:
+    checkpoint = checkpoint or get_settings().managed_ppo_checkpoint or None
     return ExecutorSpec(
         kind="ppo_online",
         checkpoint=checkpoint,
@@ -151,7 +156,7 @@ def _managed_factory(algorithm: str, *, llm_enabled: bool = False) -> type[BaseA
     baseline validates against its own factory whether or not an LLM coaches it — the strategist
     wraps the baseline as a BaselinePolicy, it does not change the baseline's params. ``hybrid``
     is kept as a legacy alias for ppo+LLM."""
-    if algorithm in ("ppo", "hybrid"):
+    if algorithm in ("ppo", "scripted", "hybrid"):
         return HybridPolicyAgent if (llm_enabled or algorithm == "hybrid") else StrategyAgent
     try:
         return MANAGED_BASELINE_FACTORIES[algorithm]
@@ -439,6 +444,10 @@ def provision_managed_vpp(
     seed: int | None = None,
     model: str | None = None,
     managed_def_id: int | None = None,
+    release_id: int | None = None,
+    release_content_sha256: str | None = None,
+    checkpoint: str | None = None,
+    deployment_mode: str = "live",
     algorithm: str = "ppo",
     llm_enabled: bool = True,
     online_learning: bool = True,
@@ -458,9 +467,10 @@ def provision_managed_vpp(
     (the API layer maps these to HTTP 422). Nothing is added to the simulator on failure.
     """
     algorithm = algorithm or "ppo"
-    if algorithm not in MANAGED_ALGORITHMS:
+    if algorithm not in RUNTIME_MANAGED_ALGORITHMS:
         raise ValueError(
-            f"unknown managed algorithm {algorithm!r}; choose from {list(MANAGED_ALGORITHMS)}"
+            f"unknown managed algorithm {algorithm!r}; "
+            f"choose from {list(RUNTIME_MANAGED_ALGORITHMS)}"
         )
     if not llm_enabled and (persona_prompt is not None or model is not None):
         raise ValueError("persona/model are only supported when the LLM strategist is enabled")
@@ -476,7 +486,7 @@ def provision_managed_vpp(
         # the single shared LLM endpoint is not hit concurrently (the gate also enforces this).
         existing = len(sim.my_managed_vpps())
         persona = {"name": name, "prompt": persona_prompt} if persona_prompt else None
-        if algorithm == "ppo":
+        if algorithm in {"ppo", "scripted"}:
             spec = AgentSpec(
                 name=name,
                 agent="hybrid",
@@ -484,7 +494,13 @@ def provision_managed_vpp(
                 params=dict(params),
                 agent_params=dict(agent_params or {}),
                 persona=persona,
-                executor=_managed_executor_spec(online_learning=online_learning),
+                executor=(
+                    _managed_executor_spec(
+                        online_learning=online_learning, checkpoint=checkpoint
+                    )
+                    if algorithm == "ppo"
+                    else ExecutorSpec(kind="scripted", online_learning=False)
+                ),
             )
             vpp = _add_hybrid_vpp(
                 sim,
@@ -496,7 +512,7 @@ def provision_managed_vpp(
                 n_managed=existing + 1,
                 owner_id=owner_id,
                 model=model,
-                algorithm="ppo",
+                algorithm=algorithm,
             )
         else:
             # Wrap the classical baseline as the tactical executor the strategist coaches. Its
@@ -533,34 +549,45 @@ def provision_managed_vpp(
                 strategy_label=f"LLM + {algorithm.upper()} (managed)",
             )
         vpp.managed_def_id = managed_def_id
+        vpp.release_id = release_id
+        vpp.release_content_sha256 = release_content_sha256
+        vpp.deployment_mode = deployment_mode
         vpp.algorithm = algorithm
         vpp.llm_enabled = True
         return vpp
 
     spec = AgentSpec(
         name=name,
-        agent="strategy" if algorithm == "ppo" else algorithm,
+        agent="strategy" if algorithm in {"ppo", "scripted"} else algorithm,
         seed=seed,
         params=dict(params),
         agent_params=dict(agent_params or {}),
-        executor=_managed_executor_spec(online_learning=online_learning)
+        executor=_managed_executor_spec(
+            online_learning=online_learning, checkpoint=checkpoint
+        )
         if algorithm == "ppo"
         else None,
     )
     agent_seed = spec.seed if spec.seed is not None else 42
-    if algorithm == "ppo":
-        params_for_agent = _managed_agent_params(name, agent_params, "ppo")
+    if algorithm in {"ppo", "scripted"}:
+        params_for_agent = _managed_agent_params(name, agent_params, algorithm)
         params_for_agent.setdefault("use_forecast", True)
         if get_settings().agent_character_enabled:
             params_for_agent.setdefault(
                 "character", derive_character(_build_params(spec, real_weather))
             )
-        params_for_agent["policy"] = _build_executor(
-            name, spec.executor, seed=agent_seed, auto_update=True
+        params_for_agent["policy"] = (
+            _build_executor(name, spec.executor, seed=agent_seed, auto_update=True)
+            if algorithm == "ppo"
+            else ScriptedStrategyPolicy(use_forecast=True)
         )
         agent = StrategyAgent(**params_for_agent)
-        strategy = "StrategyAgent (PPO managed)"
-        llm_status = "PPO executor (no LLM)"
+        strategy = (
+            "StrategyAgent (PPO managed)"
+            if algorithm == "ppo"
+            else "StrategyAgent (scripted managed)"
+        )
+        llm_status = "PPO executor (no LLM)" if algorithm == "ppo" else "Scripted (no LLM)"
     else:
         factory = MANAGED_BASELINE_FACTORIES[algorithm]
         params_for_agent = _managed_agent_params(name, agent_params, algorithm)
@@ -581,6 +608,9 @@ def provision_managed_vpp(
         algorithm=algorithm,
     )
     vpp.managed_def_id = managed_def_id
+    vpp.release_id = release_id
+    vpp.release_content_sha256 = release_content_sha256
+    vpp.deployment_mode = deployment_mode
     vpp.llm_enabled = False
     return vpp
 
@@ -609,7 +639,7 @@ def normalize_managed_config(cfg: dict) -> tuple[str, bool]:
     if raw is None or raw == "hybrid":
         return "ppo", True if stored is None else bool(stored)
     algorithm = "truthful" if raw == "zi" else raw
-    if algorithm not in MANAGED_ALGORITHMS:
+    if algorithm not in RUNTIME_MANAGED_ALGORITHMS:
         algorithm = "ppo"
     return algorithm, bool(stored) if stored is not None else False
 

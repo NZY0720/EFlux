@@ -1,17 +1,20 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChartSpline, Info, Trophy } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { BrainCircuit, ChartSpline, Info, Trophy } from "lucide-react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { fetchCompetitionLeaderboard, fetchLeaderboard, fetchLeaderboardSessions } from "../api/client";
-import type { CompetitionLeaderboard, LeaderboardOut, LeaderboardRow, LeaderboardSession } from "../api/types";
+import type { CompetitionLeaderboard, LeaderboardOut, LeaderboardRow, LeaderboardSession, MarketAgent } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
 import EquityCurves from "../components/EquityCurves";
+import LlmPpoInfluencePanel from "../components/LlmPpoInfluencePanel";
+import { comparisonReady, endowmentKey, evidenceProgress } from "../lib/arena";
 import { CATEGORY_ORDER, categoryMeta } from "../lib/categories";
 import { useServerEquity } from "../state/useServerEquity";
+import { useStrategyPnl } from "../state/useStrategyPnl";
 
 type Scope = "session" | "alltime";
 type SortKey = "score" | "pnl" | "trades" | "hours";
-type Track = "live" | "managed" | "container-standard" | "container-model";
+type Track = "live" | "llm-comparison" | "managed" | "container-standard" | "container-model";
 
 const fmtUsd = (s: string) => {
   const n = Number(s);
@@ -32,7 +35,10 @@ const maskEmail = (email: string) => {
  * a big battery doesn't automatically win.
  */
 export default function Leaderboard() {
-  const [track, setTrack] = useState<Track>("live");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [track, setTrack] = useState<Track>(() =>
+    searchParams.get("view") === "llm" ? "llm-comparison" : "live",
+  );
   const [scope, setScope] = useState<Scope>("session");
   const [sessions, setSessions] = useState<LeaderboardSession[]>([]);
   const [sessionId, setSessionId] = useState<number | undefined>(undefined);
@@ -95,6 +101,14 @@ export default function Leaderboard() {
       cur.includes(identity) ? cur.filter((i) => i !== identity) : [...cur, identity].slice(-8),
     );
 
+  const selectTrack = (next: Track) => {
+    setTrack(next);
+    const params = new URLSearchParams(searchParams);
+    if (next === "llm-comparison") params.set("view", "llm");
+    else params.delete("view");
+    setSearchParams(params, { replace: true });
+  };
+
   const th = (label: React.ReactNode, key?: SortKey, align = "text-right") => (
     <th
       className={`px-3 py-2 ${align} font-semibold ${key ? "cursor-pointer select-none hover:text-[var(--text)]" : ""}`}
@@ -153,10 +167,11 @@ export default function Leaderboard() {
       </div>
 
       <div className="flex flex-wrap gap-1 rounded-lg border border-[var(--border)] bg-[var(--surface-inset)] p-1" role="tablist" aria-label="Leaderboard tracks">
-        <TrackTab id="live" active={track} setActive={setTrack}>Live</TrackTab>
-        <TrackTab id="managed" active={track} setActive={setTrack}>Managed</TrackTab>
-        <TrackTab id="container-standard" active={track} setActive={setTrack}>Container Standard</TrackTab>
-        <TrackTab id="container-model" active={track} setActive={setTrack}>Container Model</TrackTab>
+        <TrackTab id="live" active={track} setActive={selectTrack}>Live</TrackTab>
+        <TrackTab id="llm-comparison" active={track} setActive={selectTrack}>LLM comparison</TrackTab>
+        <TrackTab id="managed" active={track} setActive={selectTrack}>Managed</TrackTab>
+        <TrackTab id="container-standard" active={track} setActive={selectTrack}>Container Standard</TrackTab>
+        <TrackTab id="container-model" active={track} setActive={selectTrack}>Container Model</TrackTab>
       </div>
 
       {track === "live" ? <>
@@ -288,8 +303,130 @@ export default function Leaderboard() {
           <EquityCurves history={equity} topN={8} />
         </DashboardCard>
       )}
-      </> : track === "managed" ? <ManagedLeaderboard /> : <LaterPhaseTrack title={track === "container-standard" ? "Container Standard" : "Container Model"} />}
+      </> : track === "llm-comparison" ? <LlmComparison /> : track === "managed" ? <ManagedLeaderboard /> : <LaterPhaseTrack title={track === "container-standard" ? "Container Standard" : "Container Model"} />}
     </div>
+  );
+}
+
+function LlmComparison() {
+  const { agents, arena, history } = useStrategyPnl();
+  const [cohortKey, setCohortKey] = useState<string | null>(null);
+  const cohorts = useMemo(() => {
+    const grouped = new Map<string, MarketAgent[]>();
+    for (const agent of agents) {
+      if (!agent.is_llm) continue;
+      const key = endowmentKey(agent);
+      grouped.set(key, [...(grouped.get(key) ?? []), agent]);
+    }
+    return [...grouped.entries()].filter(([, members]) => members.length >= 2);
+  }, [agents]);
+
+  useEffect(() => {
+    if (cohorts.length === 0) {
+      setCohortKey(null);
+      return;
+    }
+    if (!cohorts.some(([key]) => key === cohortKey)) setCohortKey(cohorts[0][0]);
+  }, [cohorts, cohortKey]);
+
+  const contenders = useMemo(() => {
+    const members = cohorts.find(([key]) => key === cohortKey)?.[1] ?? [];
+    return [...members].sort((left, right) => Number(right.pnl) - Number(left.pnl));
+  }, [cohorts, cohortKey]);
+  const ready = comparisonReady(contenders, arena);
+  const comparisonHistory = useMemo(
+    () =>
+      Object.fromEntries(
+        contenders.map((agent) => [agent.name, history[agent.name] ?? []]),
+      ),
+    [contenders, history],
+  );
+  const hasMirrors = agents.some((agent) => agent.mirror_of !== null);
+
+  if (cohorts.length === 0) {
+    return (
+      <EmptyState
+        icon={BrainCircuit}
+        title="No comparable LLM cohort yet"
+        body="A fair comparison needs at least two LLM-steered agents with exactly the same assets and operating limits."
+      />
+    );
+  }
+
+  return (
+    <>
+      <DashboardCard>
+        <CardTitle icon={BrainCircuit}>Same-asset LLM comparison</CardTitle>
+        <p className="mb-4 text-sm text-[var(--text-muted)]">
+          Agents are compared only inside an identical-endowment cohort. PnL ranking stays
+          hidden until every contender reaches the configured trade and observation minimums.
+        </p>
+        <div className="mb-4 flex flex-wrap gap-1.5" aria-label="Comparable LLM cohorts">
+          {cohorts.map(([key, members], index) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setCohortKey(key)}
+              className={`eflux-chip ${cohortKey === key ? "eflux-chip-active" : ""}`}
+            >
+              Cohort {index + 1} · {members.length} agents
+            </button>
+          ))}
+        </div>
+        <TableShell>
+          <table className="eflux-table min-w-[680px] text-sm">
+            <thead>
+              <tr>
+                <th className="px-3 py-2 text-left">Agent</th>
+                <th className="px-3 py-2 text-left">Model</th>
+                <th className="px-3 py-2 text-right">Trades</th>
+                <th className="px-3 py-2 text-right">Observed</th>
+                <th className="px-3 py-2 text-right">PnL</th>
+              </tr>
+            </thead>
+            <tbody>
+              {contenders.map((agent) => (
+                <tr key={agent.id}>
+                  <td className="px-3 py-2 font-medium text-[var(--text)]">{agent.name}</td>
+                  <td className="px-3 py-2 text-[var(--text-muted)]">
+                    {agent.llm_model ?? "unconfigured"}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--text-muted)]">
+                    {arena ? `${Math.min(agent.trade_count, arena.min_trades)}/${arena.min_trades}` : "…"}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--text-muted)]">
+                    {arena
+                      ? `${Math.min(Math.floor(agent.observation_min), arena.min_observation_min)}/${arena.min_observation_min} min`
+                      : "…"}
+                  </td>
+                  <td className="px-3 py-2 text-right font-mono font-semibold tabular-nums text-[var(--text)]">
+                    {ready ? fmtUsd(agent.pnl) : evidenceProgress(agent, arena)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableShell>
+      </DashboardCard>
+
+      <DashboardCard>
+        <CardTitle icon={ChartSpline}>Cohort equity</CardTitle>
+        {ready ? (
+          <EquityCurves history={comparisonHistory} topN={8} />
+        ) : (
+          <p className="text-sm text-[var(--text-muted)]">
+            Collecting enough evidence for a fair win-loss comparison.
+          </p>
+        )}
+      </DashboardCard>
+
+      {hasMirrors && (
+        <DashboardCard>
+          <CardTitle icon={BrainCircuit}>LLM layer vs PPO mirror</CardTitle>
+          <LlmPpoInfluencePanel agents={agents} />
+        </DashboardCard>
+      )}
+    </>
   );
 }
 

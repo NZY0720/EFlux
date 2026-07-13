@@ -8,7 +8,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from eflux.api.deps import CurrentUser, DbSession
 from eflux.config import get_settings
@@ -228,13 +228,17 @@ async def list_prove_out_runs(
     limit: int = Query(default=20, ge=1, le=100),
 ) -> list[ProveOutListOut]:
     runs = (
-        await session.execute(
-            select(ProveOutRun)
-            .where(ProveOutRun.user_id == user.id)
-            .order_by(ProveOutRun.created_at.desc(), ProveOutRun.id.desc())
-            .limit(limit)
+        (
+            await session.execute(
+                select(ProveOutRun)
+                .where(ProveOutRun.user_id == user.id)
+                .order_by(ProveOutRun.created_at.desc(), ProveOutRun.id.desc())
+                .limit(limit)
+            )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return [_list_out(run) for run in runs]
 
 
@@ -252,6 +256,39 @@ async def get_prove_out_run(
     if run.user_id != user.id and not _is_admin(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "prove-out run is not yours")
     return _detail_out(run)
+
+
+@router.delete("/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_prove_out_run(
+    run_id: int,
+    session: DbSession,
+    user: CurrentUser,
+) -> None:
+    """Delete an owned quick test unless its worker is actively running it."""
+
+    run = await session.get(ProveOutRun, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "prove-out run not found")
+    if run.user_id != user.id:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "prove-out run is not yours")
+    if run.status == "running":
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "a running prove-out cannot be deleted; wait for it to finish",
+        )
+
+    result = await session.execute(
+        delete(ProveOutRun).where(
+            ProveOutRun.id == run_id,
+            ProveOutRun.user_id == user.id,
+            ProveOutRun.status != "running",
+        )
+    )
+    if result.rowcount != 1:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "the prove-out started running before it could be deleted",
+        )
 
 
 @router.get("/{run_id}/evidence")

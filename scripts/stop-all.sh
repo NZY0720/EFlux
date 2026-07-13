@@ -44,6 +44,7 @@ kill_port_fallback() {
 kill_pid_file "$RUN_DIR/backend.pid" backend
 kill_pid_file "$RUN_DIR/frontend.pid" frontend
 kill_pid_file "$RUN_DIR/eval-worker.pid" "evaluation worker"
+kill_pid_file "$RUN_DIR/ecosystem-worker.pid" "ecosystem worker"
 
 # Give the killed processes a moment to release their listening sockets before
 # the port fallback below, otherwise we'd double-count them.

@@ -1,9 +1,10 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { FlaskConical, LoaderCircle, Play, Plus, RefreshCw } from "lucide-react";
+import { FlaskConical, LoaderCircle, Play, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 
-import { createProveOutRun, listProveOutRuns, type CreateProveOutRun, type ProveOutRunSummary } from "../api/proveout";
+import { createProveOutRun, deleteProveOutRun, listProveOutRuns, type CreateProveOutRun, type ProveOutRunSummary } from "../api/proveout";
 import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
+import { EvaluationNav } from "../components/WorkspaceNav";
 
 const DAY = 86_400_000;
 const dateInTimeZone = (date: Date, timeZone: string) => {
@@ -36,6 +37,7 @@ export default function ProveOut() {
   const [runs, setRuns] = useState<ProveOutRunSummary[]>([]);
   const [loadingRuns, setLoadingRuns] = useState(true);
   const [launching, setLaunching] = useState(false);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const loadRuns = async () => {
@@ -54,6 +56,25 @@ export default function ProveOut() {
   const batteryDurationHours = Number(powerMw) > 0 && Number.isFinite(Number(energyMwh) / Number(powerMw))
     ? (Number(energyMwh) / Number(powerMw)).toLocaleString(undefined, { maximumFractionDigits: 2 })
     : "—";
+
+  const removeRun = async (run: ProveOutRunSummary) => {
+    if (run.status === "running") return;
+    const name = run.label || `Quick test ${run.run_id}`;
+    const prompt = run.status === "queued"
+      ? `Cancel and delete “${name}”?`
+      : `Delete “${name}”? Its report and evidence will be removed permanently.`;
+    if (!window.confirm(prompt)) return;
+    setDeletingId(run.run_id);
+    setError(null);
+    try {
+      await deleteProveOutRun(run.run_id);
+      setRuns((current) => current.filter((item) => item.run_id !== run.run_id));
+    } catch (err) {
+      setError((err as Error).message || "Unable to delete this quick test.");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -74,13 +95,14 @@ export default function ProveOut() {
       strategy: { algorithm },
     };
     setLaunching(true); setError(null);
-    try { const run = await createProveOutRun(payload); await loadRuns(); navigate(`/prove-out/runs/${run.run_id}`); }
-    catch (err) { setError((err as Error).message || "Unable to launch prove-out."); }
+    try { const run = await createProveOutRun(payload); await loadRuns(); navigate(`/evaluate/quick-test/runs/${run.run_id}`); }
+    catch (err) { setError((err as Error).message || "Unable to launch quick test."); }
     finally { setLaunching(false); }
   };
 
   return <div className="mx-auto w-full max-w-[1400px] space-y-6 px-4 py-5 md:p-6">
-    <div><h1 className="flex items-center gap-2 text-2xl font-semibold text-[var(--text)]"><FlaskConical size={22} className="text-[var(--violet)]" /> Prove-out</h1><p className="mt-1 text-sm text-[var(--text-muted)]">Replay a managed strategy through the same V2 order, risk, delivery, and settlement path used by the market.</p></div>
+    <EvaluationNav />
+    <div><h2 className="flex items-center gap-2 text-xl font-semibold text-[var(--text)]"><FlaskConical size={20} className="text-[var(--violet)]" /> Quick test</h2><p className="mt-1 text-sm text-[var(--text-muted)]">Privately replay your portfolio through the same order, risk, delivery and settlement path used by the market.</p></div>
     {error && <p role="alert" className="rounded-lg border border-[color-mix(in_srgb,var(--danger)_35%,transparent)] bg-[var(--danger-soft)] px-3 py-2 text-sm text-[var(--danger)]">{error}</p>}
     <DashboardCard>
       <CardTitle icon={Plus}>New run</CardTitle>
@@ -132,11 +154,11 @@ export default function ProveOut() {
 
         <div className="flex flex-wrap items-center justify-between gap-3 border-t border-[var(--border)] pt-4">
           <p className="max-w-3xl text-xs text-[var(--text-subtle)]">Missing CAISO hours are fetched, validated and cached in the background before replay. Hourly LMPs are then repeated across five-minute delivery products. Runs and evidence remain private.</p>
-          <button disabled={launching} className="eflux-btn eflux-btn-primary h-10 px-4 disabled:cursor-not-allowed disabled:opacity-60">{launching ? <LoaderCircle size={16} className="animate-spin motion-reduce:animate-none" /> : <Play size={16} />} {launching ? "Launching…" : "Launch prove-out"}</button>
+          <button disabled={launching} className="eflux-btn eflux-btn-primary h-10 px-4 disabled:cursor-not-allowed disabled:opacity-60">{launching ? <LoaderCircle size={16} className="animate-spin motion-reduce:animate-none" /> : <Play size={16} />} {launching ? "Launching…" : "Launch quick test"}</button>
         </div>
       </form>
     </DashboardCard>
-    <DashboardCard><CardTitle icon={FlaskConical} action={<button type="button" onClick={() => void loadRuns()} className="eflux-btn h-8 px-2.5 text-xs"><RefreshCw size={14} className={loadingRuns ? "animate-spin motion-reduce:animate-none" : ""} /> Refresh</button>}>Your runs</CardTitle>{runs.length ? <TableShell><table className="eflux-table min-w-[720px] text-sm"><thead><tr><th className="px-3 py-2 text-left">Run</th><th className="px-3 py-2 text-left">Window</th><th className="px-3 py-2 text-left">Status</th><th className="px-3 py-2 text-right">PnL</th><th className="px-3 py-2 text-right">Spread captured</th><th className="px-3 py-2 text-right">Created</th></tr></thead><tbody>{runs.map((run) => <tr key={run.run_id}><td className="px-3 py-2"><Link to={`/prove-out/runs/${run.run_id}`} className="font-medium text-[var(--accent)] hover:underline">{run.label || run.run_id}</Link></td><td className="px-3 py-2 font-mono text-xs text-[var(--text-muted)]">{run.window_start} → {run.window_end}</td><td className="px-3 py-2"><StatusPill tone={statusTone(run.status)}>{run.status === "running" && <LoaderCircle size={12} className="animate-spin motion-reduce:animate-none" />}{run.status}</StatusPill></td><td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--text)]">{formatUsd(run.pnl_usd)}</td><td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--text)]">{run.spread_capture_pct === undefined ? "—" : `${run.spread_capture_pct.toFixed(1)}%`}</td><td className="px-3 py-2 text-right text-xs text-[var(--text-subtle)]">{new Date(run.created_at).toLocaleString()}</td></tr>)}</tbody></table></TableShell> : <EmptyState icon={FlaskConical} title={loadingRuns ? "Loading runs…" : "No prove-outs yet"} body="Launch a private run to compare your strategy with the available price spread." />}</DashboardCard>
+    <DashboardCard><CardTitle icon={FlaskConical} action={<button type="button" onClick={() => void loadRuns()} className="eflux-btn h-8 px-2.5 text-xs"><RefreshCw size={14} className={loadingRuns ? "animate-spin motion-reduce:animate-none" : ""} /> Refresh</button>}>Your runs</CardTitle>{runs.length ? <TableShell><table className="eflux-table min-w-[800px] text-sm"><thead><tr><th className="px-3 py-2 text-left">Run</th><th className="px-3 py-2 text-left">Window</th><th className="px-3 py-2 text-left">Status</th><th className="px-3 py-2 text-right">PnL</th><th className="px-3 py-2 text-right">Spread captured</th><th className="px-3 py-2 text-right">Created</th><th className="px-3 py-2 text-right">Actions</th></tr></thead><tbody>{runs.map((run) => <tr key={run.run_id}><td className="px-3 py-2"><Link to={`/evaluate/quick-test/runs/${run.run_id}`} className="font-medium text-[var(--accent)] hover:underline">{run.label || run.run_id}</Link></td><td className="px-3 py-2 font-mono text-xs text-[var(--text-muted)]">{run.window_start} → {run.window_end}</td><td className="px-3 py-2"><StatusPill tone={statusTone(run.status)}>{run.status === "running" && <LoaderCircle size={12} className="animate-spin motion-reduce:animate-none" />}{run.status}</StatusPill></td><td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--text)]">{formatUsd(run.pnl_usd)}</td><td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--text)]">{run.spread_capture_pct === undefined ? "—" : `${run.spread_capture_pct.toFixed(1)}%`}</td><td className="px-3 py-2 text-right text-xs text-[var(--text-subtle)]">{new Date(run.created_at).toLocaleString()}</td><td className="px-3 py-2 text-right"><button type="button" onClick={() => void removeRun(run)} disabled={run.status === "running" || deletingId === run.run_id} title={run.status === "running" ? "Wait for this run to finish before deleting it" : "Delete quick test"} className="eflux-btn eflux-btn-danger h-8 px-2.5 text-xs disabled:cursor-not-allowed disabled:opacity-40"><Trash2 size={13} />{deletingId === run.run_id ? "Deleting…" : "Delete"}</button></td></tr>)}</tbody></table></TableShell> : <EmptyState icon={FlaskConical} title={loadingRuns ? "Loading runs…" : "No quick tests yet"} body="Launch a private run to compare your strategy with the available price spread." />}</DashboardCard>
   </div>;
 }
 

@@ -19,6 +19,7 @@ type SeriesPoint = [number, number | null];
 
 const HISTORY_LIMIT = 720;
 const POLL_MS = 30_000;
+const FORECAST_AUTO_WINDOW_MS = 24 * 60 * 60_000;
 
 const TARGETS: Array<{ value: ForecastTarget; label: string; unit: string }> = [
   { value: "price_real", label: "Grid price (CAISO)", unit: "$/MWh" },
@@ -208,7 +209,7 @@ export default function ForecastHub() {
 
   if (allChartPoints.length > 0) {
     const xs = allChartPoints.map(([ts]) => ts);
-    setExtent(Math.min(...xs), Math.max(...xs));
+    setExtent(Math.min(...xs), Math.max(...xs), FORECAST_AUTO_WINDOW_MS);
   } else {
     setExtent(0, 0);
   }
@@ -413,7 +414,7 @@ export default function ForecastHub() {
             <button
               type="button"
               onClick={resetZoom}
-              title="Restore full forecast window"
+              title="Follow the latest 24-hour forecast window"
               className={`inline-flex h-9 items-center gap-1.5 rounded-md border px-3 text-xs font-medium transition-colors ${
                 autoFollow
                   ? "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"
@@ -421,7 +422,7 @@ export default function ForecastHub() {
               }`}
             >
               <Maximize2 size={13} />
-              Auto Zoom
+              Auto Zoom 24h
             </button>
           </div>
         </div>

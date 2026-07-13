@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { Activity, ChartNoAxesCombined, ChevronDown, FlaskConical, Gauge, LoaderCircle, LogIn, LogOut, Menu, Moon, Sun, Swords, Terminal, Trophy, UsersRound, Wifi, WifiOff, X, type LucideIcon } from "lucide-react";
+import { Activity, Bot, ChartNoAxesCombined, ChevronDown, FlaskConical, Gauge, LoaderCircle, LogIn, LogOut, Menu, Moon, Sun, Terminal, Trophy, UsersRound, Wifi, WifiOff, X, type LucideIcon } from "lucide-react";
 
 import { useAuth } from "../state/auth";
 import { useMarketMode } from "../state/marketMode";
@@ -13,16 +13,15 @@ type NavItem = { to: string; label: string; icon: LucideIcon };
 const PRIMARY_ITEMS: NavItem[] = [
   { to: "/market", label: "Live Market", icon: Activity },
   { to: "/leaderboard", label: "Leaderboard", icon: Trophy },
+  { to: "/evaluate", label: "Evaluate", icon: FlaskConical },
 ];
 // Signed-in users get their control center in the primary nav — the IA rework
 // briefly dropped it (2026-07-10) and the app became unreachable-by-click.
 const MY_VPPS_ITEM: NavItem = { to: "/vpps", label: "My VPPs", icon: Gauge };
-const PROVE_OUT_ITEM: NavItem = { to: "/prove-out", label: "Prove-out", icon: FlaskConical };
 const EXPLORE_ITEMS: NavItem[] = [
-  { to: "/arena", label: "Arena", icon: Swords },
   { to: "/competitions", label: "Compete", icon: Trophy },
   { to: "/participants", label: "Participants", icon: UsersRound },
-  { to: "/benchmarks", label: "Benchmarks", icon: FlaskConical },
+  { to: "/agents", label: "Agents", icon: Bot },
   { to: "/forecasts", label: "Forecasts", icon: ChartNoAxesCombined },
   { to: "/developer", label: "Developer", icon: Terminal },
 ];
@@ -87,12 +86,12 @@ export default function NavBar() {
   const wsTone = wsState === "open" ? "text-[var(--success)]" : wsState === "connecting" ? "text-[var(--warning)]" : "text-[var(--danger)]";
   const WsIcon = wsState === "open" ? Wifi : wsState === "connecting" ? LoaderCircle : WifiOff;
   const ThemeIcon = themeMode === "dark" ? Sun : Moon;
-  const primaryItems = email ? [...PRIMARY_ITEMS, MY_VPPS_ITEM, PROVE_OUT_ITEM] : PRIMARY_ITEMS;
+  const primaryItems = email ? [...PRIMARY_ITEMS, MY_VPPS_ITEM] : PRIMARY_ITEMS;
   const exploreActive = EXPLORE_ITEMS.some((item) => loc.pathname === item.to || loc.pathname.startsWith(`${item.to}/`));
 
   const navLink = (item: NavItem, mobile = false) => {
     const Icon = item.icon;
-    const active = loc.pathname === item.to || (item.to === "/competitions" && loc.pathname.startsWith("/competitions/"));
+    const active = loc.pathname === item.to || loc.pathname.startsWith(`${item.to}/`);
     return <Link key={item.to} to={item.to} onClick={mobile ? closeDrawer : undefined} className={`${mobile ? "h-11 w-full" : "h-9 whitespace-nowrap"} flex items-center gap-2 rounded-md px-3 text-sm font-medium transition-colors ${active ? "eflux-tab-active" : "text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"}`}><Icon size={16} className={active ? "text-[var(--accent)]" : ""} />{item.label}</Link>;
   };
   const closeExploreOnEscape = (event: KeyboardEvent<HTMLButtonElement>) => { if (event.key === "Escape") setExploreOpen(false); };

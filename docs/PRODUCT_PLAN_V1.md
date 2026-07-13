@@ -41,9 +41,9 @@ operation remain deferred.
 
 ## 3. Product structure
 
-Routes kept: `/market /participants /leaderboard /arena /benchmarks /forecasts /vpps /login`. Added: `/competitions`, `/competitions/:slug`, `/competitions/:slug/submit`, `/submissions/:id`, `/vpps/new`, `/vpps/:id`, `/prove-out`, `/developer`.
+Product routes are consolidated around `/evaluate` and `/agents`. Legacy `/arena`, `/benchmarks`, `/prove-out`, `/agent-releases` and `/behavior-datasets` URLs redirect to their new homes; backend API routes remain stable.
 
-- Desktop nav: `Live Market / Leaderboard / Arena / Compete / Prove-out`; Participants, Benchmarks, Forecasts, Developer under **Explore**. Mobile: header drawer (replaces the clipping `overflow-x-auto` row).
+- Desktop nav: `Live Market / Leaderboard / Evaluate / My VPPs`; Agents, Compete, Participants, Forecasts and Developer under **Explore**. Evaluate contains Quick test + a unified Runs view for private, release-bound and reference evidence; Agents contains Releases + Training data. Mobile uses the same grouping in a drawer.
 - New-user journey (competition): land → email sign-in → managed agent **or** container bot → sandbox validation → official submission → rankings + replays.
 - New-user journey (trader): land → email sign-in → **describe endowment** → historical prove-out report → live paper trading → (optional, opt-in) prove-out leaderboard.
 - `/vpps` (1,492-line `MyVPPs.tsx`) splits into: deployment wizard, Agent Cockpit, manual trading, Developer Console.
@@ -70,7 +70,7 @@ The sandbox market, benchmark fleet, forecasting service, imbalance settlement, 
 - Market page: 4 first-viewport metrics (latest price, spread, supply-demand balance, active agents); merit order + price trend primary; order book/trades right rail; chat → "Agent Activity" tab.
 - Participants: `archetype` + `resources[]` split; search + filters; table on desktop, cards on mobile.
 - Leaderboard tabs: `Live / Managed / Container Standard / Container Model / Prove-out (opt-in)`, each showing rules version, sample size, observation window, cost, score breakdown.
-- Arena: win/loss comparisons only after minimum trades + observation window; explicit data-collection state before that. Monospace numerics; no `0.00 / -0.00 / four-decimal` noise; forecast lines carry provenance badges (§8).
+- Leaderboard `LLM comparison`: exact-endowment cohorts only; win/loss comparisons appear after minimum trades + observation window, with an explicit data-collection state before that. The former standalone Arena page redirects here.
 - Motion: 180–240ms transform/opacity; live node pulses OK; no scroll hijacking/marquees; `prefers-reduced-motion` + reduced-transparency fallbacks everywhere.
 
 ## 6. Competition tracks & rules v1.1

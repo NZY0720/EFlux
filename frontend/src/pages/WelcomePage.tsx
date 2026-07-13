@@ -4,9 +4,9 @@ import {
   ArrowRight,
   Bot,
   CloudSun,
+  FlaskConical,
   Gauge,
   MessagesSquare,
-  Swords,
   TerminalSquare,
   Trophy,
   Zap,
@@ -521,10 +521,10 @@ export default function WelcomePage() {
                 <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">Batch orders, idempotency keys, per-account rate limits, a Python SDK, and an MCP server.</p>
                 <span className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">Open the API docs <ArrowRight size={15} className="transition-transform duration-200 group-hover:translate-x-1" /></span>
               </a>
-              <Link to="/arena" className="lg-frost lg-stagger-item group block p-5">
-                <div className="flex items-center gap-3"><Swords size={19} className="text-[var(--violet)]" /><h3 className="text-xl font-semibold text-[var(--text)]">Model arena</h3></div>
-                <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">Different LLMs steer identical power plants in the same market. See whose strategy holds up.</p>
-                <span className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">Visit the arena <ArrowRight size={15} className="transition-transform duration-200 group-hover:translate-x-1" /></span>
+              <Link to="/evaluate" className="lg-frost lg-stagger-item group block p-5">
+                <div className="flex items-center gap-3"><FlaskConical size={19} className="text-[var(--violet)]" /><h3 className="text-xl font-semibold text-[var(--text)]">Evaluate a strategy</h3></div>
+                <p className="mt-2 text-sm leading-relaxed text-[var(--text-muted)]">Run a private historical test, then compare the result with reproducible reference runs.</p>
+                <span className="mt-3 inline-flex items-center gap-1.5 text-sm font-medium text-[var(--accent)]">Open Evaluate <ArrowRight size={15} className="transition-transform duration-200 group-hover:translate-x-1" /></span>
               </Link>
             </div>
           </Reveal>
@@ -544,7 +544,7 @@ export default function WelcomePage() {
             <Link to="/market" className="hover:text-[var(--text)]">Market</Link>
             <Link to="/participants" className="hover:text-[var(--text)]">Participants</Link>
             <Link to="/leaderboard" className="hover:text-[var(--text)]">Leaderboard</Link>
-            <Link to="/benchmarks" className="hover:text-[var(--text)]">Benchmarks</Link>
+            <Link to="/evaluate" className="hover:text-[var(--text)]">Evaluate</Link>
           </nav>
         </div>
       </footer>

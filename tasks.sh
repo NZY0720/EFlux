@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Common dev tasks. Run as: ./tasks.sh <task>
 # Tasks: help | start | stop | sync | run | dev | fe-install | fe-dev | smoke | ws | openapi | clean
-#        migrate | makemigration | test | train-ppo | backtest | eval-worker
+#        migrate | makemigration | test | train-ppo | backtest | eval-worker | ecosystem-worker
 
 set -euo pipefail
 
@@ -29,7 +29,7 @@ case "$task" in
   help)
     cat <<'EOF'
 Tasks: start | stop | dev | sync | run | smoke | ws | clean | openapi | fe-dev | fe-install
-       migrate | makemigration | test | train-ppo | bench | eval-ppo | backtest | eval-worker
+       migrate | makemigration | test | train-ppo | bench | eval-ppo | backtest | eval-worker | ecosystem-worker
   start          - one-click: backend + frontend in background + open browser
   stop           - kill backend/frontend dev processes started by start
   sync           - uv sync all deps into .env/
@@ -51,6 +51,7 @@ Tasks: start | stop | dev | sync | run | smoke | ws | clean | openapi | fe-dev |
   eval-ppo       - score a trained torch checkpoint vs the benchmark baselines (--checkpoint FILE.pt)
   backtest       - run a strict historical backtest (default: 1 month, 1s ticks, hourly live LLM)
   eval-worker    - run the official evaluation queue worker (--once for one queued run)
+  ecosystem-worker - run Agent Release / Dataset jobs (--once for one queued job)
 EOF
     ;;
 
@@ -70,6 +71,15 @@ EOF
         "$PY" -m eflux.evaluation.worker >.run/eval-worker.log 2>&1 &
         echo $! > "$worker_pid_file"
         echo "Started evaluation worker (pid=$(cat "$worker_pid_file"))"
+      fi
+      ecosystem_worker_pid_file=".run/ecosystem-worker.pid"
+      if [[ -f "$ecosystem_worker_pid_file" ]] && ! kill -0 "$(cat "$ecosystem_worker_pid_file")" 2>/dev/null; then
+        rm -f "$ecosystem_worker_pid_file"
+      fi
+      if [[ ! -f "$ecosystem_worker_pid_file" ]]; then
+        "$PY" -m eflux.ecosystem.worker >.run/ecosystem-worker.log 2>&1 &
+        echo $! > "$ecosystem_worker_pid_file"
+        echo "Started ecosystem worker (pid=$(cat "$ecosystem_worker_pid_file"))"
       fi
     fi
     exec "$PY" -m uvicorn eflux.api.main:app --host 127.0.0.1 --port 8000
@@ -187,6 +197,11 @@ EOF
   eval-worker)
     shift  # drop "eval-worker", forward the rest to the worker
     exec "$PY" -m eflux.evaluation.worker "$@"
+    ;;
+
+  ecosystem-worker)
+    shift
+    exec "$PY" -m eflux.ecosystem.worker "$@"
     ;;
 
   *)

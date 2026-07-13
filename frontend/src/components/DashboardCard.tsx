@@ -48,11 +48,13 @@ export function EmptyState({
   icon: Icon,
   title,
   body,
+  action,
   className = "",
 }: {
   icon?: TitleIcon;
   title: string;
   body?: string;
+  action?: React.ReactNode;
   className?: string;
 }) {
   return (
@@ -60,6 +62,7 @@ export function EmptyState({
       {Icon && <Icon size={24} className="mb-2 text-[var(--text-subtle)]" />}
       <div className="text-sm font-medium text-[var(--text-muted)]">{title}</div>
       {body && <p className="mt-1 max-w-md text-xs text-[var(--text-subtle)]">{body}</p>}
+      {action && <div className="mt-4">{action}</div>}
     </div>
   );
 }
