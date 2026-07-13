@@ -19,6 +19,8 @@ export interface Submission {
   track: string;
   status: string;
   payload: Record<string, unknown>;
+  selected_for_final: boolean;
+  selected_for_final_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -32,6 +34,7 @@ export interface EvaluationSeedRun {
 
 export interface EvaluationRun {
   id: number;
+  kind: "hidden" | "holdout" | string;
   status: string;
   rules_version: string;
   score: number | null;
@@ -43,6 +46,7 @@ export interface EvaluationRun {
 
 export interface SubmissionDetail extends Submission {
   latest_run: EvaluationRun | null;
+  evaluation_runs: EvaluationRun[];
 }
 
 export type VppPresetConfig = Record<string, string | number | boolean>;
@@ -68,4 +72,20 @@ export async function fetchSubmission(id: number): Promise<SubmissionDetail> {
 export async function enqueueSubmissionEvaluation(id: number): Promise<EvaluationRun> {
   const { data } = await api.post<EvaluationRun>(`/submissions/${id}/evaluate`);
   return data;
+}
+
+export async function selectFinalSubmission(id: number): Promise<void> {
+  await api.post(`/submissions/${id}/select-final`);
+}
+
+export async function downloadEvaluationEvidence(id: number): Promise<void> {
+  const { data } = await api.get<Blob>(`/evaluation-runs/${id}/evidence`, {
+    responseType: "blob",
+  });
+  const url = URL.createObjectURL(data);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `evaluation-${id}-evidence.json`;
+  link.click();
+  URL.revokeObjectURL(url);
 }

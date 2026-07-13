@@ -246,6 +246,10 @@ class EFluxClient:
     async def recent_trades(self, limit: int = 200) -> list[dict]:
         return await self._request("GET", "/market/trades", params={"limit": limit})
 
+    async def recent_ticks(self, limit: int = 100_000) -> list[dict]:
+        """Current-session price ticks, oldest first, for refresh recovery."""
+        return await self._request("GET", "/market/ticks", params={"limit": limit})
+
     async def participants(self) -> list[dict]:
         return await self._request("GET", "/market/participants")
 

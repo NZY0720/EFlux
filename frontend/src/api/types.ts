@@ -554,3 +554,22 @@ export interface BenchmarkDetail {
   groups: Record<string, unknown>[];
   charts: string[];
 }
+
+export interface BenchmarkComparisonDelta {
+  name: string;
+  delta_right_minus_left: Record<string, number>;
+}
+
+export interface BenchmarkComparison {
+  left_run: string;
+  right_run: string;
+  compatible_fields: Record<string, boolean>;
+  common_participant_count: number;
+  participant_deltas: BenchmarkComparisonDelta[];
+  methodology: {
+    kind: string;
+    confidence_interval: null;
+    note: string;
+  };
+  manifest: Record<string, unknown>;
+}

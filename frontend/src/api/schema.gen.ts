@@ -24,6 +24,7 @@ export interface components {
     ChatMessageOut: { name : string; wall_ts : string; text : string; color?: string | null; avatar?: string | null; source?: string; };
     ChatPostOut: { name : string; wall_ts : string; text : string; color : string | null; avatar : string | null; source : string; };
     ChatPrefsIn: { style?: string | null; color?: string | null; avatar?: string | null; };
+    CompetitionCloseOut: { competition_slug : string; status : string; holdout_run_ids : Array<number>; };
     CompetitionDetailOut: { id : number; slug : string; title : string; status : string; tracks : Array<string>; submission_counts : { [key: string]: number; }; description : string; rulesets : Array<components["schemas"]["CompetitionRuleSetOut"]>; practice_seed_values : Array<number>; hidden_seed_count : number; holdout_seed_count : number; };
     CompetitionListOut: { id : number; slug : string; title : string; status : string; tracks : Array<string>; submission_counts : { [key: string]: number; }; };
     CompetitionRuleSetOut: { id : number; version : string; track : string; config : { [key: string]: unknown; }; created_at : string; };
@@ -35,10 +36,11 @@ export interface components {
     DeliveryProductOut: { product_id : string; market : string; delivery_start : string; delivery_end : string; gate_closure : string; opens_at : string; is_open : boolean; is_closed : boolean; best_bid : string | null; best_ask : string | null; last_price : string | null; };
     EndowmentIn: { battery?: components["schemas"]["BatteryIn"] | null; solar_mw?: number; cash_usd?: number; };
     EquityPoint: { tick_no : number; sim_ts : string; wall_ts : string; pnl_usd : string; soc_frac : number; };
-    EvaluationRunOut: { id : number; status : string; rules_version : string; score : number | null; created_at : string; started_at : string | null; finished_at : string | null; seed_runs : Array<components["schemas"]["EvaluationSeedRunOut"]>; };
+    EvaluationRunOut: { id : number; kind : string; status : string; rules_version : string; score : number | null; created_at : string; started_at : string | null; finished_at : string | null; seed_runs : Array<components["schemas"]["EvaluationSeedRunOut"]>; };
     EvaluationSeedRunOut: { seed_label : string; attempt : number; status : string; score : number | null; };
     ExternalMarketOut: { region : string; node : string; raw_lmp : string; p2p_anchor_price : string; import_price : string; export_price : string; interval_start : string | null; interval_end : string | null; currency : string; unit : string; status : string; source : string; detail : string; fetched_at : string; };
     ExternalTradeEvent: { kind?: "external.trade"; sim_ts : string; wall_ts : string; external_trade_id : number; vpp_id : number; side : string; price : string; raw_lmp : string; qty : string; region : string; node : string; counterparty?: string; interval_start?: string | null; interval_end?: string | null; };
+    FinalSelectionOut: { submission_id : number; selected_for_final : boolean; };
     ForecastSkillMetric: { n : number; mae : number | null; bias : number | null; persistence_mae : number | null; skill_vs_persistence : number | null; };
     ForecastSkillResponse: { as_of : string; persistence_baseline : string; windows : { [key: string]: { [key: string]: { [key: string]: components["schemas"]["ForecastSkillMetric"]; }; }; }; };
     GuidanceIn: { preferred_modes?: Array<string>; avoid_modes?: Array<string>; mode_pin?: string | null; risk_budget?: number; price_bias_bps?: number; soc_target?: number | null; execution_style?: string; lesson?: string; meta_control?: { [key: string]: number; } | null; };
@@ -47,7 +49,7 @@ export interface components {
     HistoryOut: { identity : string; session_id : number; points : Array<components["schemas"]["EquityPoint"]>; };
     LLMHealthOut: { ok_count : number; fail_count : number; last_ok_ts : string | null; state : string; };
     LeaderboardEntryOut: { rank : number; submission_id : number; user_email : string; algorithm : string; score : number; seed_ok_count : number; seed_failed_count : number; };
-    LeaderboardRow: { identity : string; name : string; managed_def_id : number | null; category : string; strategy : string; is_llm : boolean; llm_model : string | null; pnl_usd : string; score : number; trade_count : number; energy_bought_kwh : number; energy_sold_kwh : number; soc_frac : number; sessions_count : number; hours : number; last_seen_at : string; };
+    LeaderboardRow: { identity : string; name : string; managed_def_id : number | null; category : string; strategy : string; is_llm : boolean; llm_model : string | null; pnl_usd : string; score : number; spread_capture : number | null; realized_arb_profit : number | null; oracle_arb_profit : number | null; trade_count : number; energy_bought_kwh : number; energy_sold_kwh : number; soc_frac : number; sessions_count : number; hours : number; last_seen_at : string; };
     MagicLinkRequest: { email : string; };
     MagicLinkResponse: { sent : boolean; dev_token?: string | null; };
     ManagedSubmissionPayload: { algorithm : string; llm_enabled : boolean; preset?: string | null; endowment?: { [key: string]: unknown; } | null; risk?: unknown | null; };
@@ -71,10 +73,10 @@ export interface components {
     PpoRenewStartOut: { state : string; started_at : string | null; finished_at : string | null; detail : string; reloaded : number; error : string | null; metrics : { [key: string]: unknown; } | null; status : string; };
     PpoRenewStatusOut: { state : string; started_at : string | null; finished_at : string | null; detail : string; reloaded : number; error : string | null; metrics : { [key: string]: unknown; } | null; };
     ProveOutCreateIn: { label?: string | null; endowment : components["schemas"]["EndowmentIn"]; window : components["schemas"]["WindowIn"]; strategy?: components["schemas"]["StrategyIn"]; };
-    ProveOutDetailOut: { run_id : number; label : string | null; status : string; endowment : { [key: string]: unknown; }; window_start : string; window_end : string; strategy : { [key: string]: unknown; }; report : components["schemas"]["ProveOutReportOut"] | null; error : string | null; created_at : string; finished_at : string | null; };
+    ProveOutDetailOut: { run_id : number; label : string | null; status : string; endowment : { [key: string]: unknown; }; window_start : string; window_end : string; strategy : { [key: string]: unknown; }; report : components["schemas"]["ProveOutReportOut"] | null; manifest : { [key: string]: unknown; } | null; evidence_sha256 : string | null; error : string | null; created_at : string; finished_at : string | null; };
     ProveOutListOut: { run_id : number; label : string | null; status : string; window_start : string; window_end : string; created_at : string; pnl_usd?: number | null; spread_capture_pct?: number | null; };
     ProveOutQueuedOut: { run_id : number; status : string; };
-    ProveOutReportOut: { pnl_usd : number; per_kw_month : number; spread_capture_pct : number | null; perfect_foresight_usd : number; baseline_hold_usd : number; max_drawdown_usd : number; trades : number; risk_rejections : number; imbalance_penalty_usd : number; days : number; daily : Array<components["schemas"]["DailyReportOut"]>; };
+    ProveOutReportOut: { pnl_usd : number; per_kw_month : number; spread_capture_pct : number | null; perfect_foresight_usd : number; baseline_hold_usd : number; max_drawdown_usd : number; trades : number; risk_rejections : number; imbalance_penalty_usd : number; degradation_cost_usd?: number; ending_soc_kwh?: number | null; energy_bought_kwh?: number | null; energy_sold_kwh?: number | null; ledger_breakdown?: { [key: string]: number; }; evidence_id?: string | null; engine?: string | null; price_resolution?: string | null; audit_event_count?: number | null; replay_state_sha256?: string | null; replay_verified?: boolean | null; days : number; daily : Array<components["schemas"]["DailyReportOut"]>; };
     ReflectionEntryOut: { ts : string; ok : boolean; price_adjust?: number | null; qty_scale?: number | null; preferred_modes?: Array<string> | null; avoid_modes?: Array<string> | null; mode_pin?: string | null; risk_budget?: number | null; price_bias_bps?: number | null; soc_target?: number | null; execution_style?: string | null; rationale?: string; lesson?: string | null; meta_control?: { [key: string]: number; } | null; error : string | null; };
     SayIn: { text : string; };
     SessionOut: { id : number; market_mode : string; started_at : string; ended_at : string | null; price_ref : string; is_current : boolean; };
@@ -83,10 +85,11 @@ export interface components {
     SpeedUpdate: { speed : number; };
     StrategyIn: { algorithm?: string; params?: { [key: string]: unknown; } | null; };
     SubmissionCreateIn: { track : "managed"; payload : components["schemas"]["ManagedSubmissionPayload"]; };
-    SubmissionDetailOut: { id : number; competition_id : number; track : string; status : string; payload : { [key: string]: unknown; }; created_at : string; updated_at : string; latest_run : components["schemas"]["EvaluationRunOut"] | null; };
-    SubmissionOut: { id : number; competition_id : number; track : string; status : string; payload : { [key: string]: unknown; }; created_at : string; updated_at : string; };
+    SubmissionDetailOut: { id : number; competition_id : number; track : string; status : string; payload : { [key: string]: unknown; }; selected_for_final : boolean; selected_for_final_at : string | null; created_at : string; updated_at : string; latest_run : components["schemas"]["EvaluationRunOut"] | null; evaluation_runs?: Array<components["schemas"]["EvaluationRunOut"]>; };
+    SubmissionOut: { id : number; competition_id : number; track : string; status : string; payload : { [key: string]: unknown; }; selected_for_final : boolean; selected_for_final_at : string | null; created_at : string; updated_at : string; };
     SupplyCurveOrder: { price : string; qty : string; category : string; vpp_name : string | null; };
     SupplyCurveOut: { sim_ts : string; asks : Array<components["schemas"]["SupplyCurveOrder"]>; bids : Array<components["schemas"]["SupplyCurveOrder"]>; };
+    TickEvent: { kind?: "tick"; sim_ts : string; wall_ts : string; tick_no : number; best_bid?: string | null; best_ask?: string | null; last_price?: string | null; external_price?: string | null; import_price?: string | null; export_price?: string | null; bid_depth?: string; ask_depth?: string; interval_id : string; delivery_start : string; delivery_end : string; };
     TimeInForce: "good_til_gate" | "immediate_or_cancel" | "fill_or_kill";
     TradeEvent: { kind?: "trade"; sim_ts : string; wall_ts : string; trade_id : number; buy_order_id : number; sell_order_id : number; buy_vpp_id : number; sell_vpp_id : number; price : string; qty : string; interval_id : string; delivery_start : string; delivery_end : string; buy_purpose : string; sell_purpose : string; };
     VPPCreate: { name : string; params?: { [key: string]: unknown; }; };

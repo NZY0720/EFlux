@@ -30,7 +30,8 @@ from eflux.db.models import (
     Submission,
 )
 from eflux.db.session import get_sessionmaker
-from eflux.evaluation.proveout import run_proveout
+from eflux.evaluation.manifest import content_sha256
+from eflux.evaluation.proveout import run_proveout_execution
 from eflux.evaluation.scoring import SeedScore, score_seed
 from eflux.evaluation.seeds import DEFAULT_ROUND, derive_seed, seed_labels
 
@@ -44,8 +45,11 @@ class RunContext:
     submission_id: int
     actor_user_id: int
     competition_slug: str
+    kind: str
+    rules_version: str
     payload: dict[str, Any]
     rules_config: dict[str, Any]
+    manifest: dict[str, Any] | None
 
 
 async def claim_next_run(
@@ -137,13 +141,24 @@ async def _load_context(
             raise RuntimeError(
                 f"ruleset {run.rules_version!r} for track {submission.track!r} not found"
             )
+        snapshot = dict(run.manifest or {})
+        snapshot_parameters = snapshot.get("parameters")
+        if isinstance(snapshot_parameters, dict):
+            payload = snapshot_parameters.get("submission_payload", submission.payload)
+            rules_config = snapshot_parameters.get("rules_config", ruleset.config)
+        else:
+            payload = submission.payload
+            rules_config = ruleset.config
         return RunContext(
             run_id=run.id,
             submission_id=submission.id,
             actor_user_id=submission.user_id,
             competition_slug=competition.slug,
-            payload=dict(submission.payload),
-            rules_config=dict(ruleset.config),
+            kind=run.kind,
+            rules_version=run.rules_version,
+            payload=dict(payload),
+            rules_config=dict(rules_config),
+            manifest=snapshot or None,
         )
 
 
@@ -159,7 +174,7 @@ async def _seed_rows(
             )
         ).scalars().all()
         if not rows:
-            count = int(context.rules_config.get("hidden_seeds", 0))
+            count = int(context.rules_config.get(f"{context.kind}_seeds", 0))
             rows = [
                 EvaluationSeedRun(
                     evaluation_run_id=context.run_id,
@@ -168,7 +183,7 @@ async def _seed_rows(
                     status="queued",
                     metrics={},
                 )
-                for label in seed_labels("hidden", count)
+                for label in seed_labels(context.kind, count)
             ]
             session.add_all(rows)
             await session.flush()
@@ -353,6 +368,27 @@ async def _finalize_scored_run(
                 "participant_failures": participant_failures,
             }
 
+        evidence = {
+            "manifest": context.manifest,
+            "result": {
+                "evaluation_run_id": context.run_id,
+                "kind": context.kind,
+                "rules_version": context.rules_version,
+                "score": run_score,
+                "summary": summary,
+            },
+            "seed_runs": [
+                {
+                    "seed_label": seed.seed_label,
+                    "attempt": seed.attempt,
+                    "status": seed.status,
+                    "score": seed.score,
+                    "metrics": seed.metrics,
+                }
+                for seed in seeds
+            ],
+        }
+
         await session.execute(
             update(EvaluationRun)
             .where(EvaluationRun.id == context.run_id, EvaluationRun.status == "running")
@@ -360,6 +396,8 @@ async def _finalize_scored_run(
                 status="scored",
                 score=run_score,
                 summary=summary,
+                evidence=evidence,
+                evidence_sha256=content_sha256(evidence),
                 finished_at=datetime.now(UTC),
             )
         )
@@ -416,13 +454,16 @@ async def execute_proveout_run(
         window_end = run.window_end
         strategy = dict(run.strategy)
 
-    report = await asyncio.to_thread(
-        run_proveout,
+    execution = await asyncio.to_thread(
+        run_proveout_execution,
         endowment,
         window_start,
         window_end,
         strategy,
     )
+    report = execution.report
+    manifest = execution.manifest.model_dump(mode="json")
+    evidence = execution.evidence
     async with factory() as session:
         completed = await session.execute(
             update(ProveOutRun)
@@ -430,6 +471,10 @@ async def execute_proveout_run(
             .values(
                 status="done",
                 report=report,
+                manifest=manifest,
+                manifest_sha256=content_sha256(manifest),
+                evidence=evidence,
+                evidence_sha256=content_sha256(evidence),
                 error=None,
                 finished_at=datetime.now(UTC),
             )

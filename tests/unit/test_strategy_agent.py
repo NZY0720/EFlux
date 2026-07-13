@@ -108,7 +108,7 @@ def test_strategy_demo_scenario_file_validates():
     from eflux.simulator.agent_spec import AgentSpec
 
     data = yaml.safe_load((PROJECT_ROOT / "scenarios" / "strategy_demo.yaml").read_text())
-    specs = [AgentSpec.model_validate(entry) for entry in data["vpps"]]
+    specs = [AgentSpec.model_validate(entry) for entry in data["participants"]]
     assert any(s.agent == "strategy" for s in specs)
 
 

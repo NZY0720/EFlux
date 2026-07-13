@@ -51,19 +51,30 @@ export interface ProveOutRunSummary {
 export interface ProveOutDailyResult {
   date: string;
   pnl_usd: number;
-  spread_capture_pct: number;
+  spread_capture_pct: number | null;
 }
 
 export interface ProveOutReport {
   pnl_usd: number;
   per_kw_month: number;
-  spread_capture_pct: number;
+  spread_capture_pct: number | null;
   perfect_foresight_usd: number;
   baseline_hold_usd: number;
   max_drawdown_usd: number;
   trades: number;
   risk_rejections: number;
   imbalance_penalty_usd: number;
+  degradation_cost_usd: number;
+  ending_soc_kwh: number | null;
+  energy_bought_kwh: number | null;
+  energy_sold_kwh: number | null;
+  ledger_breakdown: Record<string, number>;
+  evidence_id: string | null;
+  engine: string | null;
+  price_resolution: string | null;
+  audit_event_count?: number;
+  replay_state_sha256?: string;
+  replay_verified?: boolean;
   days: number;
   daily: ProveOutDailyResult[];
 }
@@ -71,6 +82,8 @@ export interface ProveOutReport {
 export interface ProveOutRunDetail extends ProveOutRunSummary {
   report?: ProveOutReport;
   error?: string;
+  manifest?: Record<string, unknown>;
+  evidence_sha256?: string;
 }
 
 export async function createProveOutRun(payload: CreateProveOutRun): Promise<ProveOutRunCreated> {
@@ -86,4 +99,16 @@ export async function listProveOutRuns(limit = 20): Promise<ProveOutRunSummary[]
 export async function fetchProveOutRun(id: string): Promise<ProveOutRunDetail> {
   const { data } = await api.get<ProveOutRunDetail>(`/prove-out/runs/${encodeURIComponent(id)}`);
   return data;
+}
+
+export async function downloadProveOutEvidence(id: string): Promise<void> {
+  const { data } = await api.get<Blob>(`/prove-out/runs/${encodeURIComponent(id)}/evidence`, {
+    responseType: "blob",
+  });
+  const url = URL.createObjectURL(data);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `prove-out-${id}-evidence.json`;
+  link.click();
+  URL.revokeObjectURL(url);
 }

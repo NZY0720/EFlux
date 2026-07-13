@@ -19,6 +19,7 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
+from eflux.backtest.compare import compare_backtest_runs
 from eflux.config import PROJECT_ROOT, get_settings
 
 log = logging.getLogger(__name__)
@@ -140,6 +141,13 @@ async def list_benchmarks() -> list[BenchmarkSummary]:
             )
         )
     return out
+
+
+@router.get("/compare")
+async def compare_benchmarks(left: str, right: str) -> dict:
+    """Return a transparent right-minus-left report for two artifact runs."""
+
+    return compare_backtest_runs(_run_dir(left), _run_dir(right))
 
 
 @router.get("/{run_id}", response_model=BenchmarkDetail)

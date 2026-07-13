@@ -159,8 +159,8 @@ Schema lives in `alembic/versions/`. The dev path runs `Base.metadata.create_all
 To exercise the migration-only path (production-style), set `EFLUX_AUTO_CREATE_SCHEMA=false` in `config.env` — lifespan will then refuse to create tables and you must run `./tasks.sh migrate` first.
 
 ### 8. Default scenario
-On startup, 33 built-in VPPs are loaded from `scenarios/default.yaml`
-(each entry validated as an [AgentSpec](docs/AGENT_SPEC.md); override with
+On startup, the versioned roster in `scenarios/default.yaml` is loaded
+(the ScenarioSpec top level and every participant are validated strictly; override with
 `EFLUX_SCENARIO_FILE`): 10 residential/rooftop-solar VPPs, 6 wind farms
 (coastal ones on real Open-Meteo wind speed), 6 factories with industrial
 shift loads, 3 commercial buildings, 4 gas generators (dispatchable supply at
@@ -169,13 +169,16 @@ HybridPolicyAgents** (`my-llm-vpp` and three persona rivals). Each hybrid agent
 uses a truthful valuation oracle, a fast strategy-primitive policy, a deterministic
 order compiler, a risk-gated Truthful fallback, and a slow LLMStrategist that
 recommends/discourages primitives plus `risk_budget` and `soc_target`.
-Agents: `zi | truthful | gas | strategy | hybrid | zip | gd | aa` per YAML entry
+Agents: `truthful | gas | strategy | hybrid | zip | gd | aa` per YAML entry
 (`reflective` is still accepted as a legacy alias). They trade against
 each other continuously — merit order is renewables (~floor) → battery band
 (~52.7) → gas, with demand bids rising toward 75 under deficit
 (`demand_beta`) and resting orders expiring after `EFLUX_ORDER_TTL_SEC`
 (default 180 s). Connect your own VPPs via `POST /vpps` then `POST /orders`
 (see [docs/AGENT_SPEC.md](docs/AGENT_SPEC.md) for the full external-agent guide).
+
+Use `uv run eflux scenario validate scenarios/default.yaml` and
+`uv run eflux scenario hash scenarios/default.yaml` before a reproducible run.
 
 Useful market endpoints (all public, no auth):
 - `GET /market/snapshot?depth=N` — order book depth + KPIs + data-source status

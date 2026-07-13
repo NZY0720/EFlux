@@ -24,7 +24,16 @@ def derive_seed(slug: str, kind: str, index: int, round_token: str = DEFAULT_ROU
     if index < 1:
         raise ValueError("seed index is 1-based")
     message = f"{slug}:{round_token}:{kind}:{index}".encode()
-    digest = hmac.new(get_settings().secret_key.encode(), message, hashlib.sha256).digest()
+    if kind == "practice":
+        digest = hashlib.sha256(b"eflux-public-practice:" + message).digest()
+    else:
+        settings = get_settings()
+        key = settings.evaluation_seed_key.strip()
+        if not key:
+            if settings.env.lower() not in {"dev", "development", "test"}:
+                raise RuntimeError("EFLUX_EVALUATION_SEED_KEY is required outside development")
+            key = settings.secret_key
+        digest = hmac.new(key.encode(), message, hashlib.sha256).digest()
     return int.from_bytes(digest[:8], "big") % (2**31 - 1)
 
 

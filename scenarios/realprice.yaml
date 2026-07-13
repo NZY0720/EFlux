@@ -14,7 +14,10 @@
 # price_ref (cost basis) is intentionally NOT pegged to the live CAISO LMP — agents trade on
 # the live-price-vs-cost spread, which is exactly the timing signal under test.
 
-vpps:
+schema_version: "1"
+name: realprice-benchmark-roster
+market_mode: realprice
+participants:
 
   # ===================== CONSUMER (2 archetypes x 5 strategies) =====================
   # --- residential load ---

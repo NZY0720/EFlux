@@ -17,6 +17,8 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from eflux.config import PROJECT_ROOT, get_settings
+from eflux.evaluation.manifest import DataArtifact, content_sha256
+from eflux.evaluation.proveout_runner import ProveOutExecution, execute_gateway_proveout
 
 CAISO_TZ = ZoneInfo("America/Los_Angeles")
 PROVEOUT_CACHE_DIR = PROJECT_ROOT / "data" / "cache" / "training"
@@ -389,11 +391,48 @@ def run_proveout(
     end_date: date,
     strategy: dict[str, Any],
 ) -> dict[str, Any]:
+    """Run the production V2 prove-out and return its public report."""
+
+    return run_proveout_execution(endowment, start_date, end_date, strategy).report
+
+
+def run_proveout_execution(
+    endowment: dict[str, Any],
+    start_date: date,
+    end_date: date,
+    strategy: dict[str, Any],
+) -> ProveOutExecution:
+    """Execute through Simulator/Gateway and retain immutable provenance evidence."""
+
+    validate_strategy(strategy)
     prices = load_cached_price_hours(start_date, end_date)
-    return replay_price_hours(
-        prices,
-        endowment,
-        strategy,
+    price_payload = [
+        {"timestamp": point.timestamp.astimezone(UTC).isoformat(), "lmp": point.price}
+        for point in prices
+    ]
+    data_artifact = DataArtifact(
+        name="CAISO historical LMP",
+        source=f"local-cache:{get_settings().external_market_node}",
+        resolution="1h repeated over 5m delivery products",
+        sha256=content_sha256(price_payload),
+        rows=len(prices),
+        start=prices[0].timestamp,
+        end=prices[-1].timestamp,
+    )
+    baseline_hold = sum(
+        _solar_generation_mwh(point.timestamp, float(endowment.get("solar_mw", 0.0)))
+        * point.price
+        for point in prices
+    )
+    return execute_gateway_proveout(
+        prices=prices,
+        endowment=endowment,
+        strategy=strategy,
+        strategy_params=_strategy_params(strategy.get("params")),
         start_date=start_date,
         end_date=end_date,
+        perfect_foresight_usd=perfect_foresight_usd(prices, endowment),
+        baseline_hold_usd=baseline_hold,
+        data_artifact=data_artifact,
+        local_timezone=CAISO_TZ,
     )

@@ -48,10 +48,14 @@ Gas providers are pure dispatchable supply. When `gas_kw_max > 0`, explicitly se
 
 ## 2. Built-in roster (`scenarios/default.yaml`)
 
-Each entry under `vpps:` is one AgentSpec. Example:
+Each entry under `participants:` is one AgentSpec. The surrounding ScenarioSpec is
+versioned and rejects unknown top-level keys. Example:
 
 ```yaml
-vpps:
+schema_version: "1"
+name: example-roster
+market_mode: p2p
+participants:
   - name: llm-arb-aggressive
     agent: hybrid
     seed: 78
@@ -70,6 +74,10 @@ Loaded by `load_default_scenario()`; the roster file is set via
 Backtests deliberately default to the current per-market rosters instead of the
 legacy default file: `scenarios/p2p.yaml` for `--market-mode p2p` and
 `scenarios/realprice.yaml` for `--market-mode realprice`.
+
+Validate, inspect, normalize or fingerprint a roster with `eflux scenario
+validate|inspect|normalize|hash PATH`. Legacy files containing only `vpps:` are read
+through an explicit adapter, but all shipped rosters use ScenarioSpec v1.
 
 ## 3. Hybrid (LLM-steered) agents
 

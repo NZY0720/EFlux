@@ -119,5 +119,10 @@ async def test_worker_executes_tiny_cached_window_end_to_end(db_session, tmp_pat
     assert completed.status == "done"
     assert completed.report is not None
     assert completed.report["days"] == 1
+    assert completed.report["engine"] == "Simulator + TradingGatewayV2"
+    assert completed.report["replay_verified"] is True
+    assert completed.manifest is not None
+    assert completed.evidence is not None
+    assert completed.evidence_sha256 is not None
     assert completed.finished_at is not None
     assert audit.actor_user_id == user.id

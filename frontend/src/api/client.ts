@@ -2,6 +2,7 @@ import axios from "axios";
 
 import type {
   AlgorithmInfo,
+  BenchmarkComparison,
   BenchmarkDetail,
   BenchmarkSummary,
   ChatMessage,
@@ -27,6 +28,7 @@ import type {
   Participant,
   SessionInfo,
   SupplyCurve,
+  TickEvent,
   TimeInForce,
   VPP,
 } from "./types";
@@ -324,6 +326,14 @@ export async function fetchRecentTrades(limit = 200): Promise<MarketEvent[]> {
   return data;
 }
 
+export async function fetchRecentTicks(limit = 100_000): Promise<TickEvent[]> {
+  const { data } = await api.get<TickEvent[]>("/market/ticks", {
+    params: { limit },
+    timeout: 30_000,
+  });
+  return data;
+}
+
 export async function fetchParticipants(): Promise<Participant[]> {
   const { data } = await api.get<Participant[]>("/market/participants");
   return data;
@@ -412,6 +422,16 @@ export async function fetchBenchmarks(): Promise<BenchmarkSummary[]> {
 
 export async function fetchBenchmarkDetail(runId: string): Promise<BenchmarkDetail> {
   const { data } = await api.get<BenchmarkDetail>(`/benchmarks/${encodeURIComponent(runId)}`);
+  return data;
+}
+
+export async function fetchBenchmarkComparison(
+  left: string,
+  right: string,
+): Promise<BenchmarkComparison> {
+  const { data } = await api.get<BenchmarkComparison>("/benchmarks/compare", {
+    params: { left, right },
+  });
   return data;
 }
 

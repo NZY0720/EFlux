@@ -8,7 +8,10 @@
 # (The scripted policy has no battery band, so truthful's soc_high/soc_low /
 # battery_quote_every_n_ticks do NOT apply and are rejected at load.)
 
-vpps:
+schema_version: "1"
+name: strategy-layer-demo
+market_mode: any
+participants:
   # Structured-language prosumers (surplus midday, deficit at night).
   - name: strategy-prosumer-01
     agent: strategy

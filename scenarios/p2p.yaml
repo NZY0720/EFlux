@@ -18,7 +18,10 @@
 # agents; unjittered for ppo/hybrid to match the checkpoint scale). p2p never anchors its
 # clearing price to CAISO (free discovery).
 
-vpps:
+schema_version: "1"
+name: p2p-benchmark-roster
+market_mode: p2p
+participants:
 
   # ===================== CONSUMER (4 archetypes x 5 strategies) =====================
   # --- ev load ---

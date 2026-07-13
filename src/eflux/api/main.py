@@ -322,6 +322,7 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(competitions.router)
     app.include_router(competitions.submissions_router)
+    app.include_router(competitions.evaluations_router)
     app.include_router(vpps.router)
     app.include_router(orders.router)
     app.include_router(proveout.router)

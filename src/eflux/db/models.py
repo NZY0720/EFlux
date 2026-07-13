@@ -8,6 +8,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     CheckConstraint,
     Date,
     DateTime,
@@ -283,6 +284,7 @@ class Competition(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     rulesets: Mapped[list[CompetitionRuleSet]] = relationship(
         back_populates="competition", cascade="all, delete-orphan", passive_deletes=True
@@ -325,6 +327,12 @@ class Submission(Base):
     track: Mapped[str] = mapped_column(String(32), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="draft")
     payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    selected_for_final: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="0"
+    )
+    selected_for_final_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )
@@ -348,8 +356,13 @@ class EvaluationRun(Base):
     )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
     rules_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(16), nullable=False, default="hidden")
     score: Mapped[float | None] = mapped_column(Float, nullable=True)
     summary: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    manifest: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    manifest_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    evidence_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -442,6 +455,10 @@ class ProveOutRun(Base):
     strategy: Mapped[dict] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default="queued")
     report: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    manifest: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    manifest_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    evidence_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False

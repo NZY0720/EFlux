@@ -273,7 +273,7 @@ export default function PriceChart({
 
   const displayedLinePoints = variant === "realprice" ? lineExternalPoints : linePoints;
   if (effectiveMode === "candles") {
-    setExtent(0, Math.max(0, candles.length - 1));
+    setExtent(0, Math.max(0, candles.length - 1), Math.max(1, Math.ceil(3600 / intervalSec)));
   } else if (displayedLinePoints.length > 0) {
     setExtent(displayedLinePoints[0].ts, displayedLinePoints[displayedLinePoints.length - 1].ts);
   } else {
@@ -498,7 +498,7 @@ export default function PriceChart({
         <button
           type="button"
           onClick={resetZoom}
-          title="Restore auto-follow (live view)"
+          title="Show the latest hour and follow live data"
           className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors duration-200 ${
             autoFollow
               ? "border-[var(--border)] text-[var(--text-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--text)]"

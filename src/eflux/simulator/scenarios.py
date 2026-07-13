@@ -15,8 +15,6 @@ import random
 from decimal import Decimal
 from pathlib import Path
 
-import yaml
-
 from eflux.agents.aa_agent import AAAgent
 from eflux.agents.base import BaseAgent
 from eflux.agents.character import derive_character
@@ -32,6 +30,7 @@ from eflux.config import PROJECT_ROOT, get_settings
 from eflux.data.caiso_reference import caiso_reference_price
 from eflux.simulator.agent_spec import AgentSpec, ExecutorSpec, validate_vpp_params
 from eflux.simulator.runner import Simulator, SimulatorVPP
+from eflux.simulator.scenario_spec import load_scenario_spec
 from eflux.vpp.base import VPPParams
 
 log = logging.getLogger(__name__)
@@ -207,17 +206,13 @@ def load_default_scenario(sim: Simulator) -> None:
     path = Path(settings.scenario_file)
     if not path.is_absolute():
         path = PROJECT_ROOT / path
-    data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    entries = data.get("vpps") or []
-    if not entries:
-        raise ValueError(f"Scenario file {path} contains no 'vpps' entries")
-
-    specs = [AgentSpec.model_validate(entry) for entry in entries]
-    seen: set[str] = set()
-    for spec in specs:
-        if spec.name in seen:
-            raise ValueError(f"Scenario file {path}: duplicate VPP name {spec.name!r}")
-        seen.add(spec.name)
+    scenario = load_scenario_spec(path)
+    if scenario.market_mode != "any" and scenario.market_mode != settings.market_mode:
+        raise ValueError(
+            f"Scenario file {path} targets market_mode={scenario.market_mode!r}, "
+            f"not {settings.market_mode!r}"
+        )
+    specs = list(scenario.participants)
 
     use_real_weather = _real_pv_available()
     managed_specs = [s for s in specs if s.agent in ("hybrid", "reflective")]

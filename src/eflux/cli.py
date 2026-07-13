@@ -52,6 +52,85 @@ def agent_spec_schema() -> None:
     click.echo(json.dumps(agent_spec_json_schema(), indent=2))
 
 
+@main.group()
+def scenario() -> None:
+    """Validate and fingerprint versioned ScenarioSpec files."""
+
+
+@scenario.command(name="validate")
+@click.argument("path", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+def scenario_validate(path: Path) -> None:
+    from eflux.simulator.scenario_spec import load_scenario_spec
+
+    spec = load_scenario_spec(path)
+    click.echo(
+        f"valid ScenarioSpec v{spec.schema_version}: {spec.name} "
+        f"({len(spec.participants)} participants)"
+    )
+
+
+@scenario.command(name="inspect")
+@click.argument("path", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+def scenario_inspect(path: Path) -> None:
+    import json
+
+    from eflux.simulator.scenario_spec import load_scenario_spec
+
+    spec = load_scenario_spec(path)
+    click.echo(
+        json.dumps(
+            {
+                "name": spec.name,
+                "schema_version": spec.schema_version,
+                "market_mode": spec.market_mode,
+                "participants": len(spec.participants),
+                "scenario_sha256": spec.semantic_sha256,
+            },
+            indent=2,
+        )
+    )
+
+
+@scenario.command(name="hash")
+@click.argument("path", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+def scenario_hash(path: Path) -> None:
+    from eflux.simulator.scenario_spec import load_scenario_spec
+
+    click.echo(load_scenario_spec(path).semantic_sha256)
+
+
+@scenario.command(name="normalize")
+@click.argument("path", type=click.Path(path_type=Path, exists=True, dir_okay=False))
+@click.option("--output", type=click.Path(path_type=Path, dir_okay=False))
+def scenario_normalize(path: Path, output: Path | None) -> None:
+    from eflux.simulator.scenario_spec import load_scenario_spec, normalized_scenario_yaml
+
+    rendered = normalized_scenario_yaml(load_scenario_spec(path))
+    if output is None:
+        click.echo(rendered, nl=False)
+    else:
+        output.write_text(rendered, encoding="utf-8")
+        click.echo(str(output))
+
+
+@main.command(name="compare")
+@click.argument("left", type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.argument("right", type=click.Path(path_type=Path, exists=True, file_okay=False))
+@click.option("--output", type=click.Path(path_type=Path, dir_okay=False))
+def compare_runs(left: Path, right: Path, output: Path | None) -> None:
+    """Compare two backtest run directories without inventing significance."""
+    import json
+
+    from eflux.backtest.compare import compare_backtest_runs
+
+    rendered = json.dumps(compare_backtest_runs(left, right), indent=2)
+    if output is None:
+        click.echo(rendered)
+    else:
+        output.write_text(rendered + "\n", encoding="utf-8")
+        click.echo(str(output))
+
+
 @main.command()
 def info() -> None:
     """Print runtime info."""

@@ -5,13 +5,14 @@ import {
   BadgeCheck,
   CloudUpload,
   FlaskConical,
+  GitCompareArrows,
   Images,
   ListChecks,
   Terminal,
 } from "lucide-react";
 
-import { benchmarkChartUrl, fetchBenchmarkDetail, fetchBenchmarks } from "../api/client";
-import type { BenchmarkDetail, BenchmarkParticipant, BenchmarkSummary } from "../api/types";
+import { benchmarkChartUrl, fetchBenchmarkComparison, fetchBenchmarkDetail, fetchBenchmarks } from "../api/client";
+import type { BenchmarkComparison, BenchmarkDetail, BenchmarkParticipant, BenchmarkSummary } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
 
 const fmtWindow = (s: string | null, e: string | null) =>
@@ -60,10 +61,27 @@ function CloudEvalPlaceholder() {
 
 function RunList() {
   const [runs, setRuns] = useState<BenchmarkSummary[] | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [comparison, setComparison] = useState<BenchmarkComparison | null>(null);
+  const [comparing, setComparing] = useState(false);
 
   useEffect(() => {
     fetchBenchmarks().then(setRuns).catch(() => setRuns([]));
   }, []);
+
+  const toggleCompare = (runId: string) => {
+    setComparison(null);
+    setSelected((current) => current.includes(runId)
+      ? current.filter((item) => item !== runId)
+      : current.length < 2 ? [...current, runId] : [current[1], runId]);
+  };
+
+  const compare = async () => {
+    if (selected.length !== 2) return;
+    setComparing(true);
+    try { setComparison(await fetchBenchmarkComparison(selected[0], selected[1])); }
+    finally { setComparing(false); }
+  };
 
   return (
     <div className="mx-auto w-full max-w-[1400px] space-y-6 px-4 py-5 md:p-6">
@@ -79,6 +97,8 @@ function RunList() {
       </div>
 
       <CloudEvalPlaceholder />
+
+      {runs && runs.length > 1 && <DashboardCard><div className="flex flex-wrap items-center justify-between gap-3"><div><CardTitle icon={GitCompareArrows}>Compare two runs</CardTitle><p className="text-sm text-[var(--text-muted)]">Pick left then right. The report shows right-minus-left descriptive deltas and does not invent confidence intervals from single runs.</p></div><button type="button" onClick={() => void compare()} disabled={selected.length !== 2 || comparing} className="eflux-btn eflux-btn-primary h-9 px-4 text-sm disabled:opacity-50"><GitCompareArrows size={15} />{comparing ? "Comparing…" : `Compare ${selected.length}/2`}</button></div>{comparison && <div className="mt-4 border-t border-[var(--border)] pt-4"><p className="text-sm text-[var(--text)]"><span className="font-mono">{comparison.left_run}</span> → <span className="font-mono">{comparison.right_run}</span> · {comparison.common_participant_count} common participants</p><p className="mt-1 text-xs text-[var(--text-subtle)]">{comparison.methodology.note}</p><TableShell className="mt-3 max-h-64"><table className="eflux-table text-xs"><thead><tr><th className="px-3 py-2 text-left">Participant</th><th className="px-3 py-2 text-right">Δ mark-to-market</th><th className="px-3 py-2 text-right">Δ trades</th><th className="px-3 py-2 text-right">Δ risk rejections</th></tr></thead><tbody>{comparison.participant_deltas.map((row) => <tr key={row.name}><td className="px-3 py-1.5 text-[var(--text)]">{row.name}</td><td className="px-3 py-1.5 text-right font-mono">{row.delta_right_minus_left.mark_to_market?.toFixed(2)}</td><td className="px-3 py-1.5 text-right font-mono">{row.delta_right_minus_left.trade_count}</td><td className="px-3 py-1.5 text-right font-mono">{row.delta_right_minus_left.risk_rejections}</td></tr>)}</tbody></table></TableShell></div>}</DashboardCard>}
 
       {runs === null ? (
         <EmptyState title="Loading runs..." />
@@ -96,6 +116,7 @@ function RunList() {
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span className="font-mono text-sm text-[var(--text)]">{run.run_id}</span>
                   <span className="flex items-center gap-1.5">
+                    <button type="button" onClick={(event) => { event.preventDefault(); toggleCompare(run.run_id); }} className={`eflux-btn h-6 px-2 text-[10px] ${selected.includes(run.run_id) ? "border-[var(--accent)] text-[var(--accent)]" : ""}`}><GitCompareArrows size={11} />{selected.includes(run.run_id) ? `${selected.indexOf(run.run_id) + 1}` : "pick"}</button>
                     <StatusPill tone={run.market_mode === "realprice" ? "amber" : "accent"} className="py-0 text-[10px]">
                       {run.market_mode}
                     </StatusPill>

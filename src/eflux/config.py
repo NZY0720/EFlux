@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     env: str = "dev"
     log_level: str = "INFO"
     secret_key: str = "dev-only-change-me"
+    # Keep private evaluation seeds independent from login/session signing.
+    # Development may fall back to secret_key; non-dev deployments must set this.
+    evaluation_seed_key: str = ""
 
     db_url: str = "sqlite+aiosqlite:///./eflux_dev.db"
     # Dev convenience: have lifespan run `Base.metadata.create_all` so a fresh
@@ -39,6 +42,10 @@ class Settings(BaseSettings):
     market_speed: float = 1.0
     market_tick_sec: float = 1.0
     agent_decision_interval_sec: float = 30.0
+    # Social chat is wall-clock gated so accelerated market speed never turns it
+    # into spam. One agent posts per interval, round-robin across LLM agents.
+    agent_chat_interval_sec: float = 60.0
+    agent_chat_reply_prob: float = 0.30
     delivery_interval_sec: int = 300
     delivery_horizon_intervals: int = 6
     # Agent requests may override this; tactical policies default to one

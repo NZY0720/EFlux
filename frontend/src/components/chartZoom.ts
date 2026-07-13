@@ -4,7 +4,8 @@
 // NOT percentages. ECharts percent bounds are relative to the data extent, which
 // grows every tick — so a fixed percent window would silently widen/slide as new
 // data streams in. Absolute bounds keep a zoomed window pinned to real time;
-// null bounds mean "full range" (auto-follow new data).
+// null bounds mean "full range" while history is shorter than the auto window;
+// once it grows past one hour, auto-follow uses an absolute latest-hour window.
 
 import { useCallback, useMemo, useRef, useState, type MutableRefObject } from "react";
 
@@ -22,6 +23,7 @@ interface ZoomEventParam {
 }
 
 export const FULL_ZOOM: ZoomWindow = { startValue: null, endValue: null };
+export const DEFAULT_AUTO_WINDOW_MS = 60 * 60 * 1000;
 
 interface ZoomExtent {
   min: number;
@@ -100,7 +102,7 @@ interface PersistentZoomBase {
 interface PersistentZoomTracked extends PersistentZoomBase {
   autoFollow: boolean;
   resetZoom: () => void;
-  setExtent: (min: number, max: number) => void;
+  setExtent: (min: number, max: number, autoWindowSize?: number) => void;
 }
 
 interface PersistentZoomOptions {
@@ -114,6 +116,7 @@ export function usePersistentTimeZoom(opts: { trackAutoFollow: true }): Persiste
 export function usePersistentTimeZoom(opts: PersistentZoomOptions = {}): PersistentZoomBase | PersistentZoomTracked {
   const zoomRef = useRef<ZoomWindow>(FULL_ZOOM);
   const extentRef = useRef<ZoomExtent | null>(null);
+  const autoWindowSizeRef = useRef(DEFAULT_AUTO_WINDOW_MS);
   const [autoFollow, setAutoFollowState] = useState(true);
   const autoFollowRef = useRef(true);
   const trackAutoFollow = opts.trackAutoFollow === true;
@@ -124,13 +127,20 @@ export function usePersistentTimeZoom(opts: PersistentZoomOptions = {}): Persist
   }, []);
 
   const resetZoom = useCallback(() => {
-    zoomRef.current = FULL_ZOOM;
+    const extent = extentRef.current;
+    zoomRef.current = extent
+      ? autoZoomWindow(extent.min, extent.max, autoWindowSizeRef.current)
+      : FULL_ZOOM;
     setAutoFollow(true);
   }, [setAutoFollow]);
 
-  const setExtent = useCallback((min: number, max: number) => {
+  const setExtent = useCallback((min: number, max: number, autoWindowSize = DEFAULT_AUTO_WINDOW_MS) => {
     if (Number.isFinite(min) && Number.isFinite(max)) {
       extentRef.current = { min, max };
+      autoWindowSizeRef.current = autoWindowSize;
+      if (autoFollowRef.current) {
+        zoomRef.current = autoZoomWindow(min, max, autoWindowSize);
+      }
     }
   }, []);
 
@@ -147,4 +157,11 @@ export function usePersistentTimeZoom(opts: PersistentZoomOptions = {}): Persist
   );
   if (!trackAutoFollow) return { zoomRef, onEvents };
   return { zoomRef, onEvents, autoFollow, resetZoom, setExtent };
+}
+
+/** Full range until it exceeds the desired window, then follow the newest slice. */
+export function autoZoomWindow(min: number, max: number, windowSize = DEFAULT_AUTO_WINDOW_MS): ZoomWindow {
+  const span = max - min;
+  if (!Number.isFinite(span) || span <= Math.max(0, windowSize)) return FULL_ZOOM;
+  return { startValue: max - windowSize, endValue: max };
 }

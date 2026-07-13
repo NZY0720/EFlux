@@ -19,7 +19,15 @@
 | 8 | **Forecast-quality workstream added** | The Forecast Hub was producing provably bad output; fixed 2026-07-10 (§8). Trust in forecasts is a precondition for the trader audience. |
 | 9 | Numeric aesthetic dials removed | "Variation 6 / motion 4 / density 7" are unmeasurable; the concrete rules (§5) already do the job. |
 
-Verified current state (2026-07-10 audit): 27→17 ruff issues; suite 465 passed (~33s natively); frontend one 470.6KB-gzip chunk, no route splitting, eager ECharts; `MyVPPs.tsx` 1,492 lines; Inter declared but never loaded; localStorage Bearer auth, no `/auth/me`; magic link = dev token echo (no email); SQLite default with Postgres URL + 3 alembic migrations ready; optional Redis Streams bus with in-memory fallback; working Python SDK + examples; **no CI**; no competition/evaluation/k8s/registry code.
+Historical baseline (2026-07-10 audit): 27→17 ruff issues; suite 465 passed (~33s natively); frontend one 470.6KB-gzip chunk, no route splitting, eager ECharts; `MyVPPs.tsx` 1,492 lines; Inter declared but never loaded; localStorage Bearer auth, no `/auth/me`; magic link = dev token echo (no email); SQLite default with Postgres URL + 3 alembic migrations ready; optional Redis Streams bus with in-memory fallback; working Python SDK + examples; **no CI**; no competition/evaluation/k8s/registry code.
+
+Implementation update (2026-07-13): managed competition/evaluation and private Prove-out
+now exist. Prove-out executes through Simulator + TradingGatewayV2 and stores a manifest,
+audit stream and ledger evidence package. Competition runs snapshot submission/rules config,
+separate hidden from final holdout seeds, freeze a selected submission, embargo evidence
+until close, and use holdout scores for the closed leaderboard. ScenarioSpec v1 and honest
+single-run comparison reports are also implemented. Container tracks and real-money/device
+operation remain deferred.
 
 ## 2. What we learned from comparable products
 

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
+import pytest
+
 from eflux.agents.gas import GasGeneratorAgent
 from eflux.agents.truthful import TruthfulAgent
 from eflux.bridge.bus import InMemoryBus
 from eflux.config import get_settings
+from eflux.market.events import TickEvent
+from eflux.market.products import next_delivery_interval
 from eflux.simulator.runner import Simulator
 from eflux.vpp.base import VPPParams
 
@@ -93,3 +99,26 @@ def test_vpp_trade_count_is_cumulative_not_recent_buffer_length():
     assert len(vpp.recent_trades) == 50
     assert vpp.recent_trades[0]["trade_id"] == 54
     assert vpp.recent_trades[-1]["trade_id"] == 5
+
+
+@pytest.mark.parametrize("market_mode", ["p2p", "realprice"])
+def test_tick_history_is_retained_for_refresh_backfill(monkeypatch, market_mode):
+    monkeypatch.setenv("EFLUX_MARKET_MODE", market_mode)
+    get_settings.cache_clear()
+    sim = Simulator(bus=InMemoryBus())
+    now = datetime.now(UTC)
+    interval = next_delivery_interval(now, market=sim.market_mode)
+    tick = TickEvent(
+        sim_ts=now,
+        wall_ts=now,
+        tick_no=1,
+        last_price="51.25",
+        external_price="48.75",
+        interval_id=interval.interval_id,
+        delivery_start=interval.start,
+        delivery_end=interval.end,
+    )
+
+    sim._publish_event(tick)
+
+    assert list(sim.tick_log) == [tick]

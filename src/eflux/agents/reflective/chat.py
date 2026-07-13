@@ -9,6 +9,36 @@ strategist, so cost stays bounded. Only name + timestamp + message are ever surf
 from __future__ import annotations
 
 import json
+import re
+
+CHAT_DIRECTIONS = (
+    "React to one concrete number in your own PnL, SOC, price, or the leaderboard.",
+    "Notice a recent trade or lack of trading and offer a specific observation.",
+    "Ask another agent one concise, context-grounded question.",
+    "Make a short market prediction and plainly signal your uncertainty.",
+    "Share a small mistake, restraint, or lesson from your current position.",
+    "Contrast two trading approaches in a friendly, non-generic way.",
+    "Comment on supply, demand, grid price, or local imbalance from an operator's view.",
+    "Use one fresh analogy grounded in electricity or storage; avoid stock trading clichés.",
+)
+
+DEFAULT_CHAT_VOICES = (
+    "deadpan control-room operator",
+    "curious market researcher",
+    "terse risk manager",
+    "mischievous but friendly trader",
+    "calm grid engineer",
+    "optimistic renewable operator",
+)
+
+
+def chat_direction(turn: int) -> str:
+    return CHAT_DIRECTIONS[turn % len(CHAT_DIRECTIONS)]
+
+
+def default_chat_style(name: str) -> str:
+    stable_index = sum((index + 1) * ord(char) for index, char in enumerate(name))
+    return DEFAULT_CHAT_VOICES[stable_index % len(DEFAULT_CHAT_VOICES)]
 
 
 def build_chat_messages(
@@ -20,6 +50,7 @@ def build_chat_messages(
     reply: bool = False,
     mentioned: bool = False,
     style: str | None = None,
+    direction: str | None = None,
 ) -> list[dict[str, str]]:
     """System+user messages asking the agent for one short, in-character chat line.
 
@@ -47,13 +78,16 @@ def build_chat_messages(
     persona_line = f"\nYour persona / standing brief: {persona.strip()}" if persona else ""
     # A chatroom-only voice (Tier-0 owners can set it) — tone only, never strategy.
     style_line = f"\nYour chatroom voice/style: {style.strip()}" if style else ""
+    direction_line = f"\nYour distinct angle for THIS turn: {direction.strip()}" if direction else ""
     system = (
         f"You are {name}, an autonomous Virtual Power Plant trading agent in a live electricity "
         "market, hanging out in a casual chatroom with the other trading agents. " + mode + " "
-        "Post ONE short, witty, in-character line (max ~180 chars). Be playful and a little "
-        "humorous; light trash-talk and self-deprecation are welcome, but stay friendly. No "
-        "hashtags, no surrounding quotes, at most one emoji. Return ONLY the message text — no "
-        "JSON, no name prefix, no timestamp." + persona_line + style_line
+        "Post ONE short, in-character line (max ~180 chars). Vary sentence shape, opening words, "
+        "and subject from the recent messages. Ground factual claims in the supplied context; if "
+        "your assigned angle lacks evidence, choose another concrete angle. Light humor, friendly "
+        "disagreement, curiosity, and self-deprecation are all allowed, but do not force a joke. "
+        "No hashtags, no surrounding quotes, at most one emoji. Return ONLY the message text, with "
+        "no JSON, name prefix, or timestamp." + persona_line + style_line + direction_line
     )
     user = "Here's the room right now:\n" + json.dumps(
         {"market": context, "recent_chat": recent_chat}, ensure_ascii=False, default=str
@@ -75,3 +109,27 @@ def clean_chat_line(content: str) -> str:
     text = text.strip().strip('"').strip("'").strip()
     # Collapse whitespace/newlines to one line and cap length.
     return " ".join(text.split())[:240]
+
+
+def chat_line_is_repetitive(text: str, recent_chat: list[dict], threshold: float = 0.72) -> bool:
+    """Reject exact, same-opening, or high-overlap repeats from the recent room."""
+
+    def tokens(value: str) -> list[str]:
+        return re.findall(r"[\w']+", value.casefold())
+
+    candidate = tokens(text)
+    if not candidate:
+        return True
+    candidate_set = set(candidate)
+    for message in recent_chat:
+        prior = tokens(str(message.get("text", "")))
+        if not prior:
+            continue
+        if candidate == prior:
+            return True
+        if len(candidate) >= 4 and len(prior) >= 4 and candidate[:4] == prior[:4]:
+            return True
+        union = candidate_set | set(prior)
+        if union and len(candidate_set & set(prior)) / len(union) >= threshold:
+            return True
+    return False

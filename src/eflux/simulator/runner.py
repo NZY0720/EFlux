@@ -35,7 +35,13 @@ from eflux.agents.decision import (
     SilenceReason,
     classify_silence_reason,
 )
-from eflux.agents.reflective.chat import build_chat_messages, clean_chat_line
+from eflux.agents.reflective.chat import (
+    build_chat_messages,
+    chat_direction,
+    chat_line_is_repetitive,
+    clean_chat_line,
+    default_chat_style,
+)
 from eflux.bridge.bus import EventBus
 from eflux.config import get_settings
 from eflux.data.electricity_market import (
@@ -49,7 +55,7 @@ from eflux.forecasting.service import ForecastService
 from eflux.market.clock import RollingClock
 from eflux.market.delivery import OrderPurpose
 from eflux.market.events import EventKind, ExternalTradeEvent, TickEvent, TradeEvent
-from eflux.market.gateway import GatewayRejected, TradingGatewayV2
+from eflux.market.gateway import DecisionExecution, GatewayRejected, TradingGatewayV2
 from eflux.market.ledger import usd_for_energy
 from eflux.market.metering import IntervalMeterBook
 from eflux.market.product_engine import ProductMatchingEngine, ProductOrderEvent, ProductTrade
@@ -72,14 +78,10 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 SILENCE_WINDOW_MAXLEN = 100
+MARKET_TICK_HISTORY_MAXLEN = 100_000
 
-# Agent chatroom cadence: every N ticks one LLM agent (round-robin) posts a line. Bounded
-# further by a single in-flight chat task + the shared strategist gate, so cost stays low.
-CHAT_INTERVAL_TICKS = 15
-# Conversation balance: base chance a post replies to recent chat (agents always reply when
-# mentioned), capped so the room can't devolve into an endless reply chain with no new topics.
-CHAT_REPLY_PROB = 0.45
-CHAT_MAX_REPLY_STREAK = 3
+# Conversation balance is capped so the room cannot devolve into an endless reply chain.
+CHAT_MAX_REPLY_STREAK = 2
 # Reserved economic counterparty for imports/exports.  It is intentionally not
 # a SimulatorVPP and is never stepped, settled as a DER, or ranked.
 GRID_PARTICIPANT_ID = -10_000_000
@@ -168,6 +170,10 @@ class Simulator:
         # Rolling log of recent trades so late-joining clients (page loads,
         # WS reconnects) can backfill instead of starting from a blank chart.
         self.trade_log: deque[TradeEvent | ExternalTradeEvent] = deque(maxlen=500)
+        # Full-resolution wall-time price history for the current backend session.
+        # The frontend backfills this after a refresh; the bound is a memory guard
+        # (~27 hours at the default 1 Hz cadence), not the chart's visible window.
+        self.tick_log: deque[TickEvent] = deque(maxlen=MARKET_TICK_HISTORY_MAXLEN)
         self.engine = ProductMatchingEngine(publish_cb=self._publish_product_event)
         self.gateway = TradingGatewayV2(engine=self.engine)
         self.clock = RollingClock(
@@ -193,6 +199,7 @@ class Simulator:
         self._chat_rr = 0
         self._chat_reply_streak = 0
         self._chat_task: asyncio.Task | None = None
+        self._last_chat_wall = time.monotonic()
         # Latest processed tick number — surfaced as the Agent Protocol tick_id so external
         # agents can detect stale context / order responses against the current market tick.
         self._last_tick_no = 0
@@ -284,6 +291,8 @@ class Simulator:
     def _publish_event(self, event) -> None:
         if isinstance(event, (TradeEvent, ExternalTradeEvent)):
             self.trade_log.append(event)
+        elif isinstance(event, TickEvent):
+            self.tick_log.append(event)
         self.bus.publish(event)
 
     def _publish_product_event(self, event) -> None:
@@ -476,12 +485,13 @@ class Simulator:
         log.info("Removed managed VPP id=%s (def=%s)", target.vpp_id, managed_def_id)
         return True
 
-    def _maybe_chat(self, tick_no: int) -> None:
-        """On the chat cadence, fire one agent's small-talk LLM call off the tick path —
-        round-robin across LLM agents, one in flight at a time, sharing the strategist gate."""
+    def _maybe_chat(self, _tick_no: int) -> None:
+        """Wall-clock-gated agent chat, independent of accelerated market speed."""
         if self.shared_llm is None or not self.shared_llm.live:
             return
-        if tick_no % CHAT_INTERVAL_TICKS != 0:
+        settings = get_settings()
+        now = time.monotonic()
+        if now - self._last_chat_wall < max(1.0, settings.agent_chat_interval_sec):
             return
         if self._chat_task is not None and not self._chat_task.done():
             return
@@ -494,6 +504,7 @@ class Simulator:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
+        self._last_chat_wall = now
         self._chat_task = loop.create_task(self._generate_chat(vpp))
 
     async def _generate_chat(self, vpp: SimulatorVPP) -> None:
@@ -508,9 +519,11 @@ class Simulator:
             vpp.name.lower() in m["text"].lower() for m in recent if m["name"] != vpp.name
         )
         force_fresh = self._chat_reply_streak >= CHAT_MAX_REPLY_STREAK
+        reply_probability = min(1.0, max(0.0, get_settings().agent_chat_reply_prob))
         reply = (
-            bool(recent) and not force_fresh and (mentioned or random.random() < CHAT_REPLY_PROB)
+            bool(recent) and not force_fresh and (mentioned or random.random() < reply_probability)
         )
+        turn = max(0, self._chat_rr - 1)
         try:
             messages = build_chat_messages(
                 name=vpp.name,
@@ -519,15 +532,16 @@ class Simulator:
                 recent_chat=recent,
                 reply=reply,
                 mentioned=mentioned,
-                style=vpp.chat_style,
+                style=vpp.chat_style or default_chat_style(vpp.name),
+                direction=chat_direction(turn),
             )
             async with self.shared_llm.gate:
                 content = await asyncio.wait_for(
-                    client.chat(messages, temperature=0.9, max_tokens=2048),
+                    client.chat(messages, temperature=1.0, max_tokens=160),
                     timeout=self.shared_llm.timeout_sec + 30.0,
                 )
             text = clean_chat_line(str(content))
-            if text:
+            if text and not chat_line_is_repetitive(text, recent):
                 self.post_chat(vpp, text, source="agent")
                 self._chat_reply_streak = self._chat_reply_streak + 1 if reply else 0
         except Exception:
@@ -1795,7 +1809,7 @@ class Simulator:
                 snapshot = self.engine.snapshot(primary.interval_id, depth_levels=5)
                 bids = snapshot["bids"]
                 asks = snapshot["asks"]
-                self.bus.publish(
+                self._publish_event(
                     TickEvent(
                         kind=EventKind.TICK,
                         sim_ts=sim_ts,
@@ -2270,11 +2284,12 @@ class Simulator:
         )
         wall_ts = datetime.now(UTC)
         for scheduled in decision_round.decisions:
-            execution = self.gateway.execute_decision(
+            execution = self._execute_audited_decision(
                 participant_id=scheduled.participant_id,
                 decision=scheduled.decision,
                 sim_ts=sim_ts,
                 wall_ts=wall_ts,
+                source="scheduled",
             )
             self._record_rejections(scheduled.participant_id, len(execution.rejected))
             self._record_product_trades(execution.trades)
@@ -2306,11 +2321,12 @@ class Simulator:
                         self.fallback_invocations_by_vpp.get(vpp.vpp_id, 0) + 1
                     )
                     fallback_decision = fallback.decide(contexts[vpp.vpp_id])
-                    fallback_execution = self.gateway.execute_decision(
+                    fallback_execution = self._execute_audited_decision(
                         participant_id=vpp.vpp_id,
                         decision=fallback_decision,
                         sim_ts=sim_ts,
                         wall_ts=wall_ts,
+                        source="risk_fallback",
                     )
                     self._record_rejections(vpp.vpp_id, len(fallback_execution.rejected))
                     self._record_product_trades(fallback_execution.trades)
@@ -2319,6 +2335,108 @@ class Simulator:
                 for order in self.engine.open_orders_for_vpp(scheduled.participant_id)
             ]
             vpp.state.pnl = self.gateway.ledger.balance(scheduled.participant_id)
+
+    @staticmethod
+    def _audit_order_request(request: OrderRequest) -> dict[str, object]:
+        return {
+            "side": request.side,
+            "price": str(request.price),
+            "qty_kwh": str(request.qty_kwh),
+            "interval_id": request.interval.interval_id,
+            "delivery_start": request.interval.start.isoformat(),
+            "delivery_end": request.interval.end.isoformat(),
+            "purpose": request.purpose.value,
+            "time_in_force": request.time_in_force.value,
+            "ttl_sec": request.ttl_sec,
+            "client_ref": request.client_ref,
+        }
+
+    def _execute_audited_decision(
+        self,
+        *,
+        participant_id: int,
+        decision: AgentDecision,
+        sim_ts: datetime,
+        wall_ts: datetime,
+        source: str,
+    ) -> DecisionExecution:
+        decision_id = f"{sim_ts.astimezone(UTC).isoformat()}:{participant_id}:{source}"
+        self._append_audit(
+            kind="decision.received",
+            sim_ts=sim_ts,
+            participant_id=participant_id,
+            reference_id=decision_id,
+            payload={
+                "decision_id": decision_id,
+                "source": source,
+                "rationale": decision.rationale,
+                "orders": [self._audit_order_request(order) for order in decision.orders],
+                "cancels": [cancel.order_id for cancel in decision.cancels],
+                "replaces": [
+                    {
+                        "order_id": replacement.order_id,
+                        "replacement": self._audit_order_request(replacement.replacement),
+                    }
+                    for replacement in decision.replaces
+                ],
+            },
+        )
+        execution = self.gateway.execute_decision(
+            participant_id=participant_id,
+            decision=decision,
+            sim_ts=sim_ts,
+            wall_ts=wall_ts,
+        )
+        accepted_requests = [
+            *(replacement.replacement for replacement in decision.replaces),
+            *decision.orders,
+        ]
+        for rejected in execution.rejected:
+            try:
+                accepted_requests.remove(rejected.request)
+            except ValueError:
+                pass
+        runtime = self.gateway.participants[participant_id]
+        self._append_audit(
+            kind="gateway.accepted",
+            sim_ts=sim_ts,
+            participant_id=participant_id,
+            reference_id=decision_id,
+            payload={
+                "decision_id": decision_id,
+                "accepted_order_ids": list(execution.accepted_order_ids),
+                "accepted_orders": [
+                    {"order_id": order_id, **self._audit_order_request(request)}
+                    for order_id, request in zip(
+                        execution.accepted_order_ids, accepted_requests, strict=True
+                    )
+                ],
+                "cancelled_order_ids": list(execution.cancelled_order_ids),
+                "trade_ids": [trade.trade_id for trade in execution.trades],
+                "open_order_ids": [
+                    order.order_id for order in self.engine.open_orders_for_vpp(participant_id)
+                ],
+                "reserved_cash_usd": str(sum(runtime.reserved_cash_by_order.values(), Decimal("0"))),
+            },
+        )
+        if execution.rejected:
+            self._append_audit(
+                kind="gateway.rejected",
+                sim_ts=sim_ts,
+                participant_id=participant_id,
+                reference_id=decision_id,
+                payload={
+                    "decision_id": decision_id,
+                    "rejections": [
+                        {
+                            "request": self._audit_order_request(rejected.request),
+                            "reason": rejected.reason,
+                        }
+                        for rejected in execution.rejected
+                    ],
+                },
+            )
+        return execution
 
     def _open_balance_net(self, participant_id: int, interval_id: str) -> float:
         return sum(

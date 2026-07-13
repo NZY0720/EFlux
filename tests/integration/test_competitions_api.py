@@ -301,3 +301,59 @@ async def test_competition_leaderboard_ranks_scored_submissions_masks_email_and_
             },
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_final_selection_closes_into_immutable_holdout_run(client, db_session):
+    from eflux.db.models import Competition, EvaluationRun, EvaluationSeedRun, Submission, User
+
+    owner_auth = await _login(client, "final-owner@example.com")
+    created = await client.post(
+        "/competitions/season-0/submissions",
+        headers=owner_auth,
+        json=_submission_body(algorithm="truthful"),
+    )
+    submission_id = created.json()["id"]
+    submission = await db_session.get(Submission, submission_id)
+    hidden = EvaluationRun(
+        submission_id=submission_id,
+        kind="hidden",
+        status="scored",
+        rules_version="rules-v1.1",
+        score=1.25,
+        summary={},
+    )
+    db_session.add(hidden)
+    await db_session.commit()
+
+    selected = await client.post(
+        f"/submissions/{submission_id}/select-final", headers=owner_auth
+    )
+    assert selected.status_code == 200, selected.text
+
+    admin_auth = await _login(client, "final-admin@example.com")
+    admin = (
+        await db_session.execute(select(User).where(User.email == "final-admin@example.com"))
+    ).scalar_one()
+    admin.role = "admin"
+    await db_session.commit()
+    closed = await client.post("/competitions/season-0/close", headers=admin_auth)
+    assert closed.status_code == 200, closed.text
+    (holdout_run_id,) = closed.json()["holdout_run_ids"]
+
+    holdout = await db_session.get(EvaluationRun, holdout_run_id)
+    competition = (await db_session.execute(select(Competition))).scalar_one()
+    seed_rows = (
+        await db_session.execute(
+            select(EvaluationSeedRun)
+            .where(EvaluationSeedRun.evaluation_run_id == holdout_run_id)
+            .order_by(EvaluationSeedRun.id)
+        )
+    ).scalars().all()
+    await db_session.refresh(submission)
+    assert competition.status == "closed"
+    assert competition.closed_at is not None
+    assert submission is not None and submission.selected_for_final is True
+    assert holdout is not None and holdout.kind == "holdout"
+    assert holdout.manifest["parameters"]["submission_payload"] == submission.payload
+    assert [seed.seed_label for seed in seed_rows] == ["holdout-1", "holdout-2"]

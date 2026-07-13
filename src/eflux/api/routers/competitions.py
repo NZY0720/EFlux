@@ -6,8 +6,9 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, model_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 
 from eflux.api.deps import CurrentUser, DbSession
 from eflux.config import get_settings
@@ -20,11 +21,13 @@ from eflux.db.models import (
     Submission,
     User,
 )
+from eflux.evaluation.manifest import build_manifest, content_sha256
 from eflux.evaluation.seeds import seed_labels, seed_values
 from eflux.simulator.scenarios import MANAGED_ALGORITHMS
 
 router = APIRouter(prefix="/competitions", tags=["competitions"])
 submissions_router = APIRouter(prefix="/submissions", tags=["competitions"])
+evaluations_router = APIRouter(prefix="/evaluation-runs", tags=["competitions"])
 
 
 class CompetitionListOut(BaseModel):
@@ -77,6 +80,8 @@ class SubmissionOut(BaseModel):
     track: str
     status: str
     payload: dict
+    selected_for_final: bool
+    selected_for_final_at: datetime | None
     created_at: datetime
     updated_at: datetime
 
@@ -90,6 +95,7 @@ class EvaluationSeedRunOut(BaseModel):
 
 class EvaluationRunOut(BaseModel):
     id: int
+    kind: str
     status: str
     rules_version: str
     score: float | None
@@ -101,6 +107,18 @@ class EvaluationRunOut(BaseModel):
 
 class SubmissionDetailOut(SubmissionOut):
     latest_run: EvaluationRunOut | None
+    evaluation_runs: list[EvaluationRunOut] = Field(default_factory=list)
+
+
+class FinalSelectionOut(BaseModel):
+    submission_id: int
+    selected_for_final: bool
+
+
+class CompetitionCloseOut(BaseModel):
+    competition_slug: str
+    status: str
+    holdout_run_ids: list[int]
 
 
 class LeaderboardEntryOut(BaseModel):
@@ -162,6 +180,8 @@ def _submission_out(submission: Submission) -> SubmissionOut:
         track=submission.track,
         status=submission.status,
         payload=submission.payload,
+        selected_for_final=submission.selected_for_final,
+        selected_for_final_at=submission.selected_for_final_at,
         created_at=submission.created_at,
         updated_at=submission.updated_at,
     )
@@ -172,6 +192,73 @@ def _mask_email(email: str) -> str:
     if not sep:
         return f"{local[:2]}***"
     return f"{local[:2]}***@{domain}"
+
+
+async def _create_evaluation_run(
+    session: DbSession,
+    *,
+    submission: Submission,
+    competition: Competition,
+    ruleset: CompetitionRuleSet,
+    kind: Literal["hidden", "holdout"],
+) -> tuple[EvaluationRun, list[str]]:
+    labels = seed_labels(kind, _seed_count(ruleset, kind))
+    manifest_model = build_manifest(
+        run_type="evaluation",
+        market_mode="offline-benchmark",
+        rules_version=ruleset.version,
+        seed_labels=labels,
+        parameters={
+            "competition_slug": competition.slug,
+            "kind": kind,
+            "submission_payload": dict(submission.payload),
+            "rules_config": dict(ruleset.config),
+        },
+    )
+    manifest = manifest_model.model_dump(mode="json")
+    run = EvaluationRun(
+        status="queued",
+        kind=kind,
+        rules_version=ruleset.version,
+        submission_id=submission.id,
+        manifest=manifest,
+        manifest_sha256=content_sha256(manifest),
+    )
+    session.add(run)
+    await session.flush()
+    session.add_all(
+        EvaluationSeedRun(
+            evaluation_run_id=run.id,
+            seed_label=label,
+            attempt=1,
+            status="queued",
+        )
+        for label in labels
+    )
+    await session.flush()
+    return run, labels
+
+
+def _evaluation_out(run: EvaluationRun, seeds: list[EvaluationSeedRun]) -> EvaluationRunOut:
+    return EvaluationRunOut(
+        id=run.id,
+        kind=run.kind,
+        status=run.status,
+        rules_version=run.rules_version,
+        score=run.score,
+        created_at=run.created_at,
+        started_at=run.started_at,
+        finished_at=run.finished_at,
+        seed_runs=[
+            EvaluationSeedRunOut(
+                seed_label=seed.seed_label,
+                attempt=seed.attempt,
+                status=seed.status,
+                score=seed.score,
+            )
+            for seed in seeds
+        ],
+    )
 
 
 @router.get("", response_model=list[CompetitionListOut])
@@ -349,6 +436,11 @@ async def enqueue_evaluation(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "submission not found")
     if submission.user_id != user.id and not _is_admin(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "submission is not yours")
+    competition = await session.get(Competition, submission.competition_id)
+    if competition is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "competition not found")
+    if competition.status != "open":
+        raise HTTPException(status.HTTP_409_CONFLICT, "competition is not open")
     active_run = (
         await session.execute(
             select(EvaluationRun.id).where(
@@ -363,30 +455,30 @@ async def enqueue_evaluation(
     if ruleset is None:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "managed ruleset not found")
 
-    run = EvaluationRun(status="queued", rules_version=ruleset.version, submission_id=submission.id)
-    session.add(run)
-    await session.flush()
-    for label in seed_labels("hidden", _seed_count(ruleset, "hidden")):
-        session.add(
-            EvaluationSeedRun(
-                evaluation_run_id=run.id,
-                seed_label=label,
-                attempt=1,
-                status="queued",
-            )
-        )
-    await session.flush()
+    run, labels = await _create_evaluation_run(
+        session,
+        submission=submission,
+        competition=competition,
+        ruleset=ruleset,
+        kind="hidden",
+    )
     session.add(
         AuditEvent(
             actor_user_id=user.id,
             action="evaluation.enqueued",
             entity_type="evaluation_run",
             entity_id=run.id,
-            payload={"submission_id": submission.id, "rules_version": ruleset.version},
+            payload={
+                "submission_id": submission.id,
+                "rules_version": ruleset.version,
+                "kind": "hidden",
+                "manifest_sha256": run.manifest_sha256,
+            },
         )
     )
     return EvaluationRunOut(
         id=run.id,
+        kind=run.kind,
         status=run.status,
         rules_version=run.rules_version,
         score=run.score,
@@ -395,7 +487,7 @@ async def enqueue_evaluation(
         finished_at=run.finished_at,
         seed_runs=[
             EvaluationSeedRunOut(seed_label=label, attempt=1, status="queued", score=None)
-            for label in seed_labels("hidden", _seed_count(ruleset, "hidden"))
+            for label in labels
         ],
     )
 
@@ -413,16 +505,15 @@ async def get_submission(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "submission not found")
     if submission.user_id != user.id and not _is_admin(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "submission is not yours")
-    run = (
+    runs = (
         await session.execute(
             select(EvaluationRun)
             .where(EvaluationRun.submission_id == submission.id)
             .order_by(EvaluationRun.created_at.desc(), EvaluationRun.id.desc())
-            .limit(1)
         )
-    ).scalar_one_or_none()
-    latest_run = None
-    if run is not None:
+    ).scalars().all()
+    run_outputs: list[EvaluationRunOut] = []
+    for run in runs:
         seed_runs = (
             await session.execute(
                 select(EvaluationSeedRun)
@@ -430,25 +521,166 @@ async def get_submission(
                 .order_by(EvaluationSeedRun.id)
             )
         ).scalars().all()
-        latest_run = EvaluationRunOut(
-            id=run.id,
-            status=run.status,
-            rules_version=run.rules_version,
-            score=run.score,
-            created_at=run.created_at,
-            started_at=run.started_at,
-            finished_at=run.finished_at,
-            seed_runs=[
-                EvaluationSeedRunOut(
-                    seed_label=seed_run.seed_label,
-                    attempt=seed_run.attempt,
-                    status=seed_run.status,
-                    score=seed_run.score,
-                )
-                for seed_run in seed_runs
-            ],
+        run_outputs.append(_evaluation_out(run, list(seed_runs)))
+    return SubmissionDetailOut(
+        **_submission_out(submission).model_dump(),
+        latest_run=run_outputs[0] if run_outputs else None,
+        evaluation_runs=run_outputs,
+    )
+
+
+@submissions_router.post("/{submission_id}/select-final", response_model=FinalSelectionOut)
+async def select_final_submission(
+    submission_id: int,
+    session: DbSession,
+    user: CurrentUser,
+) -> FinalSelectionOut:
+    """Choose the one frozen submission that will enter the unseen holdout round."""
+
+    submission = await session.get(Submission, submission_id)
+    if submission is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "submission not found")
+    if submission.user_id != user.id and not _is_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "submission is not yours")
+    competition = await session.get(Competition, submission.competition_id)
+    if competition is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "competition not found")
+    if competition.status != "open":
+        raise HTTPException(status.HTTP_409_CONFLICT, "final selection is already frozen")
+    scored_hidden = (
+        await session.execute(
+            select(EvaluationRun.id).where(
+                EvaluationRun.submission_id == submission.id,
+                EvaluationRun.kind == "hidden",
+                EvaluationRun.status == "scored",
+                EvaluationRun.score.is_not(None),
+            ).limit(1)
         )
-    return SubmissionDetailOut(**_submission_out(submission).model_dump(), latest_run=latest_run)
+    ).scalar_one_or_none()
+    if scored_hidden is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "run and finish the hidden evaluation before selecting a final submission",
+        )
+    await session.execute(
+        update(Submission)
+        .where(
+            Submission.competition_id == submission.competition_id,
+            Submission.user_id == submission.user_id,
+            Submission.track == submission.track,
+        )
+        .values(selected_for_final=False, selected_for_final_at=None)
+    )
+    submission.selected_for_final = True
+    submission.selected_for_final_at = datetime.now(UTC)
+    session.add(
+        AuditEvent(
+            actor_user_id=user.id,
+            action="submission.selected_for_final",
+            entity_type="submission",
+            entity_id=submission.id,
+            payload={"competition_slug": competition.slug},
+        )
+    )
+    await session.flush()
+    return FinalSelectionOut(submission_id=submission.id, selected_for_final=True)
+
+
+@router.post("/{slug}/close", response_model=CompetitionCloseOut)
+async def close_competition_and_enqueue_holdout(
+    slug: str,
+    session: DbSession,
+    user: CurrentUser,
+) -> CompetitionCloseOut:
+    """Freeze selections and create holdout jobs from their immutable snapshots."""
+
+    if not _is_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "admin access required")
+    competition = (
+        await session.execute(select(Competition).where(Competition.slug == slug))
+    ).scalar_one_or_none()
+    if competition is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "competition not found")
+    if competition.status != "open":
+        raise HTTPException(status.HTTP_409_CONFLICT, "competition is not open")
+    selected = (
+        await session.execute(
+            select(Submission).where(
+                Submission.competition_id == competition.id,
+                Submission.selected_for_final.is_(True),
+            )
+        )
+    ).scalars().all()
+    if not selected:
+        raise HTTPException(status.HTTP_409_CONFLICT, "no final submissions were selected")
+    run_ids: list[int] = []
+    for submission in selected:
+        ruleset = await _managed_ruleset(session, competition.id)
+        if ruleset is None:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY, "managed ruleset not found"
+            )
+        run, _ = await _create_evaluation_run(
+            session,
+            submission=submission,
+            competition=competition,
+            ruleset=ruleset,
+            kind="holdout",
+        )
+        run_ids.append(run.id)
+    competition.status = "closed"
+    competition.closed_at = datetime.now(UTC)
+    session.add(
+        AuditEvent(
+            actor_user_id=user.id,
+            action="competition.closed",
+            entity_type="competition",
+            entity_id=competition.id,
+            payload={"holdout_run_ids": run_ids, "selected_submission_count": len(selected)},
+        )
+    )
+    await session.flush()
+    return CompetitionCloseOut(
+        competition_slug=competition.slug,
+        status=competition.status,
+        holdout_run_ids=run_ids,
+    )
+
+
+@evaluations_router.get("/{run_id}/evidence")
+async def download_evaluation_evidence(
+    run_id: int,
+    session: DbSession,
+    user: CurrentUser,
+) -> JSONResponse:
+    row = (
+        await session.execute(
+            select(EvaluationRun, Submission, Competition)
+            .join(Submission, EvaluationRun.submission_id == Submission.id)
+            .join(Competition, Submission.competition_id == Competition.id)
+            .where(EvaluationRun.id == run_id)
+        )
+    ).one_or_none()
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "evaluation run not found")
+    run, submission, competition = row
+    is_admin = _is_admin(user)
+    if submission.user_id != user.id and not is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "evaluation run is not yours")
+    if competition.status == "open" and not is_admin:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "evaluation evidence unlocks after the competition closes",
+        )
+    if run.status != "scored" or run.evidence is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "evaluation evidence is not ready")
+    return JSONResponse(
+        content=run.evidence,
+        headers={
+            "Content-Disposition": f'attachment; filename="evaluation-{run.id}-evidence.json"',
+            "X-Evidence-SHA256": run.evidence_sha256 or "",
+        },
+    )
 
 
 @router.get("/{slug}/leaderboard", response_model=LeaderboardOut)
@@ -458,16 +690,21 @@ async def get_leaderboard(slug: str, session: DbSession) -> LeaderboardOut:
     ).scalar_one_or_none()
     if competition is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "competition not found")
+    result_kind = "holdout" if competition.status == "closed" else "hidden"
+    predicates = [
+        Submission.competition_id == competition.id,
+        Submission.track == "managed",
+        EvaluationRun.kind == result_kind,
+        EvaluationRun.score.is_not(None),
+    ]
+    if result_kind == "holdout":
+        predicates.append(Submission.selected_for_final.is_(True))
     rows = (
         await session.execute(
             select(EvaluationRun, Submission, User)
             .join(Submission, EvaluationRun.submission_id == Submission.id)
             .join(User, Submission.user_id == User.id)
-            .where(
-                Submission.competition_id == competition.id,
-                Submission.track == "managed",
-                EvaluationRun.score.is_not(None),
-            )
+            .where(*predicates)
             .order_by(EvaluationRun.created_at.desc(), EvaluationRun.id.desc())
         )
     ).all()
@@ -495,7 +732,10 @@ async def get_leaderboard(slug: str, session: DbSession) -> LeaderboardOut:
                 algorithm=str(submission.payload.get("algorithm", "")),
                 score=run.score,
                 seed_ok_count=sum(s in {"ok", "completed", "succeeded"} for s in seed_statuses),
-                seed_failed_count=sum(s == "failed" for s in seed_statuses),
+                seed_failed_count=sum(
+                    s in {"failed", "participant_failure", "infra_failure"}
+                    for s in seed_statuses
+                ),
             )
         )
     return LeaderboardOut(competition_slug=competition.slug, entries=entries)

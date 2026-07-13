@@ -12,7 +12,7 @@ from sqlalchemy import select
 from eflux.api.deps import AdminUser, CurrentUser, DbSession, SimulatorDep
 from eflux.data.electricity_market import ExternalMarketQuote
 from eflux.db.models import VPP
-from eflux.market.events import ExternalTradeEvent, TradeEvent
+from eflux.market.events import ExternalTradeEvent, TickEvent, TradeEvent
 from eflux.stats.categories import agent_category, is_llm_vpp
 
 router = APIRouter(prefix="/market", tags=["market"])
@@ -152,6 +152,19 @@ def recent_trades(sim: SimulatorDep, limit: int = 200) -> list[TradeEvent | Exte
     """Most recent trades, oldest first — lets clients backfill chart/tape on load."""
     limit = max(1, min(limit, 500))
     log = list(sim.trade_log)
+    return log[-limit:]
+
+
+@router.get("/ticks", response_model=list[TickEvent])
+async def recent_ticks(sim: SimulatorDep, limit: int = 100_000) -> list[TickEvent]:
+    """Current-session tick history, oldest first, for chart recovery after refresh.
+
+    This is deliberately independent of the default one-hour chart viewport: clients
+    receive the complete retained session history and choose their own visible window.
+    """
+    limit = max(1, min(limit, 100_000))
+    async with sim._lock:
+        log = list(sim.tick_log)
     return log[-limit:]
 
 

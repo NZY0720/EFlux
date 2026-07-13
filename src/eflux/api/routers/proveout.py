@@ -6,6 +6,7 @@ from datetime import date, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 
@@ -97,6 +98,17 @@ class ProveOutReportOut(BaseModel):
     trades: int
     risk_rejections: int
     imbalance_penalty_usd: float
+    degradation_cost_usd: float = 0
+    ending_soc_kwh: float | None = None
+    energy_bought_kwh: float | None = None
+    energy_sold_kwh: float | None = None
+    ledger_breakdown: dict[str, float] = Field(default_factory=dict)
+    evidence_id: str | None = None
+    engine: str | None = None
+    price_resolution: str | None = None
+    audit_event_count: int | None = None
+    replay_state_sha256: str | None = None
+    replay_verified: bool | None = None
     days: int
     daily: list[DailyReportOut]
 
@@ -110,6 +122,8 @@ class ProveOutDetailOut(BaseModel):
     window_end: date
     strategy: dict[str, Any]
     report: ProveOutReportOut | None
+    manifest: dict[str, Any] | None
+    evidence_sha256: str | None
     error: str | None
     created_at: datetime
     finished_at: datetime | None
@@ -143,6 +157,8 @@ def _detail_out(run: ProveOutRun) -> ProveOutDetailOut:
         window_end=run.window_end,
         strategy=run.strategy,
         report=run.report,
+        manifest=run.manifest,
+        evidence_sha256=run.evidence_sha256,
         error=run.error,
         created_at=run.created_at,
         finished_at=run.finished_at,
@@ -217,3 +233,27 @@ async def get_prove_out_run(
     if run.user_id != user.id and not _is_admin(user):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "prove-out run is not yours")
     return _detail_out(run)
+
+
+@router.get("/{run_id}/evidence")
+async def download_prove_out_evidence(
+    run_id: int,
+    session: DbSession,
+    user: CurrentUser,
+) -> JSONResponse:
+    """Download the immutable replay manifest, audit events and settlement ledger."""
+
+    run = await session.get(ProveOutRun, run_id)
+    if run is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "prove-out run not found")
+    if run.user_id != user.id and not _is_admin(user):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "prove-out run is not yours")
+    if run.status != "done" or run.evidence is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "prove-out evidence is not ready")
+    return JSONResponse(
+        content=run.evidence,
+        headers={
+            "Content-Disposition": f'attachment; filename="prove-out-{run.id}-evidence.json"',
+            "X-Evidence-SHA256": run.evidence_sha256 or "",
+        },
+    )

@@ -32,7 +32,10 @@
 # Cost diversification (EFLUX_PRICE_REF_JITTER_FRAC) jitters each non-LLM agent's price_ref
 # ±6% so the band/deficit prices fan out; LLM agents are excluded; gas is set per-VPP.
 
-vpps:
+schema_version: "1"
+name: default-market-roster
+market_mode: any
+participants:
   # ================= Classical CDA baseline liquidity cohort (4) =================
   # One per archetype — adaptive-but-rational quant baselines (AA / ZIP / GD) for liquidity.
   - name: ordinary-aa-solar-01

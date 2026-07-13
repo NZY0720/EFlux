@@ -31,9 +31,11 @@ from eflux.agents.reflective.pool import validate_llm_connection
 from eflux.bridge.bus import InMemoryBus
 from eflux.config import PROJECT_ROOT, get_settings
 from eflux.data.electricity_market import ExternalMarketQuote, synthetic_quote
+from eflux.evaluation.manifest import DataArtifact, build_manifest, content_sha256, file_sha256
 from eflux.forecasting.service import ForecastService
-from eflux.simulator.agent_spec import AgentSpec, validate_vpp_params
+from eflux.simulator.agent_spec import validate_vpp_params
 from eflux.simulator.runner import Simulator
+from eflux.simulator.scenario_spec import load_scenario_spec
 from eflux.simulator.scenarios import load_default_scenario
 from eflux.vpp.base import VPPParams
 
@@ -145,9 +147,8 @@ def inspect_scenario(path: Path | str) -> ScenarioInspection:
     p = Path(path)
     if not p.is_absolute():
         p = PROJECT_ROOT / p
-    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    entries = data.get("vpps") or []
-    specs = [AgentSpec.model_validate(e) for e in entries]
+    scenario = load_scenario_spec(p)
+    specs = scenario.participants
     hybrids = tuple(s.name for s in specs if s.agent in ("hybrid", "reflective"))
     mirrors = sum(1 for s in specs if s.agent in ("hybrid", "reflective") and s.mirror)
     return ScenarioInspection(
@@ -202,10 +203,52 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
             _log_progress(f"loaded {real_price_points} historical hourly prices")
     price_is_real = real_price_points > 0
 
+    scenario_spec = load_scenario_spec(scenario)
+    execution_scenario_spec = load_scenario_spec(scenario_for_run)
+    data_artifacts: list[DataArtifact] = []
+    if price_is_real:
+        price_payload = [
+            {"timestamp": index.isoformat(), "lmp": float(value)}
+            for index, value in real_data.price.items()
+        ]
+        data_artifacts.append(
+            DataArtifact(
+                name="CAISO historical LMP",
+                source="CAISO OASIS cache",
+                resolution="1h",
+                sha256=content_sha256(price_payload),
+                rows=len(price_payload),
+                start=start,
+                end=end,
+            )
+        )
+    manifest_model = build_manifest(
+        run_type="backtest",
+        market_mode=config.market_mode,
+        scenario_sha256=scenario_spec.semantic_sha256,
+        data=data_artifacts,
+        model_sha256=(
+            {"ppo_checkpoint": file_sha256(checkpoint)} if checkpoint is not None else {}
+        ),
+        parameters={
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "tick_seconds": config.tick_seconds,
+            "llm_mode": config.llm_mode,
+            "llm_cadence_hours": config.llm_cadence_hours,
+            "train_ppo": config.train_ppo,
+            "fetch_real_data": config.fetch_real_data,
+        },
+    )
+
     manifest = {
+        **manifest_model.model_dump(mode="json"),
+        "evidence_id": manifest_model.evidence_id,
         "market_mode": config.market_mode,
         "scenario": str(scenario),
         "scenario_for_run": str(scenario_for_run),
+        "scenario_sha256": scenario_spec.semantic_sha256,
+        "execution_scenario_sha256": execution_scenario_spec.semantic_sha256,
         "declared_participants": inspection.declared_count,
         "expected_live_participants": inspection.live_count,
         "hybrid_llm_agents": list(inspection.hybrid_names),
@@ -807,7 +850,7 @@ def _train_ppo_checkpoint(config: BacktestConfig, run_dir: Path, start: datetime
 
 def _write_scenario_with_checkpoint(source: Path, checkpoint: Path, run_dir: Path) -> Path:
     data = yaml.safe_load(source.read_text(encoding="utf-8")) or {}
-    for entry in data.get("vpps") or []:
+    for entry in data.get("participants") or data.get("vpps") or []:
         executor = entry.get("executor")
         if isinstance(executor, dict) and executor.get("kind") == "ppo_online":
             executor["checkpoint"] = str(checkpoint)

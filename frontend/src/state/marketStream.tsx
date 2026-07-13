@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 
-import { fetchParticipants, fetchRecentTrades, fetchSnapshot } from "../api/client";
+import { fetchParticipants, fetchRecentTicks, fetchRecentTrades, fetchSnapshot } from "../api/client";
 import type { MarketEvent, MarketSnapshot } from "../api/types";
 import { useMarketStream } from "../ws/useMarketStream";
 import type { ConnectionState } from "../ws/useMarketStream";
@@ -8,13 +8,14 @@ import type { ConnectionState } from "../ws/useMarketStream";
 // Retain a long event history so the price chart can zoom back to the session
 // start. The buffer holds ticks/trades (and, in p2p, order events); bounded only
 // as a memory safety net — the time-zoom slider navigates within it.
-const MAX_BUFFER = 50_000;
+const MAX_TICK_HISTORY = 100_000;
+const MAX_BUFFER = MAX_TICK_HISTORY + 500;
 
 interface MarketStreamValue {
   /** WS connection state. */
   state: ConnectionState;
-  /** Recent events, newest first, deduped. Survives route changes — the
-   * provider lives at the App level and backfills trades from the backend. */
+  /** Current-session events, newest first, deduped. Survives route changes and
+   * backfills retained ticks/trades from the backend after a hard refresh. */
   recent: MarketEvent[];
   /** Order-book snapshot, polled at 1Hz (WS pushes per-tick summary but not depth). */
   snapshot: MarketSnapshot | null;
@@ -93,17 +94,22 @@ export function MarketStreamProvider({ children }: { children: React.ReactNode }
 
   const { state } = useMarketStream({ onEvent: (e) => ingest([e]) });
 
-  // Backfill recent trades on mount and after every reconnect, so a fresh page
-  // (or a route remount) starts with history instead of an empty chart.
+  // Backfill the current session on mount and reconnect. Ticks restore both the
+  // P2P and CAISO price curves after a hard refresh; trades restore the tape and
+  // agent markers. Both APIs return oldest-first, while ingest expects newest-first.
   useEffect(() => {
     if (state !== "open") return;
     let cancelled = false;
-    fetchRecentTrades(200)
-      .then((trades) => {
-        if (!cancelled) ingest([...trades].reverse()); // API is oldest-first
+    Promise.all([fetchRecentTicks(MAX_TICK_HISTORY), fetchRecentTrades(500)])
+      .then(([ticks, trades]) => {
+        if (cancelled) return;
+        const history = [...ticks, ...trades].sort(
+          (a, b) => new Date(b.wall_ts).getTime() - new Date(a.wall_ts).getTime(),
+        );
+        ingest(history);
       })
       .catch(() => {
-        /* backend not ready — WS events still flow */
+        /* backend not ready or history unavailable — live WS events still flow */
       });
     return () => {
       cancelled = true;

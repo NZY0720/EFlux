@@ -138,11 +138,14 @@ the public ledger.
 
 ## Audit and deterministic replay
 
-Orders, cancellations, fills, reservations, physical dispatch, meters and
-settlement are appended to the audit database with simulation and wall times.
-Replay reconstructs positions and conservation totals without executing agent
-code. Given the same scenario, seed and inputs, scheduling and replay results are
-deterministic.
+Agent decisions, gateway accept/reject outcomes, orders, cancellations, fills,
+ledger entries and delivery settlement are appended with simulation and wall times.
+Accepted events include the resulting open-order set and reserved cash. Replay rebuilds
+decisions, order lifecycle, trades, participant balances and delivery positions without
+executing agent code, produces a canonical state hash, and can explain direct trade cash
+for an order. Interval-level imbalance and degradation are shown as context rather than
+falsely attributed to one order. Given the same scenario, seed and inputs, scheduling and
+replay results are deterministic.
 
 ## External boundary
 

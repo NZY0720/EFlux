@@ -523,6 +523,65 @@
         }
       }
     },
+    "/competitions/{slug}/close": {
+      "post": {
+        "tags": [
+          "competitions"
+        ],
+        "summary": "Close Competition And Enqueue Holdout",
+        "description": "Freeze selections and create holdout jobs from their immutable snapshots.",
+        "operationId": "close_competition_and_enqueue_holdout_competitions__slug__close_post",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Slug"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompetitionCloseOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/competitions/{slug}/leaderboard": {
       "get": {
         "tags": [
@@ -665,6 +724,121 @@
                 "schema": {
                   "$ref": "#/components/schemas/SubmissionDetailOut"
                 }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/submissions/{submission_id}/select-final": {
+      "post": {
+        "tags": [
+          "competitions"
+        ],
+        "summary": "Select Final Submission",
+        "description": "Choose the one frozen submission that will enter the unseen holdout round.",
+        "operationId": "select_final_submission_submissions__submission_id__select_final_post",
+        "parameters": [
+          {
+            "name": "submission_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Submission Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FinalSelectionOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/evaluation-runs/{run_id}/evidence": {
+      "get": {
+        "tags": [
+          "competitions"
+        ],
+        "summary": "Download Evaluation Evidence",
+        "operationId": "download_evaluation_evidence_evaluation_runs__run_id__evidence_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
               }
             }
           },
@@ -1942,6 +2116,63 @@
         }
       }
     },
+    "/prove-out/runs/{run_id}/evidence": {
+      "get": {
+        "tags": [
+          "prove-out"
+        ],
+        "summary": "Download Prove Out Evidence",
+        "description": "Download the immutable replay manifest, audit events and settlement ledger.",
+        "operationId": "download_prove_out_evidence_prove_out_runs__run_id__evidence_get",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Run Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/market/products": {
       "get": {
         "tags": [
@@ -2031,6 +2262,54 @@
                     ]
                   },
                   "title": "Response Recent Trades Market Trades Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/market/ticks": {
+      "get": {
+        "tags": [
+          "market"
+        ],
+        "summary": "Recent Ticks",
+        "description": "Current-session tick history, oldest first, for chart recovery after refresh.\n\nThis is deliberately independent of the default one-hour chart viewport: clients\nreceive the complete retained session history and choose their own visible window.",
+        "operationId": "recent_ticks_market_ticks_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "default": 100000,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/TickEvent"
+                  },
+                  "title": "Response Recent Ticks Market Ticks Get"
                 }
               }
             }
@@ -2770,6 +3049,60 @@
                   },
                   "type": "array",
                   "title": "Response List Benchmarks Benchmarks Get"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/benchmarks/compare": {
+      "get": {
+        "tags": [
+          "benchmarks"
+        ],
+        "summary": "Compare Benchmarks",
+        "description": "Return a transparent right-minus-left report for two artifact runs.",
+        "operationId": "compare_benchmarks_benchmarks_compare_get",
+        "parameters": [
+          {
+            "name": "left",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Left"
+            }
+          },
+          {
+            "name": "right",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Right"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": true,
+                  "title": "Response Compare Benchmarks Benchmarks Compare Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
                 }
               }
             }
@@ -3929,6 +4262,32 @@
         "title": "ChatPrefsIn",
         "description": "Chatroom presence for a managed agent. All optional; null clears a field."
       },
+      "CompetitionCloseOut": {
+        "properties": {
+          "competition_slug": {
+            "type": "string",
+            "title": "Competition Slug"
+          },
+          "status": {
+            "type": "string",
+            "title": "Status"
+          },
+          "holdout_run_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Holdout Run Ids"
+          }
+        },
+        "type": "object",
+        "required": [
+          "competition_slug",
+          "status",
+          "holdout_run_ids"
+        ],
+        "title": "CompetitionCloseOut"
+      },
       "CompetitionDetailOut": {
         "properties": {
           "id": {
@@ -4368,6 +4727,10 @@
             "type": "integer",
             "title": "Id"
           },
+          "kind": {
+            "type": "string",
+            "title": "Kind"
+          },
           "status": {
             "type": "string",
             "title": "Status"
@@ -4427,6 +4790,7 @@
         "type": "object",
         "required": [
           "id",
+          "kind",
           "status",
           "rules_version",
           "score",
@@ -4665,6 +5029,24 @@
         ],
         "title": "ExternalTradeEvent"
       },
+      "FinalSelectionOut": {
+        "properties": {
+          "submission_id": {
+            "type": "integer",
+            "title": "Submission Id"
+          },
+          "selected_for_final": {
+            "type": "boolean",
+            "title": "Selected For Final"
+          }
+        },
+        "type": "object",
+        "required": [
+          "submission_id",
+          "selected_for_final"
+        ],
+        "title": "FinalSelectionOut"
+      },
       "ForecastSkillMetric": {
         "properties": {
           "n": {
@@ -4800,9 +5182,15 @@
             "default": 0.0
           },
           "soc_target": {
-            "type": "number",
-            "title": "Soc Target",
-            "default": 0.5
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Soc Target"
           },
           "execution_style": {
             "type": "string",
@@ -5033,6 +5421,39 @@
             "type": "number",
             "title": "Score"
           },
+          "spread_capture": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Spread Capture"
+          },
+          "realized_arb_profit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realized Arb Profit"
+          },
+          "oracle_arb_profit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oracle Arb Profit"
+          },
           "trade_count": {
             "type": "integer",
             "title": "Trade Count"
@@ -5074,6 +5495,9 @@
           "llm_model",
           "pnl_usd",
           "score",
+          "spread_capture",
+          "realized_arb_profit",
+          "oracle_arb_profit",
           "trade_count",
           "energy_bought_kwh",
           "energy_sold_kwh",
@@ -6589,6 +7013,29 @@
               }
             ]
           },
+          "manifest": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Manifest"
+          },
+          "evidence_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Sha256"
+          },
           "error": {
             "anyOf": [
               {
@@ -6628,6 +7075,8 @@
           "window_end",
           "strategy",
           "report",
+          "manifest",
+          "evidence_sha256",
           "error",
           "created_at",
           "finished_at"
@@ -6766,6 +7215,117 @@
           "imbalance_penalty_usd": {
             "type": "number",
             "title": "Imbalance Penalty Usd"
+          },
+          "degradation_cost_usd": {
+            "type": "number",
+            "title": "Degradation Cost Usd",
+            "default": 0
+          },
+          "ending_soc_kwh": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ending Soc Kwh"
+          },
+          "energy_bought_kwh": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Energy Bought Kwh"
+          },
+          "energy_sold_kwh": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Energy Sold Kwh"
+          },
+          "ledger_breakdown": {
+            "additionalProperties": {
+              "type": "number"
+            },
+            "type": "object",
+            "title": "Ledger Breakdown"
+          },
+          "evidence_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Id"
+          },
+          "engine": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Engine"
+          },
+          "price_resolution": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Price Resolution"
+          },
+          "audit_event_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audit Event Count"
+          },
+          "replay_state_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replay State Sha256"
+          },
+          "replay_verified": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Replay Verified"
           },
           "days": {
             "type": "integer",
@@ -7143,6 +7703,22 @@
             "type": "object",
             "title": "Payload"
           },
+          "selected_for_final": {
+            "type": "boolean",
+            "title": "Selected For Final"
+          },
+          "selected_for_final_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected For Final At"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -7162,6 +7738,13 @@
                 "type": "null"
               }
             ]
+          },
+          "evaluation_runs": {
+            "items": {
+              "$ref": "#/components/schemas/EvaluationRunOut"
+            },
+            "type": "array",
+            "title": "Evaluation Runs"
           }
         },
         "type": "object",
@@ -7171,6 +7754,8 @@
           "track",
           "status",
           "payload",
+          "selected_for_final",
+          "selected_for_final_at",
           "created_at",
           "updated_at",
           "latest_run"
@@ -7200,6 +7785,22 @@
             "type": "object",
             "title": "Payload"
           },
+          "selected_for_final": {
+            "type": "boolean",
+            "title": "Selected For Final"
+          },
+          "selected_for_final_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Selected For Final At"
+          },
           "created_at": {
             "type": "string",
             "format": "date-time",
@@ -7218,6 +7819,8 @@
           "track",
           "status",
           "payload",
+          "selected_for_final",
+          "selected_for_final_at",
           "created_at",
           "updated_at"
         ],
@@ -7287,6 +7890,139 @@
           "bids"
         ],
         "title": "SupplyCurveOut"
+      },
+      "TickEvent": {
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "tick",
+            "title": "Kind",
+            "default": "tick"
+          },
+          "sim_ts": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Sim Ts"
+          },
+          "wall_ts": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Wall Ts"
+          },
+          "tick_no": {
+            "type": "integer",
+            "title": "Tick No"
+          },
+          "best_bid": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Bid"
+          },
+          "best_ask": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Best Ask"
+          },
+          "last_price": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Price"
+          },
+          "external_price": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Price"
+          },
+          "import_price": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Import Price"
+          },
+          "export_price": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Export Price"
+          },
+          "bid_depth": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Bid Depth",
+            "default": "0"
+          },
+          "ask_depth": {
+            "type": "string",
+            "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+            "title": "Ask Depth",
+            "default": "0"
+          },
+          "interval_id": {
+            "type": "string",
+            "title": "Interval Id"
+          },
+          "delivery_start": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Delivery Start"
+          },
+          "delivery_end": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Delivery End"
+          }
+        },
+        "type": "object",
+        "required": [
+          "sim_ts",
+          "wall_ts",
+          "tick_no",
+          "interval_id",
+          "delivery_start",
+          "delivery_end"
+        ],
+        "title": "TickEvent",
+        "description": "Periodic clock tick. Carries a market snapshot summary."
       },
       "TimeInForce": {
         "type": "string",
