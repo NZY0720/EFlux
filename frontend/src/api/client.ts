@@ -216,7 +216,9 @@ export async function deleteManagedVPP(id: number): Promise<void> {
 export interface GuidancePayload {
   preferred_modes?: string[];
   avoid_modes?: string[];
+  mode_pin?: string | null;
   risk_budget?: number;
+  price_bias_bps?: number;
   soc_target?: number | null;
   execution_style?: string;
   lesson?: string;

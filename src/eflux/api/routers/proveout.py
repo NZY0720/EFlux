@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import JSONResponse
@@ -14,11 +14,8 @@ from eflux.api.deps import CurrentUser, DbSession
 from eflux.config import get_settings
 from eflux.db.models import ProveOutRun, User
 from eflux.evaluation.proveout import (
-    ProveOutDataError,
-    available_price_ranges,
-    format_available_ranges,
+    latest_historical_date,
     validate_strategy,
-    window_is_available,
 )
 
 router = APIRouter(prefix="/prove-out/runs", tags=["prove-out"])
@@ -33,12 +30,37 @@ class BatteryIn(BaseModel):
     cycle_cost_per_mwh: float = Field(default=0, ge=0)
 
 
+class WindIn(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    power_mw: float = Field(default=0, ge=0)
+    mean_speed_mps: float = Field(default=7, gt=0, le=60)
+
+
+class LoadIn(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+
+    base_mw: float = Field(default=0, ge=0)
+    profile: Literal["residential", "commercial", "industrial", "flat", "ev"] = "commercial"
+    flexibility: float = Field(default=0, ge=0, le=1)
+
+
 class EndowmentIn(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
 
     battery: BatteryIn | None = None
     solar_mw: float = Field(default=0, ge=0)
-    cash_usd: float = 10000
+    wind: WindIn | None = None
+    load: LoadIn | None = None
+    cash_usd: float = Field(default=10000, ge=0)
+
+    @model_validator(mode="after")
+    def _has_physical_asset(self) -> EndowmentIn:
+        wind_mw = 0.0 if self.wind is None else self.wind.power_mw
+        load_mw = 0.0 if self.load is None else self.load.base_mw
+        if self.battery is None and self.solar_mw == 0 and wind_mw == 0 and load_mw == 0:
+            raise ValueError("endowment must include a battery, generation, or load")
+        return self
 
 
 class WindowIn(BaseModel):
@@ -51,6 +73,11 @@ class WindowIn(BaseModel):
             raise ValueError("end_date must be on or after start_date")
         if (self.end_date - self.start_date).days + 1 > 31:
             raise ValueError("window span must be at most 31 inclusive days")
+        latest = latest_historical_date()
+        if self.end_date > latest:
+            raise ValueError(
+                f"end_date must be on or before the latest complete CAISO day, {latest}"
+            )
         return self
 
 
@@ -102,6 +129,9 @@ class ProveOutReportOut(BaseModel):
     ending_soc_kwh: float | None = None
     energy_bought_kwh: float | None = None
     energy_sold_kwh: float | None = None
+    solar_generation_kwh: float = 0
+    wind_generation_kwh: float = 0
+    load_consumption_kwh: float = 0
     ledger_breakdown: dict[str, float] = Field(default_factory=dict)
     evidence_id: str | None = None
     engine: str | None = None
@@ -174,19 +204,8 @@ async def create_prove_out_run(
     strategy = body.strategy.model_dump(exclude_none=True)
     try:
         validate_strategy(strategy)
-        ranges = available_price_ranges()
-    except (ProveOutDataError, ValueError) as exc:
+    except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    if not window_is_available(
-        body.window.start_date,
-        body.window.end_date,
-        ranges=ranges,
-    ):
-        raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
-            "requested window is outside cached CAISO price availability; "
-            f"available ranges: {format_available_ranges(ranges)}",
-        )
 
     run = ProveOutRun(
         user_id=user.id,

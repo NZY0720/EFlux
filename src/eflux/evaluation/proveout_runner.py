@@ -51,7 +51,7 @@ def _percentile(values: list[float], fraction: float) -> float:
 
 
 class HistoricalArbitrageAgent(BaseAgent):
-    """Chronological battery/solar policy for the Prove-out managed track."""
+    """Chronological battery policy that also balances portfolio generation and load."""
 
     def __init__(self, params: dict[str, float | int]) -> None:
         self.lookback_hours = int(params["lookback_hours"])
@@ -71,7 +71,9 @@ class HistoricalArbitrageAgent(BaseAgent):
         # Add one observation per source hour. Thresholds use only observations
         # from earlier hours, so repeating an hourly LMP over 5-minute products
         # never gives that hour twelve votes.
-        prior = [price for _, price in self._hourly_observations[-self.lookback_hours :]]
+        prior = [
+            price for hour, price in self._hourly_observations if hour < observed_hour
+        ][-self.lookback_hours :]
         orders: list[OrderRequest] = []
 
         projected = float(ctx.projected_net_kwh or 0.0)
@@ -84,7 +86,19 @@ class HistoricalArbitrageAgent(BaseAgent):
                     interval=ctx.primary_interval,
                     purpose=OrderPurpose.BALANCE,
                     time_in_force=TimeInForce.FILL_OR_KILL,
-                    client_ref=f"solar:{ctx.primary_interval.start.isoformat()}",
+                    client_ref=f"net-surplus:{ctx.primary_interval.start.isoformat()}",
+                )
+            )
+        elif projected < -1e-9:
+            orders.append(
+                OrderRequest(
+                    side="buy",
+                    price=quote.import_price,
+                    qty_kwh=Decimal(str(-projected)),
+                    interval=ctx.primary_interval,
+                    purpose=OrderPurpose.BALANCE,
+                    time_in_force=TimeInForce.FILL_OR_KILL,
+                    client_ref=f"net-deficit:{ctx.primary_interval.start.isoformat()}",
                 )
             )
 
@@ -147,8 +161,12 @@ def _price_for(points: list[Any], at: datetime) -> float:
 
 def _endowment_params(endowment: dict[str, Any]) -> VPPParams:
     battery = endowment.get("battery") or {}
+    wind = endowment.get("wind") or {}
+    load = endowment.get("load") or {}
     return VPPParams(
         pv_kw_peak=float(endowment.get("solar_mw", 0.0)) * 1000.0,
+        wind_kw_rated=float(wind.get("power_mw", 0.0)) * 1000.0,
+        wind_mean_speed=float(wind.get("mean_speed_mps", 7.0)),
         battery_kwh=float(battery.get("energy_mwh", 0.0)) * 1000.0,
         battery_kw_max=float(battery.get("power_mw", 0.0)) * 1000.0,
         battery_eta_rt=float(battery.get("round_trip_efficiency", 0.9)),
@@ -156,8 +174,9 @@ def _endowment_params(endowment: dict[str, Any]) -> VPPParams:
         battery_degradation_cost_per_mwh_throughput=float(
             battery.get("cycle_cost_per_mwh", 0.0)
         ),
-        load_kw_base=0.0,
-        load_elasticity=0.0,
+        load_kw_base=float(load.get("base_mw", 0.0)) * 1000.0,
+        load_elasticity=float(load.get("flexibility", 0.0)),
+        load_profile=str(load.get("profile", "commercial")),
         starting_cash_usd=float(endowment.get("cash_usd", 10000.0)),
         forecast_noise_std=0.0,
     )
@@ -183,8 +202,7 @@ def execute_gateway_proveout(
     strategy_params: dict[str, float | int],
     start_date: date,
     end_date: date,
-    perfect_foresight_usd: float,
-    baseline_hold_usd: float,
+    battery_perfect_foresight_usd: float,
     data_artifact: DataArtifact,
     local_timezone,
 ) -> ProveOutExecution:
@@ -207,9 +225,14 @@ def execute_gateway_proveout(
 
     transaction_fee = Decimal(str(settings.external_market_transaction_fee))
     decision_ts = start
+    passive_portfolio_value = Decimal("0")
+    solar_generation_kwh = 0.0
+    wind_generation_kwh = 0.0
+    load_consumption_kwh = 0.0
+    interval_h = settings.delivery_interval_sec / 3600.0
     while decision_ts < end:
         price = Decimal(str(_price_for(prices, decision_ts)))
-        sim._external_market_quote = synthetic_quote(
+        quote = synthetic_quote(
             region=settings.market_region,
             node=settings.external_market_node,
             price=price,
@@ -219,7 +242,19 @@ def execute_gateway_proveout(
             now=decision_ts,
             transaction_fee=transaction_fee,
         )
-        sim.run_interval_once(decision_ts)
+        sim._external_market_quote = quote
+        # DER daily profiles are defined in local wall-clock time. Product timestamps
+        # are still normalized to UTC by the market layer.
+        sim.run_interval_once(decision_ts.astimezone(local_timezone))
+        solar_kwh = candidate.state.pv_kw * interval_h
+        wind_kwh = candidate.state.wind_kw * interval_h
+        load_kwh = candidate.state.load_kw * interval_h
+        net_kwh = solar_kwh + wind_kwh - load_kwh
+        passive_price = quote.export_price if net_kwh >= 0 else quote.import_price
+        passive_portfolio_value += Decimal(str(net_kwh)) * passive_price / Decimal("1000")
+        solar_generation_kwh += solar_kwh
+        wind_generation_kwh += wind_kwh
+        load_consumption_kwh += load_kwh
         decision_ts += timedelta(minutes=5)
 
     sim._audit_new_ledger_entries()
@@ -236,16 +271,22 @@ def execute_gateway_proveout(
         peak = max(peak, running)
         max_drawdown = max(max_drawdown, peak - running)
     day_count = (end_date - start_date).days + 1
-    normalizer_mw = float((endowment.get("battery") or {}).get("power_mw", 0.0)) or float(
-        endowment.get("solar_mw", 0.0)
+    normalizer_mw = float((endowment.get("battery") or {}).get("power_mw", 0.0)) or max(
+        float(endowment.get("solar_mw", 0.0)),
+        float((endowment.get("wind") or {}).get("power_mw", 0.0)),
+        float((endowment.get("load") or {}).get("base_mw", 0.0)),
     )
     per_kw_month = (
         float(pnl) * 30.0 / (normalizer_mw * 1000.0 * day_count)
         if normalizer_mw > 0
         else 0.0
     )
+    baseline_hold_usd = float(passive_portfolio_value)
+    perfect_foresight_usd = baseline_hold_usd + battery_perfect_foresight_usd
     spread_capture = (
-        100.0 * float(pnl) / perfect_foresight_usd if perfect_foresight_usd > 0 else None
+        100.0 * (float(pnl) - baseline_hold_usd) / battery_perfect_foresight_usd
+        if battery_perfect_foresight_usd > 0
+        else None
     )
     daily = _daily_rows(entries, start_date, end_date, tz=local_timezone)
     # Per-day perfect foresight is optional evidence. The overall bound remains authoritative.
@@ -262,6 +303,11 @@ def execute_gateway_proveout(
             "delivery_interval_sec": 300,
             "price_resolution": "1h repeated over 5m products",
             "transaction_fee_usd_per_mwh": float(transaction_fee),
+            "resource_model": {
+                "solar": "deterministic CAISO-local diurnal profile",
+                "wind": "seeded turbine curve around the supplied mean wind speed",
+                "load": "seeded CAISO-local named daily profile",
+            },
         },
         data=[data_artifact],
     )
@@ -295,6 +341,9 @@ def execute_gateway_proveout(
         "ending_soc_kwh": round(candidate.battery.soc_kwh, 6),
         "energy_bought_kwh": round(candidate.state.cumulative_energy_bought_kwh, 6),
         "energy_sold_kwh": round(candidate.state.cumulative_energy_sold_kwh, 6),
+        "solar_generation_kwh": round(solar_generation_kwh, 6),
+        "wind_generation_kwh": round(wind_generation_kwh, 6),
+        "load_consumption_kwh": round(load_consumption_kwh, 6),
         "days": day_count,
         "daily": daily,
         "ledger_breakdown": {key.value: round(float(value), 6) for key, value in breakdown.items()},

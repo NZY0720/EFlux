@@ -9,9 +9,18 @@ The evidence id excludes only the creation timestamp.
 
 The managed historical battery strategy submits five-minute product orders to
 `TradingGatewayV2`. The gateway performs credit and physical reservation checks; fills,
-delivery, imbalance settlement and degradation use the normal V2 path. Cached hourly CAISO
-LMPs are currently repeated over the twelve five-minute products in each source hour and
-are labeled that way in both report and manifest.
+delivery, imbalance settlement and degradation use the normal V2 path. Before a queued run
+starts, the worker fetches missing CAISO-local historical days, retries partial responses,
+requires every expected hourly row (including DST day lengths), and atomically publishes an
+end-exclusive parquet cache. The replay itself is network-free. Cached hourly CAISO LMPs are
+repeated over the twelve five-minute products in each source hour and are labeled that way in
+both report and manifest.
+
+An endowment can include battery power/energy/efficiency/degradation cost, solar capacity,
+wind capacity and assumed mean wind speed, a named base-load profile, and starting paper
+cash. Solar and load use deterministic CAISO-local profiles; wind uses a seeded turbine power
+curve around the declared mean speed. These are modeled comparison inputs, not site telemetry,
+and their assumptions and realized energy totals are recorded in the report and evidence.
 
 Owners can download `GET /prove-out/runs/{id}/evidence`. The JSON contains the manifest,
 complete audit envelope, reconstructed-state hash, order attribution and candidate ledger.

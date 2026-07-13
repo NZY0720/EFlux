@@ -4677,8 +4677,29 @@
             "title": "Solar Mw",
             "default": 0
           },
+          "wind": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/WindIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "load": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LoadIn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "cash_usd": {
             "type": "number",
+            "minimum": 0.0,
             "title": "Cash Usd",
             "default": 10000
           }
@@ -5507,6 +5528,37 @@
           "last_seen_at"
         ],
         "title": "LeaderboardRow"
+      },
+      "LoadIn": {
+        "properties": {
+          "base_mw": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Base Mw",
+            "default": 0
+          },
+          "profile": {
+            "type": "string",
+            "enum": [
+              "residential",
+              "commercial",
+              "industrial",
+              "flat",
+              "ev"
+            ],
+            "title": "Profile",
+            "default": "commercial"
+          },
+          "flexibility": {
+            "type": "number",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Flexibility",
+            "default": 0
+          }
+        },
+        "type": "object",
+        "title": "LoadIn"
       },
       "MagicLinkRequest": {
         "properties": {
@@ -7254,6 +7306,21 @@
             ],
             "title": "Energy Sold Kwh"
           },
+          "solar_generation_kwh": {
+            "type": "number",
+            "title": "Solar Generation Kwh",
+            "default": 0
+          },
+          "wind_generation_kwh": {
+            "type": "number",
+            "title": "Wind Generation Kwh",
+            "default": 0
+          },
+          "load_consumption_kwh": {
+            "type": "number",
+            "title": "Load Consumption Kwh",
+            "default": 0
+          },
           "ledger_breakdown": {
             "additionalProperties": {
               "type": "number"
@@ -8237,6 +8304,25 @@
           "type"
         ],
         "title": "ValidationError"
+      },
+      "WindIn": {
+        "properties": {
+          "power_mw": {
+            "type": "number",
+            "minimum": 0.0,
+            "title": "Power Mw",
+            "default": 0
+          },
+          "mean_speed_mps": {
+            "type": "number",
+            "maximum": 60.0,
+            "exclusiveMinimum": 0.0,
+            "title": "Mean Speed Mps",
+            "default": 7
+          }
+        },
+        "type": "object",
+        "title": "WindIn"
       },
       "WindowIn": {
         "properties": {

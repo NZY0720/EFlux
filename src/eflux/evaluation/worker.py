@@ -31,7 +31,7 @@ from eflux.db.models import (
 )
 from eflux.db.session import get_sessionmaker
 from eflux.evaluation.manifest import content_sha256
-from eflux.evaluation.proveout import run_proveout_execution
+from eflux.evaluation.proveout import ensure_cached_price_window, run_proveout_execution
 from eflux.evaluation.scoring import SeedScore, score_seed
 from eflux.evaluation.seeds import DEFAULT_ROUND, derive_seed, seed_labels
 
@@ -454,6 +454,7 @@ async def execute_proveout_run(
         window_end = run.window_end
         strategy = dict(run.strategy)
 
+    await asyncio.to_thread(ensure_cached_price_window, window_start, window_end)
     execution = await asyncio.to_thread(
         run_proveout_execution,
         endowment,

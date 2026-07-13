@@ -54,7 +54,8 @@ Routes kept: `/market /participants /leaderboard /arena /benchmarks /forecasts /
 
 The sandbox market, benchmark fleet, forecasting service, imbalance settlement, and endowment primitives already exist; this tier is packaging, not new physics.
 
-- **Endowment wizard:** battery (MW / MWh / round-trip η / optional cycle cost), solar (MW + profile), load profile, starting cash. Maps onto existing VPP endowment config.
+- **Endowment wizard:** battery (MW / MWh / round-trip η / optional cycle cost), solar capacity, wind capacity + assumed wind speed, base load + named profile, and starting cash. The default is battery-only; absent resources are explicitly zero. Maps onto existing VPP endowment config.
+- **Historical data preparation:** a queued Prove-out automatically fills missing CAISO cache days in the background, validates every expected hourly row, and only then enters a network-free replay. Partial OASIS responses never become accepted evidence.
 - **Historical prove-out:** replay the user's endowment over selected historical CAISO windows with **point-in-time discipline** — the strategy sees only data (incl. forecasts) that existed at each decision time; forecasts are replayed from stored vintages (`forecast_outcomes`, §8), never regenerated with hindsight.
 - **Live paper trading:** same endowment in the live sandbox market against the benchmark + community fleet.
 - **Report:** PnL, **$/kW-month**, **% of perfect-foresight top-bottom spread captured**, max drawdown, imbalance penalties, risk rejections, and per-stream breakdown — vs three anchors: perfect foresight, benchmark fleet (AA/ZIP/GD/PPO/managed-LLM), and do-nothing.

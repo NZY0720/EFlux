@@ -9,6 +9,9 @@ future strategies may consume only stored forecast vintages whose ``origin_ts <=
 from __future__ import annotations
 
 import math
+import os
+import tempfile
+import time as time_module
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -17,6 +20,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from eflux.config import PROJECT_ROOT, get_settings
+from eflux.data.electricity_market import CaisoOasisClient
 from eflux.evaluation.manifest import DataArtifact, content_sha256
 from eflux.evaluation.proveout_runner import ProveOutExecution, execute_gateway_proveout
 
@@ -63,6 +67,162 @@ def _cached_series(*, node: str | None = None, cache_dir: Path | None = None):
     else:
         series.index = series.index.tz_convert(UTC)
     return series.sort_index()
+
+
+def latest_historical_date(now: datetime | None = None) -> date:
+    """Newest complete CAISO-local day eligible for a historical replay."""
+
+    current = now or datetime.now(CAISO_TZ)
+    return current.astimezone(CAISO_TZ).date() - timedelta(days=1)
+
+
+def _window_is_complete(series, start_date: date, end_date: date) -> bool:
+    import pandas as pd
+
+    start, end = _utc_bounds(start_date, end_date)
+    expected = pd.date_range(start, end, freq="h", inclusive="left")
+    selected = series.reindex(expected)
+    return len(selected) == len(expected) and bool(selected.notna().all())
+
+
+def _missing_local_days(series, start_date: date, end_date: date) -> list[date]:
+    missing: list[date] = []
+    day = start_date
+    while day <= end_date:
+        if not _day_is_complete(series, day):
+            missing.append(day)
+        day += timedelta(days=1)
+    return missing
+
+
+def _contiguous_day_ranges(days: list[date]) -> list[tuple[date, date]]:
+    ranges: list[tuple[date, date]] = []
+    for day in days:
+        if not ranges or day != ranges[-1][1] + timedelta(days=1):
+            ranges.append((day, day))
+        else:
+            ranges[-1] = (ranges[-1][0], day)
+    return ranges
+
+
+def _write_price_cache(
+    series,
+    *,
+    node: str,
+    cache_dir: Path,
+    start_date: date,
+    end_date: date,
+) -> Path:
+    """Atomically publish one end-exclusive parquet window for cache readers."""
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    safe = node.replace("/", "_")
+    end_exclusive = end_date + timedelta(days=1)
+    path = cache_dir / f"lmp_{safe}_{start_date.isoformat()}_{end_exclusive.isoformat()}.parquet"
+    start, end = _utc_bounds(start_date, end_date)
+    selected = series.loc[(series.index >= start) & (series.index < end)].sort_index()
+    with tempfile.NamedTemporaryFile(
+        dir=cache_dir,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        delete=False,
+    ) as handle:
+        temporary = Path(handle.name)
+    try:
+        selected.rename("lmp").to_frame().to_parquet(temporary)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return path
+
+
+def ensure_cached_price_window(
+    start_date: date,
+    end_date: date,
+    *,
+    node: str | None = None,
+    cache_dir: Path | None = None,
+    client: CaisoOasisClient | None = None,
+    attempts: int = 3,
+    retry_delay_sec: float = 1.0,
+) -> bool:
+    """Fetch missing CAISO days, validate hourly completeness, and cache atomically.
+
+    Returns ``True`` when new rows were downloaded. A Prove-out execution calls this in
+    its background preparation phase; the actual replay remains network-free.
+    """
+
+    if end_date < start_date:
+        raise ValueError("end_date must be on or after start_date")
+    latest = latest_historical_date()
+    if end_date > latest:
+        raise ProveOutDataError(
+            f"historical CAISO data is available only through {latest.isoformat()}"
+        )
+    if attempts < 1:
+        raise ValueError("attempts must be at least 1")
+
+    import pandas as pd
+
+    node = node or get_settings().external_market_node
+    cache_dir = cache_dir or PROVEOUT_CACHE_DIR
+    working = _cached_series(node=node, cache_dir=cache_dir)
+    if _window_is_complete(working, start_date, end_date):
+        return False
+
+    oasis = client or CaisoOasisClient()
+    downloaded = False
+    for attempt in range(attempts):
+        missing_days = _missing_local_days(working, start_date, end_date)
+        if not missing_days:
+            break
+        fetched = []
+        for range_index, (range_start, range_end) in enumerate(
+            _contiguous_day_ranges(missing_days)
+        ):
+            if range_index and retry_delay_sec > 0:
+                time_module.sleep(retry_delay_sec)
+            start, end = _utc_bounds(range_start, range_end)
+            fetched.extend(
+                oasis.fetch_lmp_history_sync(
+                    node=node,
+                    start=start,
+                    end=end,
+                )
+            )
+        if fetched:
+            incoming = pd.Series(
+                {
+                    row.interval_start.astimezone(UTC).replace(
+                        minute=0, second=0, microsecond=0
+                    ): float(row.price)
+                    for row in fetched
+                },
+                dtype=float,
+                name="lmp",
+            )
+            working = pd.concat([working, incoming]).sort_index()
+            working = working[~working.index.duplicated(keep="last")]
+            downloaded = True
+            _write_price_cache(
+                working,
+                node=node,
+                cache_dir=cache_dir,
+                start_date=start_date,
+                end_date=end_date,
+            )
+        if _window_is_complete(working, start_date, end_date):
+            return downloaded
+        if attempt + 1 < attempts and retry_delay_sec > 0:
+            time_module.sleep(retry_delay_sec * (attempt + 1))
+
+    missing = ", ".join(
+        day.isoformat() for day in _missing_local_days(working, start_date, end_date)
+    )
+    raise ProveOutDataError(
+        "CAISO data preparation remained incomplete after retries; "
+        f"missing local dates: {missing or 'unknown'}"
+    )
 
 
 def _utc_bounds(start_date: date, end_date: date) -> tuple[datetime, datetime]:
@@ -199,11 +359,12 @@ def _battery_pf_by_day(
 def perfect_foresight_usd(
     prices: list[PriceHour], endowment: dict[str, Any]
 ) -> float:
+    """Battery-only analytical arbitrage bound used above the passive portfolio baseline."""
+
     battery = endowment.get("battery")
     if battery:
         return sum(_battery_pf_by_day(prices, battery).values())
-    solar_mw = float(endowment.get("solar_mw", 0.0))
-    return sum(_solar_generation_mwh(point.timestamp, solar_mw) * point.price for point in prices)
+    return 0.0
 
 
 def _percentile(values: list[float], fraction: float) -> float:
@@ -412,17 +573,12 @@ def run_proveout_execution(
     ]
     data_artifact = DataArtifact(
         name="CAISO historical LMP",
-        source=f"local-cache:{get_settings().external_market_node}",
+        source=f"CAISO OASIS DAM via local-cache:{get_settings().external_market_node}",
         resolution="1h repeated over 5m delivery products",
         sha256=content_sha256(price_payload),
         rows=len(prices),
         start=prices[0].timestamp,
         end=prices[-1].timestamp,
-    )
-    baseline_hold = sum(
-        _solar_generation_mwh(point.timestamp, float(endowment.get("solar_mw", 0.0)))
-        * point.price
-        for point in prices
     )
     return execute_gateway_proveout(
         prices=prices,
@@ -431,8 +587,7 @@ def run_proveout_execution(
         strategy_params=_strategy_params(strategy.get("params")),
         start_date=start_date,
         end_date=end_date,
-        perfect_foresight_usd=perfect_foresight_usd(prices, endowment),
-        baseline_hold_usd=baseline_hold,
+        battery_perfect_foresight_usd=perfect_foresight_usd(prices, endowment),
         data_artifact=data_artifact,
         local_timezone=CAISO_TZ,
     )

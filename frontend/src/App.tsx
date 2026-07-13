@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 
 import ConnectionBanner from "./components/ConnectionBanner";
+import AgentDock from "./components/AgentDock";
 import NavBar from "./components/NavBar";
 import { AuthProvider, useAuth } from "./state/auth";
 import { MarketModeProvider } from "./state/marketMode";
@@ -83,6 +84,7 @@ function Shell() {
           </Routes>
         </Suspense>
       </main>
+      {!isWelcome && <AgentDock />}
     </div>
   );
 }

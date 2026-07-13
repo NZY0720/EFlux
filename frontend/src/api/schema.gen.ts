@@ -34,7 +34,7 @@ export interface components {
     DataSourceEntry: { component : string; status : string; source : string; detail : string; };
     DataSourceStatus: { checked_at : string; sim_ts : string; summary : string; sources : Array<components["schemas"]["DataSourceEntry"]>; };
     DeliveryProductOut: { product_id : string; market : string; delivery_start : string; delivery_end : string; gate_closure : string; opens_at : string; is_open : boolean; is_closed : boolean; best_bid : string | null; best_ask : string | null; last_price : string | null; };
-    EndowmentIn: { battery?: components["schemas"]["BatteryIn"] | null; solar_mw?: number; cash_usd?: number; };
+    EndowmentIn: { battery?: components["schemas"]["BatteryIn"] | null; solar_mw?: number; wind?: components["schemas"]["WindIn"] | null; load?: components["schemas"]["LoadIn"] | null; cash_usd?: number; };
     EquityPoint: { tick_no : number; sim_ts : string; wall_ts : string; pnl_usd : string; soc_frac : number; };
     EvaluationRunOut: { id : number; kind : string; status : string; rules_version : string; score : number | null; created_at : string; started_at : string | null; finished_at : string | null; seed_runs : Array<components["schemas"]["EvaluationSeedRunOut"]>; };
     EvaluationSeedRunOut: { seed_label : string; attempt : number; status : string; score : number | null; };
@@ -50,6 +50,7 @@ export interface components {
     LLMHealthOut: { ok_count : number; fail_count : number; last_ok_ts : string | null; state : string; };
     LeaderboardEntryOut: { rank : number; submission_id : number; user_email : string; algorithm : string; score : number; seed_ok_count : number; seed_failed_count : number; };
     LeaderboardRow: { identity : string; name : string; managed_def_id : number | null; category : string; strategy : string; is_llm : boolean; llm_model : string | null; pnl_usd : string; score : number; spread_capture : number | null; realized_arb_profit : number | null; oracle_arb_profit : number | null; trade_count : number; energy_bought_kwh : number; energy_sold_kwh : number; soc_frac : number; sessions_count : number; hours : number; last_seen_at : string; };
+    LoadIn: { base_mw?: number; profile?: "residential" | "commercial" | "industrial" | "flat" | "ev"; flexibility?: number; };
     MagicLinkRequest: { email : string; };
     MagicLinkResponse: { sent : boolean; dev_token?: string | null; };
     ManagedSubmissionPayload: { algorithm : string; llm_enabled : boolean; preset?: string | null; endowment?: { [key: string]: unknown; } | null; risk?: unknown | null; };
@@ -76,7 +77,7 @@ export interface components {
     ProveOutDetailOut: { run_id : number; label : string | null; status : string; endowment : { [key: string]: unknown; }; window_start : string; window_end : string; strategy : { [key: string]: unknown; }; report : components["schemas"]["ProveOutReportOut"] | null; manifest : { [key: string]: unknown; } | null; evidence_sha256 : string | null; error : string | null; created_at : string; finished_at : string | null; };
     ProveOutListOut: { run_id : number; label : string | null; status : string; window_start : string; window_end : string; created_at : string; pnl_usd?: number | null; spread_capture_pct?: number | null; };
     ProveOutQueuedOut: { run_id : number; status : string; };
-    ProveOutReportOut: { pnl_usd : number; per_kw_month : number; spread_capture_pct : number | null; perfect_foresight_usd : number; baseline_hold_usd : number; max_drawdown_usd : number; trades : number; risk_rejections : number; imbalance_penalty_usd : number; degradation_cost_usd?: number; ending_soc_kwh?: number | null; energy_bought_kwh?: number | null; energy_sold_kwh?: number | null; ledger_breakdown?: { [key: string]: number; }; evidence_id?: string | null; engine?: string | null; price_resolution?: string | null; audit_event_count?: number | null; replay_state_sha256?: string | null; replay_verified?: boolean | null; days : number; daily : Array<components["schemas"]["DailyReportOut"]>; };
+    ProveOutReportOut: { pnl_usd : number; per_kw_month : number; spread_capture_pct : number | null; perfect_foresight_usd : number; baseline_hold_usd : number; max_drawdown_usd : number; trades : number; risk_rejections : number; imbalance_penalty_usd : number; degradation_cost_usd?: number; ending_soc_kwh?: number | null; energy_bought_kwh?: number | null; energy_sold_kwh?: number | null; solar_generation_kwh?: number; wind_generation_kwh?: number; load_consumption_kwh?: number; ledger_breakdown?: { [key: string]: number; }; evidence_id?: string | null; engine?: string | null; price_resolution?: string | null; audit_event_count?: number | null; replay_state_sha256?: string | null; replay_verified?: boolean | null; days : number; daily : Array<components["schemas"]["DailyReportOut"]>; };
     ReflectionEntryOut: { ts : string; ok : boolean; price_adjust?: number | null; qty_scale?: number | null; preferred_modes?: Array<string> | null; avoid_modes?: Array<string> | null; mode_pin?: string | null; risk_budget?: number | null; price_bias_bps?: number | null; soc_target?: number | null; execution_style?: string | null; rationale?: string; lesson?: string | null; meta_control?: { [key: string]: number; } | null; error : string | null; };
     SayIn: { text : string; };
     SessionOut: { id : number; market_mode : string; started_at : string; ended_at : string | null; price_ref : string; is_current : boolean; };
@@ -95,6 +96,7 @@ export interface components {
     VPPCreate: { name : string; params?: { [key: string]: unknown; }; };
     VPPOut: { id : number; name : string; params : { [key: string]: number | number | string | null; }; is_active : boolean; is_external : boolean; created_at : string; };
     ValidationError: { loc : Array<string | number>; msg : string; type : string; input?: unknown; ctx?: Record<string, unknown>; };
+    WindIn: { power_mw?: number; mean_speed_mps?: number; };
     WindowIn: { start_date : string; end_date : string; };
     eflux__api__routers__competitions__LeaderboardOut: { competition_slug : string; entries : Array<components["schemas"]["LeaderboardEntryOut"]>; };
     eflux__api__routers__leaderboard__LeaderboardOut: { scope : "session" | "alltime"; session_id : number | null; market_mode : string; rows : Array<components["schemas"]["LeaderboardRow"]>; };

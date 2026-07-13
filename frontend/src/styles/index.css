@@ -144,6 +144,41 @@ body::after {
   background-size: 180px 180px;
 }
 
+/* Agent Pulse is deliberately quiet in its resting state. Only the decision-needed
+   ring animates, and reduced-motion users always get a static status treatment. */
+.agent-pulse-capsule,
+.agent-pulse-panel {
+  background: color-mix(in srgb, var(--bg-elevated) 86%, transparent);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
+  backdrop-filter: blur(24px) saturate(160%);
+  box-shadow: 0 24px 80px -30px rgba(0, 0, 0, .78), inset 0 1px 0 rgba(255, 255, 255, .1);
+}
+
+.agent-pulse-header {
+  background:
+    radial-gradient(420px 150px at 10% 0%, color-mix(in srgb, var(--accent) 16%, transparent), transparent 68%),
+    color-mix(in srgb, var(--bg-elevated) 82%, transparent);
+}
+
+.agent-pulse-orb {
+  color: var(--accent-contrast);
+  background:
+    radial-gradient(circle at 35% 28%, rgba(255, 255, 255, .32), transparent 22%),
+    linear-gradient(145deg, var(--accent), color-mix(in srgb, var(--violet) 72%, var(--accent)));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 34%, transparent), 0 9px 28px color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .agent-pulse-orb-attention {
+    animation: agent-pulse-attention 2.2s ease-in-out infinite;
+  }
+}
+
+@keyframes agent-pulse-attention {
+  0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 34%, transparent), 0 9px 28px color-mix(in srgb, var(--warning) 22%, transparent); }
+  50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--warning) 0%, transparent), 0 11px 34px color-mix(in srgb, var(--warning) 38%, transparent); }
+}
+
 button,
 input,
 select,

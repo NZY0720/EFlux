@@ -10,6 +10,15 @@ export interface ProveOutBattery {
 export interface ProveOutEndowment {
   battery?: ProveOutBattery;
   solar_mw: number;
+  wind?: {
+    power_mw: number;
+    mean_speed_mps: number;
+  };
+  load?: {
+    base_mw: number;
+    profile: "residential" | "commercial" | "industrial" | "flat" | "ev";
+    flexibility: number;
+  };
   cash_usd: number;
 }
 
@@ -68,6 +77,9 @@ export interface ProveOutReport {
   ending_soc_kwh: number | null;
   energy_bought_kwh: number | null;
   energy_sold_kwh: number | null;
+  solar_generation_kwh: number;
+  wind_generation_kwh: number;
+  load_consumption_kwh: number;
   ledger_breakdown: Record<string, number>;
   evidence_id: string | null;
   engine: string | null;

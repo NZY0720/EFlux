@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { AlertCircle, Bot, CheckCircle2, Layers3, ShoppingCart, Trash2, Zap } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 
@@ -21,7 +21,7 @@ export default function VppCockpit() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const reload = async () => {
+  const reload = useCallback(async () => {
     try {
       const [vpps, agents] = await Promise.all([listVPPs(), listManagedVPPs()]);
       const agent = agents.find((item) => item.id === vppId) ?? null;
@@ -29,8 +29,16 @@ export default function VppCockpit() {
       setExternal(agent ? null : (vpps.find((item) => item.id === vppId) ?? null));
       if (agent) setPerformance(await fetchManagedVPPPerformance(agent.id));
     } catch (err) { setError((err as Error).message); } finally { setLoading(false); }
-  };
-  useEffect(() => { if (Number.isInteger(vppId) && vppId > 0) reload(); else setLoading(false); }, [vppId]);
+  }, [vppId]);
+  useEffect(() => { if (Number.isInteger(vppId) && vppId > 0) void reload(); else setLoading(false); }, [vppId, reload]);
+  useEffect(() => {
+    const syncManagedVpp = (event: Event) => {
+      const updatedId = (event as CustomEvent<{ id?: number }>).detail?.id;
+      if (updatedId === vppId) void reload();
+    };
+    window.addEventListener("eflux:managed-vpp-updated", syncManagedVpp);
+    return () => window.removeEventListener("eflux:managed-vpp-updated", syncManagedVpp);
+  }, [vppId, reload]);
   useEffect(() => { listModels().then((result) => setModels(result.models)).catch(() => {}); }, []);
   useEffect(() => {
     if (!managed) return;

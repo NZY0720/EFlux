@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
-
 import pytest
 
 
@@ -21,7 +19,11 @@ def _request(start: str = "2026-01-01", end: str = "2026-01-02") -> dict:
                 "power_mw": 1,
                 "energy_mwh": 2,
                 "round_trip_efficiency": 0.9,
-            }
+            },
+            "solar_mw": 1.5,
+            "wind": {"power_mw": 2, "mean_speed_mps": 7.5},
+            "load": {"base_mw": 0.8, "profile": "commercial", "flexibility": 0.25},
+            "cash_usd": 100000,
         },
         "window": {"start_date": start, "end_date": end},
         "strategy": {"algorithm": "battery_arbitrageur"},
@@ -29,35 +31,21 @@ def _request(start: str = "2026-01-01", end: str = "2026-01-02") -> dict:
 
 
 @pytest.mark.asyncio
-async def test_window_validation_422_includes_available_range(client, monkeypatch):
-    from eflux.api.routers import proveout as router
-
-    monkeypatch.setattr(
-        router,
-        "available_price_ranges",
-        lambda: [(date(2026, 1, 1), date(2026, 1, 31))],
-    )
+async def test_uncached_window_is_queued_for_background_data_preparation(client):
     auth = await _login(client, "proveout-range@example.com")
 
     response = await client.post(
         "/prove-out/runs",
         headers=auth,
-        json=_request("2025-12-01", "2025-12-02"),
+        json=_request("2026-01-01", "2026-01-02"),
     )
 
-    assert response.status_code == 422, response.text
-    assert "2026-01-01..2026-01-31" in response.json()["detail"]
+    assert response.status_code == 202, response.text
+    assert response.json()["status"] == "queued"
 
 
 @pytest.mark.asyncio
-async def test_runs_are_owner_scoped_and_foreign_detail_is_403(client, monkeypatch):
-    from eflux.api.routers import proveout as router
-
-    monkeypatch.setattr(
-        router,
-        "available_price_ranges",
-        lambda: [(date(2026, 1, 1), date(2026, 1, 31))],
-    )
+async def test_runs_are_owner_scoped_and_foreign_detail_is_403(client):
     owner = await _login(client, "proveout-owner@example.com")
     created = await client.post("/prove-out/runs", headers=owner, json=_request())
     assert created.status_code == 202, created.text
@@ -79,3 +67,5 @@ async def test_runs_are_owner_scoped_and_foreign_detail_is_403(client, monkeypat
     assert detail.status_code == 200, detail.text
     assert detail.json()["run_id"] == run_id
     assert detail.json()["report"] is None
+    assert detail.json()["endowment"]["wind"]["power_mw"] == 2
+    assert detail.json()["endowment"]["load"]["profile"] == "commercial"
