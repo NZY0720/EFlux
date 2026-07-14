@@ -46,10 +46,10 @@ def test_persona_only_valid_for_llm_managed_agents():
         {"name": "vpp-1", "agent": "hybrid", "persona": persona}
     )
     assert spec.persona is not None and spec.persona.name == "arb"
-    legacy = AgentSpec.model_validate(
-        {"name": "vpp-2", "agent": "reflective", "persona": persona}
-    )
-    assert legacy.persona is not None and legacy.persona.name == "arb"
+    with pytest.raises(ValidationError, match="agent"):
+        AgentSpec.model_validate(
+            {"name": "vpp-2", "agent": "reflective", "persona": persona}
+        )
 
 
 def test_bad_params_type_rejected_at_spec_parse():
@@ -85,7 +85,10 @@ def test_roster_params_are_coerced_not_raw(monkeypatch, tmp_path):
     scenario = tmp_path / "scenario.yaml"
     scenario.write_text(
         """
-vpps:
+schema_version: "1"
+name: quoted-numbers
+market_mode: any
+participants:
   - name: quoted-numbers
     agent: truthful
     params: { battery_kwh: "12", pv_kw_peak: "3.5" }
@@ -94,7 +97,7 @@ vpps:
     )
     monkeypatch.setenv("EFLUX_SCENARIO_FILE", str(scenario))
     monkeypatch.setenv("EFLUX_PV_PHYSICAL", "false")
-    monkeypatch.setenv("EFLUX_REFLECTIVE_ENABLED", "false")
+    monkeypatch.setenv("EFLUX_LLM_ENABLED", "false")
     get_settings.cache_clear()
     try:
         sim = Simulator(bus=InMemoryBus())
@@ -116,7 +119,10 @@ def test_agent_params_reach_agent_constructor(monkeypatch, tmp_path):
     scenario = tmp_path / "scenario.yaml"
     scenario.write_text(
         """
-vpps:
+schema_version: "1"
+name: gas-custom
+market_mode: any
+participants:
   - name: gas-custom
     agent: gas
     agent_params: { min_qty: 0.02 }
@@ -126,7 +132,7 @@ vpps:
     )
     monkeypatch.setenv("EFLUX_SCENARIO_FILE", str(scenario))
     monkeypatch.setenv("EFLUX_PV_PHYSICAL", "false")
-    monkeypatch.setenv("EFLUX_REFLECTIVE_ENABLED", "false")
+    monkeypatch.setenv("EFLUX_LLM_ENABLED", "false")
     get_settings.cache_clear()
     try:
         sim = Simulator(bus=InMemoryBus())
@@ -147,7 +153,10 @@ def test_duplicate_names_rejected(monkeypatch, tmp_path):
     scenario = tmp_path / "scenario.yaml"
     scenario.write_text(
         """
-vpps:
+schema_version: "1"
+name: duplicate-names
+market_mode: any
+participants:
   - name: twin
     agent: truthful
   - name: twin

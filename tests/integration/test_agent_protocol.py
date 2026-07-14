@@ -1,6 +1,6 @@
-"""Agent Protocol v2 — products, physical purpose, batch state and governance.
+"""Agent Protocol v1 — products, physical purpose, batch state and governance.
 
-See docs/AGENT_SPEC.md §"Agent Protocol v2".
+See docs/AGENT_SPEC.md §"Agent Protocol v1".
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ async def test_batch_submit_open_cancel(client):
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["protocol_version"] == 2 and isinstance(body["tick_id"], int)
+    assert body["protocol_version"] == 1 and isinstance(body["tick_id"], int)
     results = {x["client_ref"]: x for x in body["results"]}
     assert results["a"]["status"] == "accepted" and results["a"]["order_id"] is not None
     assert results["b"]["status"] == "accepted" and results["b"]["order_id"] is not None
@@ -224,7 +224,7 @@ async def test_batch_ownership_and_validation(client):
     r = await client.post("/orders/batch", headers=auth, json={"orders": [], "cancels": []})
     assert r.status_code == 422
     # Unsupported protocol version → 400 (checked before anything else).
-    r = await client.post("/orders/batch", headers=auth, json={"protocol_version": 1, "orders": []})
+    r = await client.post("/orders/batch", headers=auth, json={"protocol_version": 0, "orders": []})
     assert r.status_code == 400
 
 

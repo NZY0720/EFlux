@@ -4,7 +4,7 @@ The demo uses the real ecosystem service, ORM models, safe release runtime, and
 evaluation worker against an isolated temporary SQLite database. It neither
 starts the API server nor writes to the project's development database.
 
-    PYTHONPATH=src .env/bin/python examples/agent_ecosystem_demo.py
+    PYTHONPATH=src .venv/bin/python examples/agent_ecosystem_demo.py
 """
 
 from __future__ import annotations
@@ -18,17 +18,14 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from eflux.db import Base
 from eflux.db.models import ReleaseEvaluation, User
 from eflux.ecosystem import service
-from eflux.ecosystem.worker import (
-    _repository_git_commit,
-    claim_next_ecosystem_job,
-    execute_ecosystem_job,
-)
+from eflux.ecosystem.runtime_identity import repository_git_commit
+from eflux.ecosystem.worker import claim_next_ecosystem_job, execute_ecosystem_job
 
 
 async def run_demo() -> dict[str, object]:
     """Create, publish, and evaluate one realprice scripted Release."""
 
-    git_commit = _repository_git_commit()
+    git_commit = repository_git_commit()
     if git_commit is None:
         raise RuntimeError("the demo needs EFLUX_GIT_COMMIT when .git metadata is unavailable")
     with TemporaryDirectory(prefix="eflux-agent-ecosystem-") as directory:
@@ -48,16 +45,16 @@ async def run_demo() -> dict[str, object]:
                     owner,
                     {
                         "name": "Battery Evidence Demo",
-                        "version": "1.0.0",
+                        "version": "1",
                         "description": "A small scripted Release used by the runnable demo.",
                         "market": "realprice",
                         "visibility": "public",
                         "recipe": {
                             "algorithm": "scripted",
                             "agent_params": {"price_ref": "50"},
-                            "protocol_version": "2",
-                            "observation_schema_version": "4",
-                            "action_schema_version": "2",
+                            "protocol_version": "1",
+                            "observation_schema_version": "1",
+                            "action_schema_version": "1",
                             "online_learning": False,
                             "fallback_strategy": "safe_hold",
                             "risk_limits": {
@@ -77,7 +74,7 @@ async def run_demo() -> dict[str, object]:
                         },
                         "environment": {
                             "runtime": "eflux-managed",
-                            "agent_protocol_version": 2,
+                            "agent_protocol_version": 1,
                             "dependencies_locked": True,
                             "git_commit": git_commit,
                         },

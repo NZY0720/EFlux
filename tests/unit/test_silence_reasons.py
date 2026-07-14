@@ -9,7 +9,7 @@ from decimal import Decimal
 
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.decision import SilenceReason
-from eflux.agents.reflective.strategist import (
+from eflux.agents.llm.strategist import (
     StrategyGuidance,
     apply_guidance,
     build_strategist_user_message,

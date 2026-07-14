@@ -32,7 +32,7 @@ async def test_builtin_agent_example_is_public_evaluated_and_forkable(client):
     response = await client.post(
         f"/agent-releases/{release['id']}/fork",
         headers=auth,
-        json={"name": "My Battery Shift", "version": "0.1.0", "visibility": "private"},
+        json={"name": "My Battery Shift", "version": "1", "visibility": "private"},
     )
     assert response.status_code == 201, response.text
     fork = response.json()

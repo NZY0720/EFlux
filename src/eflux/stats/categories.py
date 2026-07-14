@@ -13,11 +13,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 
 
 def is_llm_vpp(vpp: SimulatorVPP) -> bool:
-    # LLM-steered iff the strategist is layered on (llm_enabled). The algorithm=="hybrid" fallback
-    # covers any legacy VPP tagged before the basexLLM split.
-    return vpp.is_my_vpp and (
-        bool(getattr(vpp, "llm_enabled", False)) or getattr(vpp, "algorithm", None) == "hybrid"
-    )
+    return vpp.is_my_vpp and bool(getattr(vpp, "llm_enabled", False))
 
 
 def agent_category(vpp: SimulatorVPP) -> str:

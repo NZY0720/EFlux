@@ -1,4 +1,4 @@
-"""Delivery products and power/energy conversions for market V2.
+"""Delivery products and power/energy conversions for market V1.
 
 The market trades *terminal energy* (kWh at the VPP point of common coupling)
 for an explicit delivery interval.  Power (kW) is a rate; it only becomes an
@@ -119,7 +119,7 @@ def next_delivery_interval(
 ) -> DeliveryInterval:
     """Return the aligned upcoming delivery product visible at ``at``.
 
-    With the V2 default ``lead_intervals=1``, the currently-delivering interval
+    With the V1 default ``lead_intervals=1``, the currently-delivering interval
     is never traded.  Orders target the next full five-minute window and close
     exactly at its start.
     """

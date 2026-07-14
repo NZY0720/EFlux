@@ -7,7 +7,7 @@ import { promoteAgentDeploymentLive } from "../api/ecosystem";
 import type { DeliveryProduct, ManagedVPP, ManagedVPPPerformance, OrderPurpose, TimeInForce, VPP } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill } from "../components/DashboardCard";
 import PriceChart from "../components/PriceChart";
-import { algorithmChipLabel, isLlmManaged, LLMBadge, ManagedControls, ManagedPerformancePanel, NumberField } from "./vpps/LegacyVppParts";
+import { algorithmChipLabel, isLlmManaged, LLMBadge, ManagedControls, ManagedPerformancePanel, NumberField } from "./vpps/VppParts";
 import { strategyLabel } from "../lib/categories";
 import { useMarketMode } from "../state/marketMode";
 import { useMarket } from "../state/marketStream";

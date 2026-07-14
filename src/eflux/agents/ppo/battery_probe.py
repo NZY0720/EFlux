@@ -24,7 +24,7 @@ def probe_checkpoint(path: str, *, ticks: int = 288) -> dict:
     set_price_ref_scale(meta.get("price_ref"))
     policy = BCPolicy(
         load_bc(path),
-        obs_version=int(meta.get("obs_version") or 4),
+        obs_version=int(meta["obs_version"]),
         action_profile=action_profile,
     )
 
@@ -52,7 +52,7 @@ def probe_checkpoint(path: str, *, ticks: int = 288) -> dict:
             "market_mode": market_mode,
             "real_data": data,
             "episode_ticks": ticks,
-            "obs_version": int(meta.get("obs_version") or 4),
+            "obs_version": int(meta["obs_version"]),
             "action_profile": action_profile,
         }
     )

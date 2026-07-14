@@ -13,7 +13,7 @@ from eflux.simulator.scenarios import load_default_scenario, provision_managed_v
 
 def _load(monkeypatch) -> Simulator:
     monkeypatch.setenv("EFLUX_PV_PHYSICAL", "false")
-    monkeypatch.setenv("EFLUX_REFLECTIVE_ENABLED", "false")
+    monkeypatch.setenv("EFLUX_LLM_ENABLED", "false")
     get_settings.cache_clear()
     sim = Simulator(bus=InMemoryBus())
     load_default_scenario(sim)
@@ -82,7 +82,7 @@ def test_realprice_mirrors_point_to_llm_twins(monkeypatch):
     monkeypatch.setenv("EFLUX_SCENARIO_FILE", "scenarios/realprice.yaml")
     monkeypatch.setenv("EFLUX_MARKET_MODE", "realprice")
     monkeypatch.setenv("EFLUX_PV_PHYSICAL", "false")
-    monkeypatch.setenv("EFLUX_REFLECTIVE_ENABLED", "false")
+    monkeypatch.setenv("EFLUX_LLM_ENABLED", "false")
     get_settings.cache_clear()
     sim = Simulator(bus=InMemoryBus())
     load_default_scenario(sim)

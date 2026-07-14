@@ -11,11 +11,11 @@ from eflux.db.models import AgentRelease, ReleaseEvaluation, User
 from eflux.db.session import get_sessionmaker
 from eflux.ecosystem import service
 from eflux.ecosystem.evaluation import execute_release_evaluation
-from eflux.ecosystem.worker import _repository_git_commit
+from eflux.ecosystem.runtime_identity import repository_git_commit
 
 PLATFORM_EXAMPLE_EMAIL = "platform-examples@eflux.invalid"
 PLATFORM_EXAMPLE_NAME = "Battery Shift Starter"
-PLATFORM_EXAMPLE_VERSION = "1.0.0"
+PLATFORM_EXAMPLE_VERSION = "1"
 PLATFORM_EXAMPLE_BADGE = "Built-in Example"
 
 
@@ -33,9 +33,9 @@ def _release_definition(git_commit: str) -> dict:
         "recipe": {
             "algorithm": "scripted",
             "agent_params": {"price_ref": "50"},
-            "protocol_version": "2",
-            "observation_schema_version": "4",
-            "action_schema_version": "2",
+            "protocol_version": "1",
+            "observation_schema_version": "1",
+            "action_schema_version": "1",
             "online_learning": False,
             "fallback_strategy": "safe_hold",
             "risk_limits": {
@@ -56,7 +56,7 @@ def _release_definition(git_commit: str) -> dict:
         },
         "environment": {
             "runtime": "eflux-managed",
-            "agent_protocol_version": 2,
+            "agent_protocol_version": 1,
             "dependencies_locked": True,
             "git_commit": git_commit,
         },
@@ -74,7 +74,7 @@ async def seed_builtin_agent_example(
     presentation data.
     """
 
-    git_commit = _repository_git_commit()
+    git_commit = repository_git_commit()
     if git_commit is None:
         return None
 

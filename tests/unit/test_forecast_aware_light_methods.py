@@ -12,7 +12,7 @@ from eflux.agents.aa_agent import AAAgent
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.gd_agent import GDAgent
 from eflux.agents.hybrid import HybridPolicyAgent
-from eflux.agents.reflective.strategist import LLMStrategist, build_strategist_user_message
+from eflux.agents.llm.strategist import LLMStrategist, build_strategist_user_message
 from eflux.agents.strategy.policy import (
     BaselinePolicy,
     BatteryAwareStrategyPolicy,

@@ -97,9 +97,6 @@ brew install python@3.12 node pnpm uv
 ### 2. Bootstrap
 
 ```bash
-# this project's venv is .env/, not uv's default .venv/
-export UV_PROJECT_ENVIRONMENT=.env
-uv venv .env --python 3.12
 uv sync --extra dev
 cp config.env.example config.env   # defaults work for SQLite dev
 ```
@@ -109,7 +106,7 @@ cp config.env.example config.env   # defaults work for SQLite dev
 ```bash
 ./tasks.sh dev                     # FastAPI with --reload on :8000
 # or:
-.env/bin/python -m uvicorn eflux.api.main:app --reload
+PYTHONPATH=src .venv/bin/python -m uvicorn eflux.api.main:app --reload
 ```
 Swagger UI: http://localhost:8000/docs
 
@@ -173,8 +170,7 @@ HybridPolicyAgents** (`my-llm-vpp` and three persona rivals). Each hybrid agent
 uses a truthful valuation oracle, a fast strategy-primitive policy, a deterministic
 order compiler, a risk-gated Truthful fallback, and a slow LLMStrategist that
 recommends/discourages primitives plus `risk_budget` and `soc_target`.
-Agents: `truthful | gas | strategy | hybrid | zip | gd | aa` per YAML entry
-(`reflective` is still accepted as a legacy alias). They trade against
+Agents: `truthful | gas | strategy | hybrid | zip | gd | aa` per YAML entry. They trade against
 each other continuously — merit order is renewables (~floor) → battery band
 (~52.7) → gas, with demand bids rising toward 75 under deficit
 (`demand_beta`) and resting orders expiring after `EFLUX_ORDER_TTL_SEC`
@@ -203,12 +199,13 @@ live / degraded / offline health). `GET /vpps/managed/{id}/performance` returns
 the same data as JSON.
 
 ### Important notes
-- The venv is at `.env/`, not uv's default `.venv/`; always `export UV_PROJECT_ENVIRONMENT=.env` first (the shell scripts already do this).
-- Env vars file is `config.env` (not `.env`) to avoid clashing with the venv dir.
+- The Python environment uses uv's standard `.venv/`; `tasks.sh` also sets
+  `PYTHONPATH=src` so macOS file flags cannot hide the editable-install `.pth` file.
+- Environment variables live in `config.env`.
 - `key.txt` holds the OpenAI-compatible LLM API key (gitignored). The default
   model template is `deepseek-v4-flash` via the configured base URL. With
-  `EFLUX_REFLECTIVE_ENABLED=true` + base URL + model configured, the live LLM
-  strategist refreshes every `EFLUX_REFLECTIVE_INTERVAL_TICKS` ticks;
+  `EFLUX_LLM_ENABLED=true` + base URL + model configured, the live LLM
+  strategist refreshes every `EFLUX_LLM_GUIDANCE_INTERVAL_TICKS` ticks;
   `EFLUX_LLM_TIMEOUT_SEC` (default 120) bounds each call.
 - Speed lock: external (user-submitted) orders only allowed at `market_speed=1.0`. Fast modes are for training/replay.
 - Market state is in-memory by design — restart wipes orders/trades/PnL.
@@ -247,7 +244,7 @@ in the container.
 
 ```
 conf_1/
-  .env/                # Python venv (.env/, not uv's default .venv/)
+  .venv/               # uv-managed Python environment
   config.env           # local env vars (gitignored)
   key.txt              # LLM API key (gitignored)
   pyproject.toml
@@ -270,7 +267,7 @@ conf_1/
     db/                # SQLAlchemy models, session
     market/            # LOB matching engine, rolling clock, events
     vpp/               # VPP abstraction + DER models
-    agents/            # ZI / Truthful / PPO / Hybrid / legacy Reflective
+    agents/            # Truthful / PPO / Hybrid / classical baselines / LLM strategy
     bridge/            # Redis Stream <-> WebSocket
     simulator/         # in-process runner
     config.py

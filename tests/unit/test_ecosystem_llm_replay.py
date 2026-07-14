@@ -43,7 +43,7 @@ def _release() -> dict:
     return {
         "id": 1,
         "name": "llm-release",
-        "version": "1.0.0",
+        "version": "1",
         "market": "realprice",
         "recipe": {
             "algorithm": "scripted",

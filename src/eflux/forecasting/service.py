@@ -25,7 +25,7 @@ from eflux.forecasting.schema import (
     TargetForecast,
 )
 
-MODEL_VERSION = "online-rls-v2"
+MODEL_VERSION = "online-rls-v1"
 TARGETS = ("price_real", "price_p2p", "ghi", "temp_air", "wind_speed")
 WEATHER_TARGETS = ("ghi", "temp_air", "wind_speed")
 HISTORY_MAXLEN = 1500
@@ -56,7 +56,7 @@ def _price_model(lookup: Callable[[datetime], float | AnchorForecast] | None) ->
 def _upgrade_to_anchored(
     state: dict[str, Any], lookup: Callable[[datetime], float | AnchorForecast]
 ) -> WeatherForecaster:
-    """Rebuild a legacy un-anchored price state as an anchored model.
+    """Rebuild an unanchored V1 price state as an anchored model.
 
     The persisted RLS weights belong to the un-anchored architecture, so the
     observations are replayed instead; the residual tracker starts fresh and

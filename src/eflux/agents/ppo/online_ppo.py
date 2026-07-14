@@ -22,17 +22,14 @@ import numpy as np
 import torch
 
 from eflux.agents.base import AgentContext
+from eflux.agents.ppo.checkpoints import ONLINE_CHECKPOINT_FORMAT
 from eflux.agents.ppo.online_net import ActorCriticNet
 from eflux.agents.ppo.primitive_encoding import (
-    ENCODING_V2,
+    ENCODING_V1,
     action_profile_for_action_dim,
     decode_action,
     encode_obs,
     encoding_version_for_action_dim,
-    infer_action_dim,
-    infer_action_profile,
-    infer_encoding_version,
-    infer_obs_dim,
     obs_version_for_obs_dim,
     price_ref_scale,
     primitive_modes_for,
@@ -393,7 +390,20 @@ class OnlinePPOPolicy:
         return self.learner.net.state_dict()
 
     def save(self, path: str) -> None:
-        torch.save(self.learner.net.state_dict(), path)
+        net = self.learner.net
+        torch.save(
+            {
+                "format": ONLINE_CHECKPOINT_FORMAT,
+                "state_dict": net.state_dict(),
+                "price_ref": price_ref_scale(),
+                "market_mode": None,
+                "action_profile": self.action_profile,
+                "encoding_version": self.encoding_version,
+                "obs_dim": int(net.trunk[0].in_features),
+                "obs_version": self.obs_version,
+            },
+            path,
+        )
 
     def reload_weights(self, checkpoint_path: str) -> None:
         """Hot-swap the live net's weights from a freshly-trained checkpoint (BC or online),
@@ -403,12 +413,11 @@ class OnlinePPOPolicy:
         from eflux.agents.ppo.online_net import load_warm_start
 
         try:
-            raw = torch.load(checkpoint_path, map_location="cpu")
-            state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
-            incoming_version = infer_encoding_version(state)
-            incoming_dim = infer_action_dim(state)
-            incoming_profile = infer_action_profile(raw if isinstance(raw, dict) else state)
-            incoming_obs_dim = infer_obs_dim(state)
+            net = load_warm_start(checkpoint_path)
+            incoming_version = net.encoding_version
+            incoming_dim = net.action_dim
+            incoming_profile = net.action_profile
+            incoming_obs_dim = net.trunk[0].in_features
         except Exception:
             log.warning(
                 "online PPO hot-reload skipped: cannot inspect %s", checkpoint_path, exc_info=True
@@ -435,7 +444,6 @@ class OnlinePPOPolicy:
                 live_obs_dim,
             )
             return
-        net = load_warm_start(checkpoint_path)
         self.learner.net.load_state_dict(net.state_dict())
         self.obs_version = net.obs_version
         self.action_profile = net.action_profile
@@ -458,8 +466,8 @@ def build_online_policy(
             net = load_warm_start(checkpoint_path)
         except Exception:
             log.exception("online PPO warm-start failed for %s — fresh net", checkpoint_path)
-            net = ActorCriticNet(action_dim=encoding_action_dim(ENCODING_V2))
+            net = ActorCriticNet(action_dim=encoding_action_dim(ENCODING_V1))
     else:
-        net = ActorCriticNet(action_dim=encoding_action_dim(ENCODING_V2))
+        net = ActorCriticNet(action_dim=encoding_action_dim(ENCODING_V1))
     learner = OnlineLearner(net=net, seed=seed)
     return OnlinePPOPolicy(learner=learner, learning=learning, auto_update=auto_update)

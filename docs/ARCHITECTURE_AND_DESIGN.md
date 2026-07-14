@@ -1,7 +1,7 @@
-# EFlux V2 Architecture and Design
+# EFlux V1 Architecture and Design
 
-This document describes the current unreleased architecture. V1 paths and
-checkpoint compatibility are intentionally out of scope.
+This document describes the current V1 architecture. Compatibility with
+pre-reset paths and checkpoints is intentionally out of scope.
 
 ## System shape
 
@@ -12,7 +12,7 @@ physical state + forecasts + product books + open commitments
                           |
        TruthfulValuationOracle (economic/physical signal)
                           |
-     scripted / PPO V4 / LLM-guided strategy policy
+     scripted / PPO V1 / LLM-guided strategy policy
                           |
                     StrategyAction
                           |
@@ -21,7 +21,7 @@ physical state + forecasts + product books + open commitments
                     AgentDecision
             (orders / cancels / replaces)
                           |
-                 TradingGatewayV2
+                 TradingGatewayV1
        validation + reservations + USD ledger
                           |
              ProductMatchingEngine (CDA)
@@ -65,7 +65,7 @@ charge/discharge and wait behavior. The compiler deterministically lowers that
 action into `OrderRequest`, `CancelRequest` and `ReplaceRequest` entries within
 one `AgentDecision`.
 
-PPO V4 observes 33 channels, including robust signed-price features, forecasts,
+PPO V1 observes 33 channels, including robust signed-price features, forecasts,
 gate timing, horizons, cash, open commitments, dispatchable state and residual
 contract exposure. Separate action profiles/checkpoints are trained for P2P and
 realprice modes. Behavior cloning mixes the primitive environment with live
@@ -149,7 +149,7 @@ replay results are deterministic.
 
 ## External boundary
 
-Agent Protocol V2 is the only supported external contract. Each order includes
+Agent Protocol V1 is the only supported external contract. Each order includes
 `product_id`, `qty_kwh`, physical `purpose`, TIF and optional TTL/client reference.
 Batch requests add idempotency, deadline and cancels-first semantics. See
 [AGENT_SPEC.md](AGENT_SPEC.md) and

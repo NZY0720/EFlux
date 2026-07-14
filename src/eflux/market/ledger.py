@@ -1,4 +1,4 @@
-"""Append-only real-USD economic ledger for market V2.
+"""Append-only real-USD economic ledger for market V1.
 
 Prices are quoted in USD/MWh and quantities in kWh.  Every conversion to cash
 therefore divides by 1000 at the point an entry is created.  The ledger uses a

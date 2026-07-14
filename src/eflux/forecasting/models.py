@@ -13,7 +13,7 @@ import numpy as np
 
 from eflux.forecasting.schema import HORIZON_TIMEDELTAS, HORIZONS, ForecastPoint
 
-# v2 feature set: [bias, 4 hour-of-day harmonics, 2 day-of-week harmonics,
+# v1 feature set: [bias, 4 hour-of-day harmonics, 2 day-of-week harmonics,
 # last, daily/horizon lag, trend, 15-min ramp]. Persisted states with the old
 # 8-dim linear models are upgraded on load by replaying their observations.
 FEATURE_DIM = 11
@@ -376,9 +376,7 @@ class HorizonModel:
         )
 
     def _replay_observations(self, observations: list[tuple[datetime, float]]) -> None:
-        """Refit the linear models by replaying observations through the base
-        observe path — used when a persisted state predates the current feature
-        set (its RLS weights are dimensioned for old features and cannot load)."""
+        """Refit linear models from observations when changing the V1 anchor strategy."""
         for ts, value in observations:
             HorizonModel.observe(self, ts, value)
 
@@ -398,14 +396,13 @@ class HorizonModel:
             max_observations=int(state["max_observations"]),
         )
         observations = [(_parse_ts(ts), float(value)) for ts, value in state["observations"]]
-        if cls._linear_state_matches(state):
-            model.linear = {
-                horizon: OnlineLinearForecaster.from_state(model_state)
-                for horizon, model_state in state["linear"].items()
-            }
-            model.observations = observations
-        else:
-            model._replay_observations(observations)
+        if not cls._linear_state_matches(state):
+            raise ValueError("forecast feature schema does not match V1")
+        model.linear = {
+            horizon: OnlineLinearForecaster.from_state(model_state)
+            for horizon, model_state in state["linear"].items()
+        }
+        model.observations = observations
         model.seasonal = SeasonalPersistence.from_state(state["seasonal"])
         return model
 

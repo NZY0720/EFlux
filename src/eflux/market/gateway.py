@@ -1,4 +1,4 @@
-"""V2 trading gateway: decisions -> risk -> reservations -> venue -> settlement."""
+"""V1 trading gateway: decisions -> risk -> reservations -> venue -> settlement."""
 
 from __future__ import annotations
 
@@ -62,7 +62,7 @@ class DecisionExecution:
 
 
 @dataclass(slots=True)
-class ParticipantRuntimeV2:
+class ParticipantRuntimeV1:
     participant_id: int
     params: VPPParams
     battery: Battery
@@ -95,7 +95,7 @@ class ParticipantRuntimeV2:
         return self.positions.setdefault(interval.interval_id, DeliveryPosition(interval=interval))
 
 
-class TradingGatewayV2:
+class TradingGatewayV1:
     def __init__(
         self,
         *,
@@ -106,16 +106,16 @@ class TradingGatewayV2:
         self.engine = engine or ProductMatchingEngine()
         self.ledger = ledger or EconomicLedger()
         self.limits = limits or GatewayRiskLimits()
-        self.participants: dict[int, ParticipantRuntimeV2] = {}
+        self.participants: dict[int, ParticipantRuntimeV1] = {}
         self._requests: dict[int, OrderRequest] = {}
         self._owners: dict[int, int] = {}
 
     def register_participant(
         self, *, participant_id: int, params: VPPParams, battery: Battery | None = None
-    ) -> ParticipantRuntimeV2:
+    ) -> ParticipantRuntimeV1:
         if participant_id in self.participants:
             raise ValueError(f"participant {participant_id} is already registered")
-        runtime = ParticipantRuntimeV2(
+        runtime = ParticipantRuntimeV1(
             participant_id=participant_id,
             params=params,
             battery=battery
@@ -131,7 +131,7 @@ class TradingGatewayV2:
 
     def register_system_participant(
         self, *, participant_id: int, params: VPPParams | None = None
-    ) -> ParticipantRuntimeV2:
+    ) -> ParticipantRuntimeV1:
         """Register an infinite-bus counterparty without fake DER physics."""
 
         if participant_id in self.participants:
@@ -142,7 +142,7 @@ class TradingGatewayV2:
             battery_kw_max=0.0,
             load_kw_base=0.0,
         )
-        runtime = ParticipantRuntimeV2(
+        runtime = ParticipantRuntimeV1(
             participant_id=participant_id,
             params=system_params,
             battery=Battery(
@@ -339,7 +339,7 @@ class TradingGatewayV2:
 
     def _replace(
         self,
-        runtime: ParticipantRuntimeV2,
+        runtime: ParticipantRuntimeV1,
         replacement: ReplaceRequest,
         *,
         sim_ts: datetime,
@@ -382,7 +382,7 @@ class TradingGatewayV2:
 
     def _submit(
         self,
-        runtime: ParticipantRuntimeV2,
+        runtime: ParticipantRuntimeV1,
         request: OrderRequest,
         *,
         sim_ts: datetime,
@@ -444,7 +444,7 @@ class TradingGatewayV2:
 
     def _validate_static(
         self,
-        runtime: ParticipantRuntimeV2,
+        runtime: ParticipantRuntimeV1,
         request: OrderRequest,
         *,
         replacing: bool = False,
@@ -475,7 +475,7 @@ class TradingGatewayV2:
                     f"cash reservation {needed} USD exceeds available credit {available} USD"
                 )
 
-    def _reserve(self, runtime: ParticipantRuntimeV2, order_id: int, request: OrderRequest) -> None:
+    def _reserve(self, runtime: ParticipantRuntimeV1, order_id: int, request: OrderRequest) -> None:
         qty = float(request.qty_kwh)
         if request.purpose == OrderPurpose.SYSTEM_GRID:
             if not runtime.is_system:
@@ -532,7 +532,7 @@ class TradingGatewayV2:
 
     def _commit_resource(
         self,
-        runtime: ParticipantRuntimeV2,
+        runtime: ParticipantRuntimeV1,
         order_id: int,
         request: OrderRequest,
         qty: float,
@@ -549,7 +549,7 @@ class TradingGatewayV2:
         elif request.purpose == OrderPurpose.FLEX_LOAD:
             runtime.flex_load_reservations.commit_fill(order_id, qty)
 
-    def _release_unfilled(self, runtime: ParticipantRuntimeV2, order: ProductLimitOrder) -> None:
+    def _release_unfilled(self, runtime: ParticipantRuntimeV1, order: ProductLimitOrder) -> None:
         request = self._requests.get(order.order_id)
         if request is None:
             return
@@ -559,7 +559,7 @@ class TradingGatewayV2:
 
     def _release_request(
         self,
-        runtime: ParticipantRuntimeV2,
+        runtime: ParticipantRuntimeV1,
         order_id: int,
         request: OrderRequest,
     ) -> None:
@@ -577,7 +577,7 @@ class TradingGatewayV2:
 
     def _consume_cash_reservation(
         self,
-        runtime: ParticipantRuntimeV2,
+        runtime: ParticipantRuntimeV1,
         order_id: int,
         request: OrderRequest,
         fill_qty: Decimal,
@@ -606,7 +606,7 @@ class TradingGatewayV2:
                 self._owners.pop(oid, None)
                 self._requests.pop(oid, None)
 
-    def _participant(self, participant_id: int) -> ParticipantRuntimeV2:
+    def _participant(self, participant_id: int) -> ParticipantRuntimeV1:
         try:
             return self.participants[participant_id]
         except KeyError as exc:

@@ -22,7 +22,7 @@
 Historical baseline (2026-07-10 audit): 27→17 ruff issues; suite 465 passed (~33s natively); frontend one 470.6KB-gzip chunk, no route splitting, eager ECharts; `MyVPPs.tsx` 1,492 lines; Inter declared but never loaded; localStorage Bearer auth, no `/auth/me`; magic link = dev token echo (no email); SQLite default with Postgres URL + 3 alembic migrations ready; optional Redis Streams bus with in-memory fallback; working Python SDK + examples; **no CI**; no competition/evaluation/k8s/registry code.
 
 Implementation update (2026-07-13): managed competition/evaluation and private Prove-out
-now exist. Prove-out executes through Simulator + TradingGatewayV2 and stores a manifest,
+now exist. Prove-out executes through Simulator + TradingGatewayV1 and stores a manifest,
 audit stream and ledger evidence package. Competition runs snapshot submission/rules config,
 separate hidden from final holdout seeds, freeze a selected submission, embargo evidence
 until close, and use holdout scores for the closed leaderboard. ScenarioSpec v1 and honest
@@ -105,7 +105,7 @@ Diagnosed root causes (all confirmed in code, most reproduced deterministically 
 2. DAM anchor rot: partial DAM curves accepted (55/72h), future targets as-of-filled up to 26h stale, absent curve → hard $50. **Fixed:** coverage required through target, ≤2h as-of tolerance, partial caches expire, explicit `degraded_persistence_shape` fallback with provenance.
 3. Unbounded global residual (−$33.14 from 32 updates → $0.42 forecasts; ±$10,000 bounds). **Fixed:** residual clipped (±$20 default) + EWMA clamp + reset on anchor-source change; final forecasts bounded to a configurable plausible band.
 4. No horizon blending (1h/12h = raw DAM + residual; realized price ignored; 5m lost to persistence). **Fixed:** `w(h)=min(h/6h, 0.85)` persistence↔anchor blend, residual decay `exp(-h/4h)`, 5m = pure persistence; calibrated offline on cached windows.
-5. Warm-start & starvation: sparse state (336 pts / 337h hole) accepted while full 720-pt caches existed; P2P mode never polled CAISO (price model starved since Jul-05); local-vs-UTC hour-feature mismatch. **Fixed:** densest-contiguous selection with min-points + max-gap, state version bump (`online-rls-v2`) invalidates stale state, config-gated CAISO polling in P2P mode, market-timezone canonicalization.
+5. Warm-start & starvation: sparse state (336 pts / 337h hole) accepted while full 720-pt caches existed; P2P mode never polled CAISO (price model starved since Jul-05); local-vs-UTC hour-feature mismatch. **Fixed:** densest-contiguous selection with min-points + max-gap, V1 state validation invalidates stale state, config-gated CAISO polling in P2P mode, market-timezone canonicalization.
 6. P2P anchored on CAISO DAM (+$19 structural bias vs P2P clearing). **Fixed (user decision 2026-07-10):** own-market rolling hour-of-day clearing profile as anchor; explicit `p2p_cold_start` fallback; realprice keeps DAM.
 7. No persisted outcomes (12h skill was unmeasurable). **Fixed:** `forecast_outcomes` table (migration 0004): origin, target, horizon, anchor, residual, predicted, realized backfill; `/forecasts/history` serves from DB when hot cache is cold.
 

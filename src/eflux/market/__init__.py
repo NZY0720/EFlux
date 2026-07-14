@@ -1,4 +1,4 @@
-"""Public market V2 surface, loaded lazily to keep submodules acyclic."""
+"""Public market V1 surface, loaded lazily to keep submodules acyclic."""
 
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ _EXPORTS = {
     "SettlementPrices": ("eflux.market.settlement", "SettlementPrices"),
     "SettlementResult": ("eflux.market.settlement", "SettlementResult"),
     "TimeInForce": ("eflux.market.products", "TimeInForce"),
-    "TradingGatewayV2": ("eflux.market.gateway", "TradingGatewayV2"),
+    "TradingGatewayV1": ("eflux.market.gateway", "TradingGatewayV1"),
     "delivery_horizon": ("eflux.market.products", "delivery_horizon"),
 }
 

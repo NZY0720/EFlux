@@ -12,8 +12,8 @@ from typing import Any
 from eflux.agents.base import AgentContext
 from eflux.agents.character import endowment_summary
 from eflux.agents.hybrid import HybridPolicyAgent, StrategyAgent
-from eflux.agents.reflective.llm_client import LLMClient, LLMUsageMeter
-from eflux.agents.reflective.strategist import (
+from eflux.agents.llm.llm_client import LLMClient, LLMUsageMeter
+from eflux.agents.llm.strategist import (
     LLMStrategist,
     compact_forecast_for_strategist,
 )

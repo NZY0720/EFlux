@@ -1,4 +1,4 @@
-"""Participant endowment features retained by the V2 physical model."""
+"""Participant endowment features retained by the V1 physical model."""
 
 from __future__ import annotations
 

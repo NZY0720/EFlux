@@ -175,7 +175,7 @@ def test_feature_lag_lookback_is_older_for_12h_than_5m():
     five_minute_features = model._features(origin, HORIZON_TIMEDELTAS["5m"])
     twelve_hour_features = model._features(origin, HORIZON_TIMEDELTAS["12h"])
 
-    # v2 layout: [1, hour harmonics x4, dow x2, last, lag, trend, ramp] — lag sits at index 8.
+    # v1 layout: [1, hour harmonics x4, dow x2, last, lag, trend, ramp] — lag sits at index 8.
     assert five_minute_features.shape == (11,)
     assert twelve_hour_features.shape == (11,)
     assert five_minute_features[8] == float(2 * 24 * 60 - 5)
@@ -244,7 +244,7 @@ def test_load_rejects_pre_timezone_canonicalization_state(tmp_path):
     path = tmp_path / "state.json"
     service.save(path)
     state = json.loads(path.read_text(encoding="utf-8"))
-    state["model_version"] = "online-rls-v1"
+    state["model_version"] = "online-rls-v0"
     path.write_text(json.dumps(state), encoding="utf-8")
 
     with pytest.raises(ValueError, match="incompatible forecast state"):
@@ -275,27 +275,20 @@ def test_cached_price_windows_parses_sanitized_names_and_sorts(tmp_path):
     assert cached_price_windows(node=node, cache_dir=tmp_path / "missing") == []
 
 
-def test_state_upgrade_replays_legacy_feature_dim():
-    from eflux.forecasting.models import FEATURE_DIM
-
+def test_state_rejects_non_v1_feature_dimension():
     model = HorizonModel()
     start = datetime(2026, 5, 1, 0, 0)
     for hour in range(72):
         model.observe(start + timedelta(hours=hour), 40.0 + (hour % 24))
     state = model.to_state()
-    # Rewrite the linear states as legacy 8-dim: from_state must replay instead.
+    # A non-V1 feature width must fail closed instead of being silently upgraded.
     for lin in state["linear"].values():
         lin["n_features"] = 8
         lin["coef"] = [0.0] * 8
         lin["P"] = [[float(i == j) for j in range(8)] for i in range(8)]
 
-    upgraded = HorizonModel.from_state(state)
-
-    assert all(m.n_features == FEATURE_DIM for m in upgraded.linear.values())
-    assert all(m.n_updates > 0 for m in upgraded.linear.values())
-    points = upgraded.predict(start + timedelta(hours=72))
-    for horizon in HORIZONS:
-        assert np.isfinite(points[horizon].value)
+    with pytest.raises(ValueError, match="feature schema does not match V1"):
+        HorizonModel.from_state(state)
 
 
 def test_price_anchor_blends_dam_base_with_online_residual():

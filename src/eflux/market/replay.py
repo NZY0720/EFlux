@@ -1,4 +1,4 @@
-"""Deterministic conservation checks over the persisted V2 market audit stream."""
+"""Deterministic conservation checks over the persisted V1 market audit stream."""
 
 from __future__ import annotations
 

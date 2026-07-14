@@ -12,7 +12,7 @@ starts from a clean book and rebuilds within seconds.
 ```
 
 Optional, for the full LLM story: put the OpenCode (deepseek-v4-flash) API key in `key.txt` and set
-`EFLUX_REFLECTIVE_ENABLED=true` + `EFLUX_LLM_BASE_URL` + `EFLUX_LLM_MODEL` in
+`EFLUX_LLM_ENABLED=true` + `EFLUX_LLM_BASE_URL` + `EFLUX_LLM_MODEL` in
 `config.env` before starting — the *Agent thoughts* panel then fills with live
 strategy guidance (one refresh every ~minute). Without it the panel explains
 the agent is running on its scripted hybrid baseline, which is also fine to show.

@@ -136,7 +136,7 @@ async def cancel_order(
     return None
 
 
-# --- Agent Protocol v2: batch orders, state read, and per-account governance (Tier A1) ---
+# --- Agent Protocol v1: batch orders, state read, and per-account governance (Tier A1) ---
 
 
 class OpenOrderOut(BaseModel):
@@ -194,7 +194,7 @@ class BatchOrderItem(BaseModel):
 
 
 class OrderBatch(BaseModel):
-    protocol_version: int = 2
+    protocol_version: int = 1
     # A repeated key returns the original response instead of re-submitting (retry-safe).
     idempotency_key: str | None = Field(default=None, max_length=128)
     # Late-response policy: a batch whose usefulness window has passed is rejected.
@@ -306,17 +306,17 @@ async def submit_batch(
     user: CurrentUser,
     sim: SimulatorDep,
 ) -> BatchResult:
-    """Agent Protocol v2 — submit and cancel a batch of orders in one authenticated call.
+    """Agent Protocol v1 — submit and cancel a batch of orders in one authenticated call.
 
     The envelope carries a protocol_version, an optional idempotency_key (a replay returns the
     original result rather than re-submitting), and an optional deadline (a stale batch is
     rejected). Every order's vpp_id must be owned by the caller; cancels only ever touch the
     caller's own resting orders. Each order is risk-gated independently, so one rejection
     doesn't abort the batch. Per-account rate limited (429)."""
-    if payload.protocol_version != 2:
+    if payload.protocol_version != 1:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            f"unsupported protocol_version {payload.protocol_version} (this server speaks v2)",
+            f"unsupported protocol_version {payload.protocol_version} (this server speaks v1)",
         )
     if not payload.orders and not payload.cancels:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "empty batch")
@@ -409,7 +409,7 @@ async def submit_batch(
             raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
 
         result = BatchResult(
-            protocol_version=2,
+            protocol_version=1,
             tick_id=outcome["tick_id"],
             results=[BatchOrderResult(**r) for r in outcome["results"]],
             cancelled=[BatchCancelResult(**c) for c in outcome["cancelled"]] + denied_cancels,

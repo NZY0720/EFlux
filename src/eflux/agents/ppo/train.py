@@ -1,6 +1,6 @@
 """CLI + library entry point for training the live PPO policy. Run via: ./tasks.sh train-ppo
 
-Produces a torch warm-start checkpoint (default checkpoints/bc_primitive.pt) via behavior
+Produces a V1 torch warm-start checkpoint (default checkpoints/bc_primitive_p2p_v1.pt) via behavior
 cloning over the structured StrategyAction space. The live `ppo_online` agents load this
 checkpoint and fine-tune it online during the simulation, so it is the starting point every
 standalone PPO, PPO mirror, and hybrid executor warm-starts from.
@@ -11,8 +11,8 @@ price curve. The same `run_training()` powers the "renew PPOs" button (it runs i
 background thread and the simulator hot-reloads the result).
 
 Example:
-    ./tasks.sh train-ppo --real-data --days 30 --out checkpoints/bc_primitive.pt
-    .env/bin/python -m eflux.agents.ppo.eval --checkpoint checkpoints/bc_primitive.pt
+    ./tasks.sh train-ppo --real-data --days 30 --out checkpoints/bc_primitive_p2p_v1.pt
+    .venv/bin/python -m eflux.agents.ppo.eval --checkpoint checkpoints/bc_primitive_p2p_v1.pt
 """
 
 from __future__ import annotations
@@ -27,8 +27,7 @@ from pathlib import Path
 import numpy as np
 
 from eflux.agents.ppo.primitive_encoding import (
-    OBS_V3,
-    OBS_V4,
+    OBS_V1,
     action_profile_for_market,
     primitive_modes_for,
 )
@@ -49,8 +48,8 @@ def run_training(
     market_mode: str = "p2p",
     start_date: date | None = None,
     end_date: date | None = None,
-    encoding_version: int = 2,
-    obs_version: int = OBS_V4,
+    encoding_version: int = 1,
+    obs_version: int = OBS_V1,
 ) -> dict:
     """Train a BC warm-start checkpoint and save it to `out_path`. Returns a metrics dict.
     Importable so the renew endpoint can run it in a background thread.
@@ -114,11 +113,7 @@ def run_training(
     log.info(
         "Collecting demonstrations (%d episodes, seed=%d, real_data=%s)…", episodes, seed, real_data
     )
-    expert = (
-        BatteryAwareStrategyPolicy(use_forecast=True)
-        if obs_version in {OBS_V3, OBS_V4}
-        else BatteryAwareStrategyPolicy()
-    )
+    expert = BatteryAwareStrategyPolicy(use_forecast=True)
     primitive_obs, primitive_acts = collect_demonstrations(
         expert,
         n_episodes=episodes,
@@ -274,7 +269,7 @@ def main() -> int:
     )
     p.add_argument("--epochs", type=int, default=300, help="behavior-cloning epochs")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--obs-version", type=int, choices=(3, 4), default=OBS_V4)
+    p.add_argument("--obs-version", type=int, choices=(OBS_V1,), default=OBS_V1)
     p.add_argument(
         "--market-mode",
         choices=("p2p", "realprice"),
@@ -284,7 +279,7 @@ def main() -> int:
     p.add_argument(
         "--out",
         type=Path,
-        default=Path("checkpoints/bc_primitive.pt"),
+        default=Path("checkpoints/bc_primitive_p2p_v1.pt"),
         help="checkpoint output (.pt)",
     )
     p.add_argument("--log-level", default="INFO")

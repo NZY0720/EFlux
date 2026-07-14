@@ -30,7 +30,7 @@ def test_standard_profiles_are_complete_unique_and_json_serializable() -> None:
         "renewable-generator",
     }
     assert len({profile["content_sha256"] for profile in profiles}) == 5
-    assert all(profile["version"] == "1.0.0" for profile in profiles)
+    assert all(profile["version"] == "1" for profile in profiles)
     assert all(profile["market"] == "realprice" for profile in profiles)
     assert all(profile["content_sha256"] == _canonical_sha256(profile) for profile in profiles)
     json.dumps(profiles)
@@ -59,7 +59,7 @@ def test_population_packs_cover_nine_required_regimes() -> None:
         "adversarial",
     }
     assert len({pack["content_sha256"] for pack in packs}) == 9
-    assert all(pack["version"] == "1.0.0" for pack in packs)
+    assert all(pack["version"] == "1" for pack in packs)
     assert all(pack["market"] == "p2p" for pack in packs)
     assert all(pack["content_sha256"] == _canonical_sha256(pack) for pack in packs)
     assert all(pack["spec"]["candidate_slots"] == 1 for pack in packs)
@@ -108,22 +108,22 @@ def test_catalog_hashes_are_stable() -> None:
     pack_hashes = {item["id"]: item["content_sha256"] for item in list_builtin_population_packs()}
 
     assert profile_hashes == {
-        "battery-only": "d79a358e55efcca5d0ee325ee7949ae201be59c4804edc2bf2d8dc4ad8e20f50",
-        "commercial-load-battery": "7a4607fcdf3089a9a22270bf8cef6f094908b7edb3db3f2cef429a921beda7c6",
-        "industrial-flexible-load": "020400c9955d4e20c429a1863b85170b2bea32324c6003456953fcd111c5fd30",
-        "renewable-generator": "db8959ec147a8b0cc2c2768c6184c79407aed79933a1c37b8a1237414808f60c",
-        "residential-pv-battery": "60db6f32259421bccb51249ebe03d47e07aa09f0cd8f59dc84a249b1a54223a9",
+        "battery-only": "f3e925ec0557de23e4e263cb85134c8e7d4e2b4e528b30ce80c9a830837a330a",
+        "commercial-load-battery": "55873bec8484f216b2058b9442742839ac404cc73cb79c15692af1a06b6c9def",
+        "industrial-flexible-load": "ff0fea07b495f18c27fb03811c25c5325534893873914076a461ec4e0e76f1b0",
+        "renewable-generator": "65d41a7b3bf541945fe53e78fa7e4cac2eee838e7988b982e3a312c60016c6fa",
+        "residential-pv-battery": "2edcab391957010e7163d1125b674ae33d0e6e452d56deb174e6bc82527e26aa",
     }
     assert pack_hashes == {
-        "adversarial": "2870f444bb859417fca9dc6b0cc184ce3b36adebba0c265f817f2abd7345cf3e",
-        "battery-arbitrage-heavy": "d25cb9d1c3d790b4821e8ff3bfdbef98da9356e0e7dd6c0cf0615f0cd48d2412",
-        "demand-tight": "674b832838a659e2aecb60be07d38cf8bda6553631ca29c54ce94b65c5ffba5e",
-        "high-liquidity-market-making": "ab631f2fb0c231e1bca14adea68c13b9a334bd57229158d0e65f4f7999ce3ab1",
-        "high-renewable-surplus": "744ba6a841b7a39446438b199cabba7971545045e812128a6ca02b34938ee92c",
-        "low-liquidity": "bb4ba726a7647df262cfd8760dcd65c18f8fad581ecf33c41ad734c940f1f9f0",
-        "ppo-llm-mixed": "43cf921d4e6fe13a696d7a0e7582e1a105d8cd3070345b48efcf1886fe2b52f5",
-        "truthful-majority": "814144ed7b7fd20d240d28e3dd61c170bf2bd35d7243741b3600e408bc669a10",
-        "zi-majority": "b3d869bd71c75d555536b8b0a0ad53627b0b9ad25d75bd489827858cd724b521",
+        "adversarial": "2f78d252cfcaf76c1be831f115c02706dfae50063840b8e6b0c3fba80705d3bb",
+        "battery-arbitrage-heavy": "ae85daa7a5cabf534f23356c6f7f7db84034c021e3679f581257fd5184a6be32",
+        "demand-tight": "0afc7ebef32f705840e9607fdad9c9acd36fa9d5cc5d2bc32c1db047c05bc26d",
+        "high-liquidity-market-making": "582ae42a2c848f171395b7336dca320d607bc037b39d887af010803439ad4915",
+        "high-renewable-surplus": "8c8b5f35831e46f835ac1b5f5773b4867028309f9e0e1d2f4b18b5626745a6ea",
+        "low-liquidity": "9a36c1c4bb0b2a714e307df31e85390a59df506821f9e43433d1831d217e231f",
+        "ppo-llm-mixed": "fae54e0a472e7e6f367307fa56f1694ac8a88a882ee45bc3278138ebecf96379",
+        "truthful-majority": "c9e4e0a28d4be146d148a78863e17c557d9a326d2fb1930ab8a4749eb695b09d",
+        "zi-majority": "bdbc7bba33464b0f7f99c63e48cf7c322508c92ac27bb3ca3517bbab2c538a0d",
     }
 
 

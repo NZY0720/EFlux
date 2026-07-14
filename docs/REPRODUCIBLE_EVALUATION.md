@@ -8,8 +8,8 @@ The evidence id excludes only the creation timestamp.
 ## Prove-out
 
 The managed historical battery strategy submits five-minute product orders to
-`TradingGatewayV2`. The gateway performs credit and physical reservation checks; fills,
-delivery, imbalance settlement and degradation use the normal V2 path. Before a queued run
+`TradingGatewayV1`. The gateway performs credit and physical reservation checks; fills,
+delivery, imbalance settlement and degradation use the normal V1 path. Before a queued run
 starts, the worker fetches missing CAISO-local historical days, retries partial responses,
 requires every expected hourly row (including DST day lengths), and atomically publishes an
 end-exclusive parquet cache. The replay itself is network-free. Cached hourly CAISO LMPs are
@@ -43,7 +43,7 @@ Evaluation evidence is embargoed while the round is open. After close, an owner 
 uv run eflux scenario validate scenarios/p2p.yaml
 uv run eflux scenario inspect scenarios/p2p.yaml
 uv run eflux scenario hash scenarios/p2p.yaml
-uv run eflux scenario normalize legacy.yaml --output scenario-v1.yaml
+uv run eflux scenario normalize scenario.yaml --output normalized-v1.yaml
 uv run eflux compare artifacts/backtests/LEFT artifacts/backtests/RIGHT
 ```
 

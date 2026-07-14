@@ -621,7 +621,7 @@ class BaselinePolicy:
     guidance the neutral action reproduces the standalone baseline byte-for-byte (the compiler's
     `_anchor` recovers `limit * (target/limit) == target`); when guidance arrives,
     `apply_guidance` layers the LLM's binding mode_pin + soft risk/price/soc bias on top. The
-    oracle → compiler → TradingGatewayV2 pipeline and the baseline's own rationality clamp
+    oracle → compiler → TradingGatewayV1 pipeline and the baseline's own rationality clamp
     are reused unchanged. Fills are forwarded so the baseline's online adaptation keeps learning.
     """
 

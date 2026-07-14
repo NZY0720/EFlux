@@ -1,6 +1,6 @@
 [project]
 name = "eflux"
-version = "0.1.0"
+version = "1.0.0"
 description = "Agent-based VPP electricity trading platform"
 requires-python = ">=3.12"
 readme = "README.md"
@@ -76,13 +76,18 @@ target-version = "py312"
 select = ["E", "F", "I", "B", "UP", "RUF"]
 ignore = ["E501"]
 
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+faulthandler_timeout = 120
+faulthandler_exit_on_timeout = true
 testpaths = ["tests"]
-# Direct src import: macOS re-hides .env/* (UF_HIDDEN), and Python 3.12's
-# site.py skips hidden .pth files — so the editable install can vanish for
-# bare `pytest` runs. tasks.sh unhides the venv; this covers everything else.
+# Direct src import keeps local commands independent of editable-install .pth
+# handling, including macOS hidden-file flags on dot directories.
 pythonpath = ["src"]
 filterwarnings = [
     # Pydantic v2 / SQLAlchemy 2 / asyncio emit a handful of DeprecationWarnings

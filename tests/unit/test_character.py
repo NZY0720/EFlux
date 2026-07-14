@@ -14,7 +14,7 @@ from eflux.agents.character import (
     endowment_summary,
 )
 from eflux.agents.hybrid.agent import StrategyAgent
-from eflux.agents.reflective.strategist import build_strategist_user_message
+from eflux.agents.llm.strategist import build_strategist_user_message
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad

@@ -10,9 +10,9 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import select
 
-from eflux.agents.reflective.chat import clean_chat_line
-from eflux.agents.reflective.pool import CURATED_MODELS
-from eflux.agents.reflective.strategist import ExternalStrategist
+from eflux.agents.llm.chat import clean_chat_line
+from eflux.agents.llm.pool import CURATED_MODELS
+from eflux.agents.llm.strategist import ExternalStrategist
 from eflux.api.deps import CurrentUser, DbSession, SimulatorDep
 from eflux.api.ratelimit import RateLimiter
 from eflux.db.models import VPP
@@ -451,11 +451,7 @@ _ALGORITHM_ROSTER = {
 
 
 def _algorithm_factory_fields(algorithm: str) -> set[str]:
-    if algorithm == "hybrid":
-        from eflux.agents.hybrid import HybridPolicyAgent
-
-        factory = HybridPolicyAgent
-    elif algorithm in {"ppo", "scripted"}:
+    if algorithm in {"ppo", "scripted"}:
         from eflux.agents.hybrid import StrategyAgent
 
         factory = StrategyAgent
@@ -546,7 +542,7 @@ async def create_managed_vpp(
 ) -> ManagedVPPOut:
     """Provision a cloud-hosted, LLM-steered managed agent — Tier 0 of
     docs/EXTERNAL_PARTICIPATION.md. The platform runs the HybridPolicyAgent (LLM strategist +
-    PPO executor + Truthful oracle + TradingGatewayV2) autonomously on the user's behalf; the user
+    PPO executor + Truthful oracle + TradingGatewayV1) autonomously on the user's behalf; the user
     supplies only a DER endowment and an optional persona/preferences. Params and agent_params
     are validated against the same schema as the built-in roster (422 on bad input)."""
     # Quota + name checks against the LIVE agents (what the user actually sees), so a name
@@ -909,7 +905,7 @@ async def put_guidance(
     docs/EXTERNAL_PARTICIPATION.md. The posted StrategyGuidance replaces the platform
     LLM strategist's steering (which stops being called — running your own model costs
     zero platform LLM budget) while the platform's PPO executor, order compiler, and
-    TradingGatewayV2 keep doing the execution. Guidance stays soft: clamped on arrival, biases
+    TradingGatewayV1 keep doing the execution. Guidance stays soft: clamped on arrival, biases
     but never commands (DELETE the guidance to hand control back to the platform LLM).
     Persisted with the agent definition, so it survives a backend restart."""
     allowed, remaining = _guidance_limiter.check(user.id, 1)

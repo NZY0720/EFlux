@@ -11,7 +11,7 @@ import pytest
 
 from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.hybrid import HybridPolicyAgent
-from eflux.agents.reflective.strategist import StaticStrategist, StrategyGuidance
+from eflux.agents.llm.strategist import StaticStrategist, StrategyGuidance
 from eflux.agents.strategy.policy import BaselinePolicy
 from eflux.agents.strategy.schema import StrategyMode
 from eflux.agents.truthful import TruthfulAgent
@@ -217,7 +217,7 @@ def test_hybrid_registered_in_agent_factories():
 def test_hybrid_sync_context_with_llm_strategist_does_not_crash():
     # No running loop (the bench/tests step synchronously) → refresh is skipped, the
     # agent still decides using whatever guidance is cached (None here).
-    from eflux.agents.reflective.strategist import LLMStrategist
+    from eflux.agents.llm.strategist import LLMStrategist
 
     class FakeClient:
         async def chat(self, messages, *, temperature=0.2):
@@ -233,7 +233,7 @@ def test_hybrid_sync_context_with_llm_strategist_does_not_crash():
 
 @pytest.mark.asyncio
 async def test_hybrid_schedules_offline_refresh_under_running_loop():
-    from eflux.agents.reflective.strategist import LLMStrategist
+    from eflux.agents.llm.strategist import LLMStrategist
 
     class FakeClient:
         async def chat(self, messages, *, temperature=0.2):
@@ -251,7 +251,7 @@ async def test_hybrid_schedules_offline_refresh_under_running_loop():
 
 @pytest.mark.asyncio
 async def test_hybrid_refresh_threads_regime_note_into_strategist_payload():
-    from eflux.agents.reflective.strategist import LLMStrategist
+    from eflux.agents.llm.strategist import LLMStrategist
 
     class FakeClient:
         def __init__(self):

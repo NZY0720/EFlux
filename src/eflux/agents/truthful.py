@@ -7,7 +7,7 @@ that smarter strategies actually improve PnL.
 The economic model lives in `TruthfulValuationOracle` (agents/valuation): this agent
 is now a thin assembler that reads the oracle's `ValuationSignal` and turns it into
 orders — the accumulated-balance quote plus a throttled battery-band arbitrage quote.
-Demoting the valuation to a shared oracle lets the compiler and TradingGatewayV2 read
+Demoting the valuation to a shared oracle lets the compiler and TradingGatewayV1 read
 the same numbers instead of re-deriving them.
 
 Side choice mirrors ZI: positive net energy ⇒ sell; negative ⇒ buy; balanced ⇒ no order.

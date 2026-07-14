@@ -9,9 +9,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from eflux.agents.ppo.primitive_encoding import (
     ACTION_PROFILE_REALPRICE_GRID,
-    ENCODING_V2,
-    OBS_DIM_V4,
-    OBS_V4,
+    ENCODING_V1,
+    OBS_DIM_V1,
+    OBS_V1,
     action_dim,
 )
 from eflux.db import Base
@@ -23,7 +23,7 @@ pytest.importorskip("torch")
 
 def _record(index: int) -> dict:
     action_width = action_dim(
-        ENCODING_V2,
+        ENCODING_V1,
         action_profile=ACTION_PROFILE_REALPRICE_GRID,
     )
     return {
@@ -42,10 +42,10 @@ def _record(index: int) -> dict:
             "replaces": [],
             "is_noop": True,
             "policy_sample": {
-                "encoding_version": ENCODING_V2,
-                "observation_version": OBS_V4,
+                "encoding_version": ENCODING_V1,
+                "observation_version": OBS_V1,
                 "action_profile": ACTION_PROFILE_REALPRICE_GRID,
-                "observation_vector": [float(index)] * OBS_DIM_V4,
+                "observation_vector": [float(index)] * OBS_DIM_V1,
                 "action_vector": [1.0, *([-1.0] * (action_width - 1))],
                 "mode": "noop",
             },

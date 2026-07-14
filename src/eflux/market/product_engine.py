@@ -1,6 +1,6 @@
 """Multi-product continuous double auction for explicit delivery intervals.
 
-This is the V2 venue.  Each delivery product has an isolated order book while
+This is the V1 venue.  Each delivery product has an isolated order book while
 order/trade ids remain globally unique.  Prices may be negative; quantity is
 strictly positive terminal kWh.  Gate closure is authoritative and removes all
 unfilled exposure before physical delivery begins.
@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 
 from eflux.market.delivery import OrderPurpose
 from eflux.market.order_book import LimitOrder, OrderBook
@@ -304,7 +305,7 @@ class ProductMatchingEngine:
     def _match(self, taker: ProductLimitOrder, *, wall_ts: datetime) -> list[ProductTrade]:
         iid = taker.interval.interval_id
         book = self._books[iid]
-        opposite = "sell" if taker.side == "buy" else "buy"
+        opposite: Literal["buy", "sell"] = "sell" if taker.side == "buy" else "buy"
         trades: list[ProductTrade] = []
         while taker.remaining_qty > 0:
             resting = self._best_maker(book, opposite, taker)
@@ -342,7 +343,7 @@ class ProductMatchingEngine:
 
     def _can_fill(self, taker: ProductLimitOrder) -> bool:
         book = self._books[taker.interval.interval_id]
-        opposite = "sell" if taker.side == "buy" else "buy"
+        opposite: Literal["buy", "sell"] = "sell" if taker.side == "buy" else "buy"
         available = Decimal("0")
         for level in book._book(opposite).values():
             if taker.side == "buy" and taker.price < level.price:
@@ -359,7 +360,10 @@ class ProductMatchingEngine:
         return False
 
     def _best_maker(
-        self, book: OrderBook, opposite_side: str, taker: ProductLimitOrder
+        self,
+        book: OrderBook,
+        opposite_side: Literal["buy", "sell"],
+        taker: ProductLimitOrder,
     ) -> ProductLimitOrder | None:
         for level in book._book(opposite_side).values():
             if taker.side == "buy" and taker.price < level.price:

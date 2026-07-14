@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from eflux.agents.base import MarketSnapshot
-from eflux.agents.reflective.strategist import LLMStrategist
+from eflux.agents.llm.strategist import LLMStrategist
 from eflux.backtest import (
     BacktestConfig,
     BacktestError,

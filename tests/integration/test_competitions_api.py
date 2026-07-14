@@ -38,7 +38,7 @@ async def test_default_competition_seed_is_idempotent(db_session):
     assert competition.status == "open"
     ruleset = (await db_session.execute(select(CompetitionRuleSet))).scalar_one()
     assert ruleset.track == "managed"
-    assert ruleset.version == "rules-v1.1"
+    assert ruleset.version == "rules-v1"
     assert ruleset.config == {
         "window_sec": 300,
         "deadline_ms": 500,
@@ -76,7 +76,7 @@ async def test_competition_list_and_detail_are_public(client):
     assert body["submission_counts"] == {}
     assert len(body["rulesets"]) == 1
     assert body["rulesets"][0]["track"] == "managed"
-    assert body["rulesets"][0]["version"] == "rules-v1.1"
+    assert body["rulesets"][0]["version"] == "rules-v1"
     assert body["rulesets"][0]["config"]["window_sec"] == 300
 
 
@@ -175,7 +175,7 @@ async def test_submission_cooldown_and_evaluation_seed_queue_and_owner_access(cl
     assert queued.status_code == 201, queued.text
     run = queued.json()
     assert run["status"] == "queued"
-    assert run["rules_version"] == "rules-v1.1"
+    assert run["rules_version"] == "rules-v1"
     assert [seed["seed_label"] for seed in run["seed_runs"]] == [
         "hidden-1",
         "hidden-2",
@@ -256,7 +256,7 @@ async def test_competition_leaderboard_ranks_scored_submissions_masks_email_and_
     db_session.add_all(submissions)
     await db_session.flush()
     runs = [
-        EvaluationRun(submission_id=submission.id, status="completed", rules_version="rules-v1.1", score=score, summary=summary)
+        EvaluationRun(submission_id=submission.id, status="completed", rules_version="rules-v1", score=score, summary=summary)
         for submission, score, summary in zip(
             submissions,
             [4.0, 9.0, 99.0],
@@ -319,7 +319,7 @@ async def test_final_selection_closes_into_immutable_holdout_run(client, db_sess
         submission_id=submission_id,
         kind="hidden",
         status="scored",
-        rules_version="rules-v1.1",
+        rules_version="rules-v1",
         score=1.25,
         summary={},
     )

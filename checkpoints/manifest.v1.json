@@ -1,0 +1,34 @@
+{
+  "schema_version": "1",
+  "training": {
+    "window_start": "2026-06-10",
+    "window_end_exclusive": "2026-07-10",
+    "seed": 20260711,
+    "primitive_episodes": 40,
+    "scenario_episodes": 10,
+    "scenario_intervals": 288,
+    "epochs": 500,
+    "battery_only_fraction": 0.225,
+    "price_ref_usd_per_mwh": 19.968114
+  },
+  "contract": {
+    "format": "bc_primitive_v1",
+    "encoding_version": 1,
+    "observation_version": 1,
+    "observation_dimension": 33
+  },
+  "artifacts": {
+    "p2p": {
+      "path": "checkpoints/bc_primitive_p2p_v1.pt",
+      "sha256": "6ca32c12976487d4e2809b4b73dba26bf392d169d7111c69336265458035ea8f",
+      "size_bytes": 31077,
+      "action_profile": "p2p"
+    },
+    "realprice": {
+      "path": "checkpoints/bc_primitive_realprice_grid_v1.pt",
+      "sha256": "d085ddf271208260b1b5bb22af0622aa09b23e4317f343afc015266ed3d0bc84",
+      "size_bytes": 31849,
+      "action_profile": "realprice_grid"
+    }
+  }
+}

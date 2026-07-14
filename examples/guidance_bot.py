@@ -3,7 +3,7 @@
 Your code sets the STRATEGY; the platform keeps doing the EXECUTION. Each cycle this
 bot reads the market + its managed agent's performance, decides a StrategyGuidance
 (preferred/avoided primitives, risk_budget, soc_target), and PUTs it. The platform's
-PPO executor, order compiler, and TradingGatewayV2 turn that steer into actual orders — and
+PPO executor, order compiler, and TradingGatewayV1 turn that steer into actual orders — and
 the platform LLM strategist is NOT called while your guidance is active (running your
 own model costs zero platform LLM budget). DELETE the guidance to hand control back.
 

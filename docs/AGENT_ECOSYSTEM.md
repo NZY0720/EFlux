@@ -9,7 +9,7 @@ The platform reports evidence rather than a universal winner. Results retain the
 From the repository root:
 
 ```bash
-PYTHONPATH=src .env/bin/python examples/agent_ecosystem_demo.py
+PYTHONPATH=src .venv/bin/python examples/agent_ecosystem_demo.py
 ```
 
 The example is isolated from `eflux_dev.db`. It creates a temporary SQLite database, calls the real ecosystem service to create and publish a scripted realprice Release, queues a deterministic evaluation, and runs the real worker once. The printed JSON contains:

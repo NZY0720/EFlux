@@ -2,7 +2,7 @@
 
 One PPO-controlled VPP acts in the *structured primitive space* — it emits a
 `StrategyAction` (mode + parameters), which the real `OrderProgramCompiler` lowers and the
-real TradingGatewayV2 validates before it hits the product venue — against a synthetic
+real TradingGatewayV1 validates before it hits the product venue — against a synthetic
 counter-party. This trains the policy over the exact pipeline used live (oracle →
 compiler → risk gate), so a checkpoint transfers to the live `PPOPrimitiveAgent` without
 distribution shift in the action semantics.
@@ -27,9 +27,8 @@ from eflux.agents.base import AgentContext, MarketSnapshot
 from eflux.agents.decision import AgentDecision, OrderRequest
 from eflux.agents.ppo.primitive_encoding import (
     ACTION_PROFILE_P2P,
-    ENCODING_V2,
-    OBS_V3,
-    OBS_V4,
+    ENCODING_V1,
+    OBS_V1,
     action_profile_for_action_dim,
     action_profile_for_market,
     decode_action,
@@ -45,7 +44,7 @@ from eflux.agents.strategy import OrderProgramCompiler
 from eflux.agents.valuation import TruthfulValuationOracle
 from eflux.forecasting.schema import ForecastBundle, ForecastPoint, TargetForecast
 from eflux.market.delivery import OrderPurpose
-from eflux.market.gateway import TradingGatewayV2
+from eflux.market.gateway import TradingGatewayV1
 from eflux.market.product_engine import ProductMatchingEngine
 from eflux.market.products import DeliveryInterval, next_delivery_interval
 from eflux.market.settlement import SettlementPrices
@@ -81,8 +80,8 @@ class VPPPrimitiveEnv(gym.Env):
         self,
         config: dict | None = None,
         *,
-        encoding_version: int = ENCODING_V2,
-        obs_version: int = OBS_V4,
+        encoding_version: int = ENCODING_V1,
+        obs_version: int = OBS_V1,
         action_dim: int | None = None,
         action_profile: str | None = None,
     ) -> None:
@@ -147,7 +146,7 @@ class VPPPrimitiveEnv(gym.Env):
         # Which market structure to train against: "p2p" = a noisy peer counter-party book;
         # "realprice" = a deep grid book at lmp ± fee (the agent is a pure price-taker, exactly
         # as in the live realprice market) → distinct obs/reward distribution → a per-market
-        # checkpoint. Defaults to p2p for back-compat.
+        # checkpoint. The canonical default profile is p2p.
         self._txn_fee = float(cfg.get("transaction_fee", 2.0))
         self._forecast_noise_frac = float(cfg.get("forecast_noise_frac", 0.1))
         self._oracle = TruthfulValuationOracle(
@@ -159,7 +158,7 @@ class VPPPrimitiveEnv(gym.Env):
         self._np_rng: np.random.Generator
         self._forecast_rng: np.random.Generator
         self._engine: ProductMatchingEngine
-        self._gateway: TradingGatewayV2
+        self._gateway: TradingGatewayV1
         self._product: DeliveryInterval
         self._params: VPPParams
         self._state: VPPState
@@ -200,7 +199,7 @@ class VPPPrimitiveEnv(gym.Env):
             base_kw=self._params.load_kw_base, profile=self._params.load_profile
         )
         self._engine = ProductMatchingEngine()
-        self._gateway = TradingGatewayV2(engine=self._engine)
+        self._gateway = TradingGatewayV1(engine=self._engine)
         self._gateway.register_participant(
             participant_id=VPP_ID,
             params=self._params,
@@ -336,7 +335,7 @@ class VPPPrimitiveEnv(gym.Env):
             .position(self._product)
             .contracted_net_injection_kwh,
             open_orders_net_kwh=self._open_orders_net(),
-            forecast=self._make_forecast() if self.obs_version in {OBS_V3, OBS_V4} else None,
+            forecast=self._make_forecast(),
         )
 
     def _open_order_count(self) -> int:
@@ -449,7 +448,7 @@ class VPPPrimitiveEnv(gym.Env):
         Real-data episodes use the indexed historical LMP at the future hour. Synthetic
         episodes use the same mean-reverting process as `_seed_counterparty`, but take its
         conditional expectation from the current reference price instead of consuming random
-        shocks, so V3 does not alter the episode RNG stream.
+        shocks, so V1 does not alter the episode RNG stream.
         """
         if self._real_data is not None:
             return self._real_data.price_at(ts, default=self._last_price_ref)

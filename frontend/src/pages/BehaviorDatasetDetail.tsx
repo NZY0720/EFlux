@@ -102,6 +102,7 @@ function completenessOf(dataset: BehaviorDataset): Completeness {
 
 export default function BehaviorDatasetDetail() {
   const { id = "" } = useParams();
+  const datasetId = Number(id);
   const [dataset, setDataset] = useState<BehaviorDataset | null>(null);
   const [trainingRuns, setTrainingRuns] = useState<TrainingRun[]>([]);
   const [loading, setLoading] = useState(true);
@@ -128,7 +129,9 @@ export default function BehaviorDatasetDetail() {
   };
   const load = async () => {
     try {
-      const next = await fetchBehaviorDataset(id);
+      if (!Number.isInteger(datasetId) || datasetId <= 0)
+        throw new Error("The dataset ID is invalid.");
+      const next = await fetchBehaviorDataset(datasetId);
       setDataset(next);
       hydrate(next);
       setError(null);
@@ -140,7 +143,7 @@ export default function BehaviorDatasetDetail() {
   };
   useEffect(() => {
     void load();
-  }, [id]);
+  }, [datasetId]);
   useEffect(() => {
     if (
       !trainingRuns.some(
@@ -187,7 +190,7 @@ export default function BehaviorDatasetDetail() {
     setBusy("publish");
     setError(null);
     try {
-      const updated = await publishBehaviorDataset(id);
+      const updated = await publishBehaviorDataset(datasetId);
       setDataset(updated);
       hydrate(updated);
     } catch (err) {
@@ -202,7 +205,7 @@ export default function BehaviorDatasetDetail() {
     setError(null);
     try {
       await downloadBehaviorDataset(
-        id,
+        datasetId,
         dataset.name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
       );
     } catch (err) {
@@ -216,7 +219,7 @@ export default function BehaviorDatasetDetail() {
     setBusy("save");
     setError(null);
     try {
-      const updated = await updateBehaviorDataset(id, {
+      const updated = await updateBehaviorDataset(datasetId, {
         description: editDescription.trim(),
         visibility: editVisibility,
         license: editLicense.trim(),
@@ -245,9 +248,16 @@ export default function BehaviorDatasetDetail() {
         throw new Error(
           "Choose a BC warm-start or base release before PPO fine-tuning.",
         );
-      if (baseReleaseId.trim())
-        config.warm_start_release_id = baseReleaseId.trim();
-      const created = await trainBehaviorDataset(id, { algorithm, config });
+      if (baseReleaseId.trim()) {
+        const warmStartReleaseId = Number(baseReleaseId.trim());
+        if (!Number.isInteger(warmStartReleaseId) || warmStartReleaseId <= 0)
+          throw new Error("Enter a valid warm-start release ID.");
+        config.warm_start_release_id = warmStartReleaseId;
+      }
+      const created = await trainBehaviorDataset(datasetId, {
+        algorithm,
+        config,
+      });
       setTrainingRuns((current) => [created, ...current]);
     } catch (err) {
       setError((err as Error).message || "Unable to start this training run.");

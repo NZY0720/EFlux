@@ -10,7 +10,6 @@ import argparse
 import asyncio
 import hashlib
 import logging
-import os
 import signal
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -32,6 +31,7 @@ from eflux.db.models import (
 from eflux.db.session import get_sessionmaker
 from eflux.ecosystem import service
 from eflux.ecosystem.catalog import get_standard_profile
+from eflux.ecosystem.runtime_identity import repository_git_commit
 
 log = logging.getLogger(__name__)
 TRAINING_ARTIFACTS_BASE = PROJECT_ROOT / "artifacts" / "training_runs"
@@ -96,34 +96,6 @@ def _relative_artifact_path(path: Path) -> str:
     return path.resolve().relative_to(PROJECT_ROOT.resolve()).as_posix()
 
 
-def _repository_git_commit() -> str | None:
-    """Resolve the running source revision without invoking a user-controlled command."""
-
-    configured = os.environ.get("EFLUX_GIT_COMMIT", "").strip()
-    if configured:
-        return configured
-    git_dir = PROJECT_ROOT / ".git"
-    head = git_dir / "HEAD"
-    try:
-        value = head.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    if not value.startswith("ref: "):
-        return value
-    ref = value.removeprefix("ref: ").strip()
-    try:
-        return (git_dir / ref).read_text(encoding="utf-8").strip()
-    except OSError:
-        try:
-            lines = (git_dir / "packed-refs").read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return None
-        for line in lines:
-            if not line.startswith("#") and line.endswith(f" {ref}"):
-                return line.split(" ", 1)[0]
-    return None
-
-
 def _checkpoint_from_release(release: AgentRelease) -> Path:
     raw = release.state.get("checkpoint_path")
     expected = release.state.get("checkpoint_sha256")
@@ -168,7 +140,7 @@ def _derived_release(
         # same fail-closed runtime; online learning stays disabled until PPO fine-tuning.
         "algorithm": "ppo",
         "training_method": algorithm,
-        "protocol_version": "2",
+        "protocol_version": "1",
         "observation_schema_version": str(metrics["observation_version"]),
         "action_schema_version": str(metrics["encoding_version"]),
         "action_profile": metrics["action_profile"],
@@ -193,10 +165,10 @@ def _derived_release(
         }
     environment: dict[str, Any] = {
         "runtime": "eflux-managed",
-        "agent_protocol_version": 2,
+        "agent_protocol_version": 1,
         "dependencies_locked": True,
     }
-    git_commit = str(run.config.get("git_commit") or _repository_git_commit() or "").strip()
+    git_commit = str(run.config.get("git_commit") or repository_git_commit() or "").strip()
     if git_commit:
         environment["git_commit"] = git_commit
     else:
@@ -288,12 +260,12 @@ def _ppo_finetune(
         "checkpoint_path": str(output),
         "checkpoint_sha256": digest,
         "checkpoint_size_bytes": output.stat().st_size,
-        "encoding_version": int(meta.get("encoding_version", 2)),
-        "observation_version": int(meta.get("obs_version", 4)),
+        "encoding_version": int(meta["encoding_version"]),
+        "observation_version": int(meta["obs_version"]),
         "action_profile": str(
             meta.get("action_profile", "realprice_grid" if market == "realprice" else "p2p")
         ),
-        "observation_dim": int(meta.get("obs_dim", 33)),
+        "observation_dim": int(meta["obs_dim"]),
         "action_dim": int(policy.learner.net.action_dim),
         "sandbox": {
             "realized_pnl_usd": train_metrics.realized_pnl,

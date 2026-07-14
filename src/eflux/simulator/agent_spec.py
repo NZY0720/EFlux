@@ -88,17 +88,15 @@ class AgentSpec(BaseModel):
     model_config = ConfigDict(extra="forbid")  # catch YAML typos loudly
 
     name: str = Field(min_length=1, max_length=100)
-    # `reflective` is accepted as a legacy alias; the loader now instantiates the
-    # hybrid LLM strategist stack for both reflective and hybrid entries. `zip`/`gd`/`aa`
-    # are the classical quantitative baselines (continuous double auction).
-    agent: Literal[
-        "truthful", "gas", "strategy", "hybrid", "reflective", "zip", "gd", "aa"
-    ] = "truthful"
+    # `zip`/`gd`/`aa` are the classical quantitative baselines (continuous double auction).
+    agent: Literal["truthful", "gas", "strategy", "hybrid", "zip", "gd", "aa"] = (
+        "truthful"
+    )
     seed: int | None = None
     # DER portfolio — sparse VPPParams fields (see validate_vpp_params).
     params: dict = Field(default_factory=dict)
-    # Constructor kwargs for the strategy class. For "hybrid" / legacy
-    # "reflective", they go to HybridPolicyAgent — e.g. {demand_beta: 0.5}.
+    # Constructor kwargs for the strategy class. For "hybrid", they go to
+    # HybridPolicyAgent — e.g. {demand_beta: 0.5}.
     agent_params: dict = Field(default_factory=dict)
     persona: PersonaSpec | None = None
     # Tactical policy for strategy/hybrid agents (scripted default, or learned PPO).
@@ -110,17 +108,15 @@ class AgentSpec(BaseModel):
 
     @model_validator(mode="after")
     def _check(self) -> AgentSpec:
-        if self.persona is not None and self.agent not in ("hybrid", "reflective"):
+        if self.persona is not None and self.agent != "hybrid":
             raise ValueError(
-                f"{self.name!r}: persona is only valid for agent: hybrid/reflective "
-                f"(got {self.agent!r})"
+                f"{self.name!r}: persona is only valid for agent: hybrid (got {self.agent!r})"
             )
-        if self.mirror and self.agent not in ("hybrid", "reflective"):
+        if self.mirror and self.agent != "hybrid":
             raise ValueError(
-                f"{self.name!r}: mirror is only valid for agent: hybrid/reflective "
-                f"(got {self.agent!r})"
+                f"{self.name!r}: mirror is only valid for agent: hybrid (got {self.agent!r})"
             )
-        if self.executor is not None and self.agent not in ("strategy", "hybrid", "reflective"):
+        if self.executor is not None and self.agent not in ("strategy", "hybrid"):
             raise ValueError(
                 f"{self.name!r}: executor is only valid for agent: strategy/hybrid "
                 f"(got {self.agent!r})"

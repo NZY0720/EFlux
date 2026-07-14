@@ -5,7 +5,7 @@ import { useNavigate } from "react-router-dom";
 import { api, createManagedVPP, createVPP, listAlgorithms, listModels } from "../api/client";
 import type { AlgorithmInfo } from "../api/types";
 import { CardTitle, DashboardCard, StatusPill } from "../components/DashboardCard";
-import { AlgorithmParamField, NumberField, SelectField, SliderField, TextNumberField } from "./vpps/LegacyVppParts";
+import { AlgorithmParamField, NumberField, SelectField, SliderField, TextNumberField } from "./vpps/VppParts";
 
 type AlgorithmParamValue = number | string | boolean;
 const LOAD_PROFILES = ["residential", "industrial", "commercial", "flat"];

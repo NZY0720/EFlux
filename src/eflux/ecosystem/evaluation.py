@@ -128,7 +128,7 @@ def _hidden_population_packs() -> list[dict[str, Any]]:
         }
         content = {
             "id": pack_id,
-            "version": "2026.1",
+            "version": "1",
             "name": name,
             "description": "Worker-only roster used to test out-of-catalog robustness.",
             "market": "p2p",
@@ -486,12 +486,12 @@ def _protocol_replay(
     }
     evidence = {
         "protocol": (
-            "eflux-simulator-v2-caiso-historical-grid"
+            "eflux-simulator-v1-caiso-historical-grid"
             if market_price_path is not None
             else (
-                "eflux-simulator-v2-fixed-exogenous-grid"
+                "eflux-simulator-v1-fixed-exogenous-grid"
                 if market == "realprice"
-                else "eflux-simulator-v2-closed-loop"
+                else "eflux-simulator-v1-closed-loop"
             )
         ),
         "release_content_sha256": release["content_sha256"],

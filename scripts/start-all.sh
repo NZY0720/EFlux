@@ -38,9 +38,9 @@ wait_http() {
 
 # --- Pre-flight ---
 
-if [[ ! -x "$PROJECT_ROOT/.env/bin/python" ]]; then
-  echo "ERROR: venv not found at .env/" >&2
-  echo "  Run: uv venv .env --python 3.12 && UV_PROJECT_ENVIRONMENT=.env uv sync --extra dev" >&2
+if [[ ! -x "$PROJECT_ROOT/.venv/bin/python" ]]; then
+  echo "ERROR: venv not found at .venv/" >&2
+  echo "  Run: uv sync --extra dev" >&2
   exit 1
 fi
 
@@ -55,7 +55,7 @@ if port_listening "$BACKEND_PORT"; then
   echo "Backend already listening on :$BACKEND_PORT — skipping start"
 else
   echo "Starting backend (log: $RUN_DIR/backend.log)..."
-  nohup ./tasks.sh run >"$RUN_DIR/backend.log" 2>&1 &
+  nohup ./tasks.sh dev-stack >"$RUN_DIR/backend.log" 2>&1 &
   echo $! > "$RUN_DIR/backend.pid"
 fi
 

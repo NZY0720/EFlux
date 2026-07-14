@@ -17,7 +17,7 @@ async def _login(client, email: str = "release-owner@hku.hk") -> dict[str, str]:
 def _release_payload(*, name: str = "Strict Release") -> dict:
     return {
         "name": name,
-        "version": "1.0.0",
+        "version": "1",
         "description": "A complete, platform-managed release contract.",
         "market": "p2p",
         "visibility": "private",
@@ -25,8 +25,8 @@ def _release_payload(*, name: str = "Strict Release") -> dict:
         "recipe": {
             "algorithm": "truthful",
             "agent_params": {},
-            "protocol_version": "2",
-            "observation_schema_version": "4",
+            "protocol_version": "1",
+            "observation_schema_version": "1",
             "action_schema_version": "1",
             "online_learning": False,
             "fallback_strategy": "safe_hold",
@@ -46,7 +46,7 @@ def _release_payload(*, name: str = "Strict Release") -> dict:
         },
         "environment": {
             "runtime": "eflux-managed",
-            "agent_protocol_version": 2,
+            "agent_protocol_version": 1,
             "dependencies_locked": True,
             "git_commit": "abcdef0",
         },

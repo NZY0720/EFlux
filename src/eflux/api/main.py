@@ -14,8 +14,8 @@ from sqlalchemy import select
 # Ensure all models are imported before create_all.
 import eflux.db.models  # noqa: F401
 from eflux import __version__
-from eflux.agents.reflective.pool import CURATED_MODELS
-from eflux.agents.reflective.strategist import external_guidance_from_dict
+from eflux.agents.llm.pool import CURATED_MODELS
+from eflux.agents.llm.strategist import external_guidance_from_dict
 from eflux.api.routers import (
     auth,
     benchmarks,
@@ -113,7 +113,7 @@ async def _seed_default_competition() -> None:
         session.add(
             CompetitionRuleSet(
                 competition_id=competition.id,
-                version="rules-v1.1",
+                version="rules-v1",
                 track="managed",
                 config=_SEASON_0_RULES,
             )
@@ -239,7 +239,7 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
             scrubbed_any = False
             for row in rows:
                 cfg = dict(row.managed_config or {})
-                # Translate legacy fused values (hybrid / removed zi) to (base, llm_enabled).
+                # V0 persisted rows are translated by the isolated compatibility adapter.
                 algorithm, llm_enabled = normalize_managed_config(cfg)
                 online_learning = cfg.get("online_learning", True)
                 if llm_enabled:

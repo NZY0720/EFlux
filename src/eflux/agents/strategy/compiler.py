@@ -1,7 +1,7 @@
 """Order-program compiler.
 
 `OrderProgramCompiler.compile(ctx, action, valuation)` is the deterministic translation
-from a policy's `StrategyAction` to concrete V2 requests. It:
+from a policy's `StrategyAction` to concrete V1 requests. It:
 
 1. builds the `OrderProgram` for the chosen primitive (via `primitives.build_program`),
 2. drops dust quantities and non-finite signed prices,
@@ -9,7 +9,7 @@ from a policy's `StrategyAction` to concrete V2 requests. It:
    `CancelRequest` / `ReplaceRequest`.
 
 It is pure and independently testable — no market calls, no agent state. The runner
-submits the resulting decision through TradingGatewayV2.
+submits the resulting decision through TradingGatewayV1.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from eflux.agents.valuation import ValuationSignal
 
 @dataclass
 class OrderProgramCompiler:
-    # Prices are signed in V2; only non-finite prices and dust quantities drop.
+    # Prices are signed in V1; only non-finite prices and dust quantities drop.
     min_qty: Decimal = Decimal("0.01")
 
     def compile(

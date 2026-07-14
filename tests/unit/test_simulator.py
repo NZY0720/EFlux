@@ -1,4 +1,4 @@
-"""Simulator setup and aggregate-state tests not covered by V2 runtime suites."""
+"""Simulator setup and aggregate-state tests not covered by V1 runtime suites."""
 
 from __future__ import annotations
 

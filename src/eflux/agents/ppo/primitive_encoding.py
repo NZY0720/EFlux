@@ -18,7 +18,7 @@ from eflux.agents.base import AgentContext
 from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 from eflux.agents.valuation import ValuationSignal
 
-PRICE_REF = 50.0  # default normalization scale (back-compat / tests / synthetic training)
+PRICE_REF = 50.0  # default normalization scale for tests and synthetic training
 
 # The *fixed* price scale every PPO price channel is normalized by (obs ratios + the reward's
 # inventory mark). It is a constant per run/checkpoint — set once at training time to the
@@ -64,23 +64,21 @@ PRIMITIVE_MODES_REALPRICE: list[StrategyMode] = [
 ]
 N_MODES = len(PRIMITIVE_MODES)
 N_PARAMS = 4  # aggressiveness, qty_fraction, price_offset_bps, soc_target
-ENCODING_V2 = 2
-ACTION_DIM_V2 = N_MODES + N_PARAMS + 1
-ACTION_DIM = ACTION_DIM_V2
+ENCODING_V1 = 1
+ACTION_DIM_V1 = N_MODES + N_PARAMS + 1
+ACTION_DIM = ACTION_DIM_V1
 LOG_MULT_MAX = math.log(2.5)
-OBS_V3 = 3
-OBS_V4 = 4
+OBS_V1 = 1
 N_FORECAST_CHANNELS = 6
 N_RUNTIME_CHANNELS = 9
 OBS_BASE_DIM = 18
-OBS_DIM_V3 = OBS_BASE_DIM + N_FORECAST_CHANNELS
-OBS_DIM_V4 = OBS_DIM_V3 + N_RUNTIME_CHANNELS
-OBS_DIM = OBS_DIM_V4
+OBS_DIM_V1 = OBS_BASE_DIM + N_FORECAST_CHANNELS + N_RUNTIME_CHANNELS
+OBS_DIM = OBS_DIM_V1
 
 
 def normalize_action_profile(action_profile: str | None) -> str:
     profile = (action_profile or ACTION_PROFILE_P2P).strip().lower()
-    if profile in {"p2p", "legacy", "p2p_legacy"}:
+    if profile == "p2p":
         return ACTION_PROFILE_P2P
     if profile in {"realprice", "realprice_grid", "grid"}:
         return ACTION_PROFILE_REALPRICE_GRID
@@ -118,7 +116,7 @@ def action_dim(
         if modes is not None
         else len(primitive_modes_for(market_mode, action_profile=action_profile))
     )
-    if version == ENCODING_V2:
+    if version == ENCODING_V1:
         return mode_count + N_PARAMS + 1
     raise ValueError(f"unsupported PPO encoding version: {version}")
 
@@ -133,7 +131,7 @@ def action_profile_for_action_dim(dim: int) -> str:
 
 def encoding_version_for_action_dim(dim: int) -> int:
     if dim in (9, 11):
-        return ENCODING_V2
+        return ENCODING_V1
     raise ValueError(f"unsupported PPO action dimension: {dim}")
 
 
@@ -148,7 +146,7 @@ def infer_action_dim(state_dict: Mapping[str, object]) -> int:
 
 
 def infer_encoding_version(state_dict: Mapping[str, object]) -> int:
-    """Validate the V2 actor output width in a checkpoint state dict."""
+    """Validate the V1 actor output width in a checkpoint state dict."""
     return encoding_version_for_action_dim(infer_action_dim(state_dict))
 
 
@@ -156,7 +154,7 @@ def infer_action_profile(checkpoint_or_state: Mapping[str, object]) -> str:
     """Resolve the action profile from checkpoint metadata when present, else action width.
 
     Checkpoint metadata is authoritative when present; otherwise the current
-    V2 action width identifies the profile.
+    V1 action width identifies the profile.
     """
     explicit = checkpoint_or_state.get("action_profile")
     if explicit is not None:
@@ -171,18 +169,14 @@ def infer_action_profile(checkpoint_or_state: Mapping[str, object]) -> str:
 
 
 def obs_dim_for(version: int) -> int:
-    if version == OBS_V3:
-        return OBS_DIM_V3
-    if version == OBS_V4:
-        return OBS_DIM_V4
+    if version == OBS_V1:
+        return OBS_DIM_V1
     raise ValueError(f"unsupported PPO observation version: {version}")
 
 
 def obs_version_for_obs_dim(dim: int) -> int:
-    if dim == OBS_DIM_V3:
-        return OBS_V3
-    if dim == OBS_DIM_V4:
-        return OBS_V4
+    if dim == OBS_DIM_V1:
+        return OBS_V1
     raise ValueError(f"unsupported PPO observation dimension: {dim}")
 
 
@@ -233,7 +227,7 @@ def _forecast_solar_factor(forecast: object | None, horizon: str) -> float | Non
 
 
 def encode_obs(
-    ctx: AgentContext, valuation: ValuationSignal, *, obs_version: int = OBS_V4
+    ctx: AgentContext, valuation: ValuationSignal, *, obs_version: int = OBS_V1
 ) -> np.ndarray:
     """AgentContext + ValuationSignal → fixed-width observation."""
     m = ctx.market
@@ -274,7 +268,7 @@ def encode_obs(
         ],
         dtype=np.float32,
     )
-    if obs_version not in {OBS_V3, OBS_V4}:
+    if obs_version != OBS_V1:
         raise ValueError(f"unsupported PPO observation version: {obs_version}")
     forecast = ctx.forecast
     real_1h = _forecast_value(forecast, "price_real", "1h")
@@ -294,11 +288,8 @@ def encode_obs(
         ],
         dtype=np.float32,
     )
-    if obs_version == OBS_V3:
-        return np.concatenate([obs, forecast_obs]).astype(np.float32, copy=False)
-
-    # V4 replaces fragile percentage-of-mid price channels with signed,
-    # fixed-scale differences. This stays finite through zero and negative prices.
+    # V1 uses signed fixed-scale differences instead of fragile percentages of mid.
+    # This stays finite through zero and negative prices.
     robust = obs.copy()
     signed_mid = float(m.mid_price) if m.mid_price is not None else last
     robust[5] = 0.0 if bb is None else _finite_clamped((bb - signed_mid) / pr)
@@ -353,7 +344,7 @@ def _atanh_clamped(x: float) -> float:
 def encode_action(
     action: StrategyAction,
     *,
-    version: int = ENCODING_V2,
+    version: int = ENCODING_V1,
     modes: list[StrategyMode] | tuple[StrategyMode, ...] | None = None,
     market_mode: str | None = None,
     action_profile: str | None = None,
@@ -388,7 +379,7 @@ def encode_action(
 def decode_action(
     vec: np.ndarray,
     *,
-    version: int = ENCODING_V2,
+    version: int = ENCODING_V1,
     modes: list[StrategyMode] | tuple[StrategyMode, ...] | None = None,
     market_mode: str | None = None,
     action_profile: str | None = None,

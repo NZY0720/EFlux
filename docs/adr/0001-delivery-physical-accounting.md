@@ -1,6 +1,6 @@
 # ADR 0001 — Delivery products and physical accounting
 
-Status: accepted for Trading Intelligence V2.
+Status: accepted for Trading Intelligence V1.
 
 ## Decision
 
@@ -50,11 +50,11 @@ short/under-delivered.
   power. Fills convert order reservation into a delivery schedule; cancels and
   expiries release only the unfilled reservation.
 - Settlement must never pay a requested quantity when the physical layer
-  delivered less. Silent SOC clamping is forbidden in V2 settlement.
+  delivered less. Silent SOC clamping is forbidden in V1 settlement.
 
 ## Order backing
 
-The old `dispatched: bool` cannot distinguish physical obligations. V2 orders
+The old `dispatched: bool` cannot distinguish physical obligations. V1 orders
 carry one explicit purpose:
 
 - `balance`: renewable/load position already present in the base physical net;

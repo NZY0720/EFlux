@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from eflux.agents.hybrid import HybridPolicyAgent
-from eflux.agents.reflective.pool import SharedLLM
+from eflux.agents.llm.pool import SharedLLM
 from eflux.agents.zip_agent import ZIPAgent
 from eflux.api.main import _rehydrate_managed_vpps
 from eflux.api.routers import vpps as vpps_router
@@ -143,7 +143,7 @@ async def test_legacy_managed_config_without_algorithm_rehydrates_as_llm_ppo(cli
     await _rehydrate_managed_vpps(fresh)
     mine = fresh.my_managed_vpps(user_id)
     assert [v.name for v in mine] == ["legacy-hybrid"]
-    # A pre-split row with no algorithm key was the LLM+PPO hybrid → base ppo with the LLM on.
+    # Indispensable V0 persisted rows are translated only by the isolated V0 adapter.
     assert mine[0].algorithm == "ppo"
     assert mine[0].llm_enabled is True
     assert isinstance(mine[0].agent, HybridPolicyAgent)

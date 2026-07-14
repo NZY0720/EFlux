@@ -39,7 +39,7 @@ def _bench_ghi(ts: datetime) -> float:
 
 def _observe_and_refresh_forecast(sim: Simulator, sim_ts: datetime) -> None:
     """Mirror the live refresh loop inside the episode so agents get real (warm)
-    forecast channels offline — without this, OBS_V3 policies eval with the
+    forecast channels offline — without this, the policy evaluates with the
     forecast features zeroed while they were trained with them populated.
 
     Everything observed derives from the sim itself (engine price, clock), so

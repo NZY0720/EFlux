@@ -4,7 +4,7 @@ import { AlertCircle, Terminal } from "lucide-react";
 import { listVPPs } from "../api/client";
 import type { VPP } from "../api/types";
 import { CardTitle, DashboardCard } from "../components/DashboardCard";
-import { ApiAutomationCard } from "./vpps/LegacyVppParts";
+import { ApiAutomationCard } from "./vpps/VppParts";
 
 export default function DeveloperConsole() {
   const [vpps, setVpps] = useState<VPP[]>([]);

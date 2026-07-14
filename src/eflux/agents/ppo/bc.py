@@ -23,11 +23,16 @@ from torch import nn
 
 from eflux.agents.base import AgentContext
 from eflux.agents.hybrid import StrategyAgent
+from eflux.agents.ppo.checkpoints import (
+    BC_CHECKPOINT_FORMAT,
+    checkpoint_metadata,
+    load_checkpoint,
+)
 from eflux.agents.ppo.primitive_encoding import (
     ACTION_PROFILE_P2P,
-    ENCODING_V2,
-    OBS_DIM_V4,
-    OBS_V4,
+    ENCODING_V1,
+    OBS_DIM_V1,
+    OBS_V1,
     action_profile_for_action_dim,
     action_profile_for_market,
     decode_action,
@@ -89,11 +94,11 @@ class BCNet(nn.Module):
 
     def __init__(
         self,
-        obs_dim: int = OBS_DIM_V4,
+        obs_dim: int = OBS_DIM_V1,
         action_dim: int | None = None,
         hidden: int = 64,
         *,
-        encoding_version: int = ENCODING_V2,
+        encoding_version: int = ENCODING_V1,
         obs_version: int | None = None,
         action_profile: str | None = None,
     ) -> None:
@@ -130,8 +135,8 @@ def collect_demonstrations(
     seed: int = 0,
     demand_beta: float = _DEMO_DEMAND_BETA,
     env_config: dict | None = None,
-    encoding_version: int = ENCODING_V2,
-    obs_version: int = OBS_V4,
+    encoding_version: int = ENCODING_V1,
+    obs_version: int = OBS_V1,
     action_profile: str | None = None,
     battery_only_fraction: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -185,8 +190,8 @@ def collect_scenario_demonstrations(
     seed: int = 0,
     market_mode: str = "p2p",
     demand_beta: float = _DEMO_DEMAND_BETA,
-    encoding_version: int = ENCODING_V2,
-    obs_version: int = OBS_V4,
+    encoding_version: int = ENCODING_V1,
+    obs_version: int = OBS_V1,
     action_profile: str | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Collect expert decisions inside the multi-agent live simulator topology.
@@ -244,8 +249,8 @@ def train_bc(
     lr: float = 1e-3,
     seed: int = 0,
     hidden: int = 64,
-    encoding_version: int = ENCODING_V2,
-    obs_version: int = OBS_V4,
+    encoding_version: int = ENCODING_V1,
+    obs_version: int = OBS_V1,
     action_profile: str | None = None,
 ) -> BCNet:
     """Clone the expert: cross-entropy on the primitive choice (the mode logits) plus
@@ -344,8 +349,8 @@ def mean_episode_reward(
     n_episodes: int = 8,
     seed: int = 0,
     env_config: dict | None = None,
-    encoding_version: int = ENCODING_V2,
-    obs_version: int = OBS_V4,
+    encoding_version: int = ENCODING_V1,
+    obs_version: int = OBS_V1,
     action_profile: str | None = None,
 ) -> float:
     """Mean total VPPPrimitiveEnv reward when `policy` drives it — the warm-start
@@ -386,8 +391,8 @@ def mean_random_reward(
     n_episodes: int = 8,
     seed: int = 0,
     env_config: dict | None = None,
-    encoding_version: int = ENCODING_V2,
-    obs_version: int = OBS_V4,
+    encoding_version: int = ENCODING_V1,
+    obs_version: int = OBS_V1,
     action_profile: str | None = None,
 ) -> float:
     """Mean total reward of a uniformly-random policy — the warm-start floor."""
@@ -451,8 +456,8 @@ def train_bc_policy(
     n_episodes: int = 40,
     epochs: int = 300,
     seed: int = 0,
-    encoding_version: int = ENCODING_V2,
-    obs_version: int = OBS_V4,
+    encoding_version: int = ENCODING_V1,
+    obs_version: int = OBS_V1,
     action_profile: str | None = None,
 ) -> BCPolicy:
     obs, acts = collect_demonstrations(
@@ -495,10 +500,10 @@ def save_bc(
 ) -> None:
     """Save a BC checkpoint wrapping the state-dict with metadata: the fixed price scale the
     net was trained under (so serve/eval can restore train/serve parity) and the market mode
-    it was trained for (p2p / realprice). The loaders also accept legacy bare state-dicts."""
+    it was trained for (p2p / realprice)."""
     torch.save(
         {
-            "format": "bc_primitive_v2",
+            "format": BC_CHECKPOINT_FORMAT,
             "state_dict": net.state_dict(),
             "price_ref": float(price_ref) if price_ref is not None else price_ref_scale(),
             "market_mode": market_mode,
@@ -517,29 +522,17 @@ def save_bc(
     )
 
 
-def _unwrap_state(raw: object) -> dict:
-    """Extract the model state-dict from either the v2 metadata-wrapped checkpoint or a legacy
-    bare state-dict."""
-    if isinstance(raw, dict) and "state_dict" in raw:
-        return raw["state_dict"]
-    return raw  # type: ignore[return-value]
-
-
 def checkpoint_meta(path: str) -> dict:
-    """Read a checkpoint's metadata ({} for legacy bare state-dicts). Used by eval / repro to
-    restore the exact normalization scale the checkpoint trained under."""
-    raw = torch.load(path, map_location="cpu")
-    if isinstance(raw, dict) and "state_dict" in raw:
-        return {k: v for k, v in raw.items() if k != "state_dict"}
-    return {}
+    """Read validated V1 metadata for evaluation and reproducibility."""
+    return checkpoint_metadata(load_checkpoint(path, expected_format=BC_CHECKPOINT_FORMAT))
 
 
 def load_bc(path: str, *, hidden: int = 64) -> BCNet:
-    raw = torch.load(path)
-    state = _unwrap_state(raw)
+    raw = load_checkpoint(path, expected_format=BC_CHECKPOINT_FORMAT)
+    state = raw["state_dict"]
     version = infer_encoding_version(state)
     obs_dim = infer_obs_dim(state)
-    action_profile = infer_action_profile(raw if isinstance(raw, dict) else state)
+    action_profile = infer_action_profile(raw)
     net = BCNet(
         obs_dim=obs_dim,
         action_dim=infer_action_dim(state),

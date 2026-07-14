@@ -4,9 +4,8 @@ import hashlib
 from types import SimpleNamespace
 
 import pytest
-import torch
 
-from eflux.agents.ppo.online_net import ActorCriticNet
+from eflux.agents.ppo.bc import BCNet, save_bc
 from eflux.ecosystem import service
 
 
@@ -16,8 +15,8 @@ def _release(**overrides):
         "recipe": {
             "algorithm": "truthful",
             "agent_params": {},
-            "protocol_version": "2",
-            "observation_schema_version": "4",
+            "protocol_version": "1",
+            "observation_schema_version": "1",
             "action_schema_version": "1",
             "online_learning": False,
             "fallback_strategy": "safe_hold",
@@ -32,7 +31,7 @@ def _release(**overrides):
         "compatibility": {"market": "p2p", "profile_id": "battery-only"},
         "environment": {
             "runtime": "eflux-managed",
-            "agent_protocol_version": 2,
+            "agent_protocol_version": 1,
             "dependencies_locked": True,
             "git_commit": "abcdef0",
         },
@@ -105,8 +104,8 @@ def test_ppo_release_checkpoint_is_contained_hashed_loadable_and_schema_bound(
     checkpoint_dir = project / "checkpoints"
     checkpoint_dir.mkdir(parents=True)
     checkpoint = checkpoint_dir / "agent.pt"
-    network = ActorCriticNet()
-    torch.save(network.state_dict(), checkpoint)
+    network = BCNet()
+    save_bc(network, str(checkpoint))
     digest = hashlib.sha256(checkpoint.read_bytes()).hexdigest()
     monkeypatch.setattr(service, "PROJECT_ROOT", project)
 

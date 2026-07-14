@@ -8,7 +8,7 @@ external VPPs joining over the API validate against the **same** code path
 [`docs/agent_spec.schema.json`](agent_spec.schema.json); regenerate it with:
 
 ```bash
-PYTHONPATH=src .env/bin/python -m eflux.cli agent-spec-schema > docs/agent_spec.schema.json
+./tasks.sh contracts
 ```
 
 ## 1. AgentSpec fields
@@ -16,11 +16,11 @@ PYTHONPATH=src .env/bin/python -m eflux.cli agent-spec-schema > docs/agent_spec.
 | Field | Type | Required | Meaning |
 |---|---|---|---|
 | `name` | string (1–100 chars) | yes | Unique display name (trade tape, participants directory). Duplicates are rejected at load. |
-| `agent` | `zi` \| `truthful` \| `gas` \| `strategy` \| `hybrid` \| `reflective` \| `zip` \| `gd` \| `aa` | no (default `zi`) | Strategy kind. `hybrid` = LLM-steered HybridPolicyAgent (see §3). `reflective` is a legacy alias that loads the hybrid stack. |
+| `agent` | `truthful` \| `gas` \| `strategy` \| `hybrid` \| `zip` \| `gd` \| `aa` | no (default `truthful`) | Strategy kind. `hybrid` = LLM-steered HybridPolicyAgent (see §3). |
 | `seed` | int | no | RNG seed (defaults to `42 + roster index`). |
 | `params` | object | no | DER portfolio — sparse `VPPParams` fields (see the generated JSON schema). Unknown keys are rejected (422 from `POST /vpps`, load failure for the YAML roster); known keys are type-checked. |
-| `agent_params` | object | no | Constructor kwargs for the strategy class. For `hybrid` / legacy `reflective`, they go to `HybridPolicyAgent`. |
-| `persona` | `{name, prompt}` | no | **`hybrid` / `reflective` only** — strategy brief appended to the LLM strategist prompt (`prompt` ≤ 600 chars). Rejected on other agent kinds. |
+| `agent_params` | object | no | Constructor kwargs for the strategy class. For `hybrid`, they go to `HybridPolicyAgent`. |
+| `persona` | `{name, prompt}` | no | **`hybrid` only** — strategy brief appended to the LLM strategist prompt (`prompt` ≤ 600 chars). Rejected on other agent kinds. |
 
 Typos in top-level keys fail loudly (`extra="forbid"`), so a misspelled
 `parms:` cannot silently load.
@@ -71,18 +71,17 @@ participants:
 Loaded by `load_default_scenario()`; the roster file is set via
 `EFLUX_SCENARIO_FILE` (default `scenarios/default.yaml`).
 
-Backtests deliberately default to the current per-market rosters instead of the
-legacy default file: `scenarios/p2p.yaml` for `--market-mode p2p` and
+Backtests deliberately select the current per-market rosters:
+`scenarios/p2p.yaml` for `--market-mode p2p` and
 `scenarios/realprice.yaml` for `--market-mode realprice`.
 
 Validate, inspect, normalize or fingerprint a roster with `eflux scenario
-validate|inspect|normalize|hash PATH`. Legacy files containing only `vpps:` are read
-through an explicit adapter, but all shipped rosters use ScenarioSpec v1.
+validate|inspect|normalize|hash PATH`. Every roster must use ScenarioSpec V1.
 
 ## 3. Hybrid (LLM-steered) agents
 
 All `agent: hybrid` entries share **one** LLM connection (configured via
-`EFLUX_REFLECTIVE_ENABLED`, `EFLUX_LLM_BASE_URL`, `EFLUX_LLM_MODEL`, `key.txt`):
+`EFLUX_LLM_ENABLED`, `EFLUX_LLM_BASE_URL`, `EFLUX_LLM_MODEL`, `key.txt`):
 
 - **Staggering** — the loader assigns each agent a guidance refresh offset
   (`round(i * interval / n)`), so with 4 agents at a 60-tick interval they
@@ -94,14 +93,13 @@ All `agent: hybrid` entries share **one** LLM connection (configured via
   `LLMStrategist` supplies soft guidance (`preferred_modes`, `avoid_modes`,
   `risk_budget`, `soc_target`), and the compiler lowers the primitive into
   concrete orders. The LLM never submits raw orders.
-- **Trading gateway** — every compiled order passes through `TradingGatewayV2`,
+- **Trading gateway** — every compiled order passes through `TradingGatewayV1`,
   which validates cash, delivery product, declared physical purpose, power,
   energy, SOC, ramp and reservations before the product venue sees it. If a
   tactical batch is fully rejected, the configured fallback is compiled and
   submitted through the same gateway; there is no bypass.
 - **Fallback** — when the LLM is unconfigured or unreachable, hybrid agents
-  and legacy `reflective` entries trade on the scripted hybrid baseline and report
-  `llm_status` accordingly. Nothing else changes.
+  trade on the scripted hybrid baseline and report `llm_status` accordingly.
 
 Guidance/reflections are public: `GET /market/reflections` (the "Agent thoughts" panel).
 
@@ -181,11 +179,11 @@ curl -s -X POST $BASE/orders -H "Authorization: Bearer $KEY" \
 payload shapes as the REST backfill endpoints. Reconnect + replay from
 `GET /market/trades`.
 
-## 5. Agent Protocol v2 — batch orders, state & governance (Tier A1)
+## 5. Agent Protocol v1 — batch orders, state & governance (Tier A1)
 
 An async agent runs its own loop: read state → decide → submit a **batch** of orders and
 cancels in one authenticated call → reconcile. Realtime-only (rejected at 10x/100x); every
-order passes the same `TradingGatewayV2` as the built-in fleet. The per-account order bucket is
+order passes the same `TradingGatewayV1` as the built-in fleet. The per-account order bucket is
 shared with single `POST /orders`, so callers cannot bypass batch governance by looping
 one order at a time.
 
@@ -201,11 +199,11 @@ the whole market.
 
 ### Submit + cancel a batch — `POST /orders/batch`
 
-The canonical Agent Protocol v2 envelope:
+The canonical Agent Protocol v1 envelope:
 
 ```jsonc
 {
-  "protocol_version": 2,
+  "protocol_version": 1,
   "idempotency_key": "uuid-...",         // optional; a replay returns the original result
   "deadline": "2026-07-01T12:00:00Z",    // optional; a stale batch is rejected (409)
   "orders": [                            // up to 50; each risk-gated independently
@@ -221,7 +219,7 @@ Response:
 
 ```jsonc
 {
-  "protocol_version": 2,
+  "protocol_version": 1,
   "tick_id": 84213,                      // current market tick, for staleness detection
   "results": [
     {"index": 0, "client_ref": "a", "status": "accepted",
@@ -278,7 +276,7 @@ single-order and batch paths share this limiter.
 
 Instead of running order infrastructure (A1) or letting the platform LLM steer your managed
 agent (Tier 0), post your **own** model's strategy and let the platform execute it. Your code
-sets the *strategy*; the platform's PPO executor, order compiler, and Trading Gateway V2 do
+sets the *strategy*; the platform's PPO executor, order compiler, and Trading Gateway V1 do
 the *execution*. While external guidance is active the platform LLM strategist is not called.
 
 ```bash

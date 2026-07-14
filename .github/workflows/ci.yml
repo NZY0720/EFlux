@@ -12,7 +12,7 @@ concurrency:
 jobs:
   backend:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
@@ -21,9 +21,19 @@ jobs:
       - name: Sync environment
         run: uv sync --frozen --extra dev
       - name: Ruff (zero tolerance)
-        run: uv run ruff check src tests
+        run: uv run ruff check src tests examples
+      - name: Mypy (stable domain core)
+        run: uv run mypy src/eflux/agents/decision.py src/eflux/market src/eflux/ecosystem/release_contract.py src/eflux/ecosystem/deployment.py
       - name: Tests (offline — conftest blocks real network)
         run: uv run pytest tests -q
+      - name: Validate canonical checkpoints
+        run: PYTHONPATH=src uv run python scripts/verify_checkpoints.py
+      - name: Rehearse fresh and previous-head migrations
+        run: |
+          EFLUX_DB_URL=sqlite+aiosqlite:////tmp/eflux-fresh.db uv run alembic upgrade head
+          EFLUX_DB_URL=sqlite+aiosqlite:////tmp/eflux-fresh.db uv run alembic check
+          EFLUX_DB_URL=sqlite+aiosqlite:////tmp/eflux-upgrade.db uv run alembic upgrade 0009
+          EFLUX_DB_URL=sqlite+aiosqlite:////tmp/eflux-upgrade.db uv run alembic upgrade head
 
   frontend:
     runs-on: ubuntu-latest
@@ -61,8 +71,8 @@ jobs:
         with:
           version: 10
       - name: Sync backend environment
-        run: UV_PROJECT_ENVIRONMENT=.env uv sync --frozen --extra dev
-      - name: Regenerate OpenAPI TypeScript artifact
+        run: uv sync --frozen --extra dev
+      - name: Regenerate checked-in contracts
         run: pnpm -C frontend generate:api
-      - name: Fail on OpenAPI artifact drift
-        run: git diff --exit-code -- docs/openapi.json frontend/src/api/schema.gen.ts
+      - name: Fail on contract drift
+        run: git diff --exit-code -- docs/openapi.json docs/agent_spec.schema.json frontend/src/api/schema.gen.ts

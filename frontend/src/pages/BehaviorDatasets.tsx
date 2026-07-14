@@ -102,11 +102,11 @@ export default function BehaviorDatasets() {
   const [createMode, setCreateMode] = useState<CreateMode>("market_session");
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
-  const [version, setVersion] = useState("1.0.0");
+  const [version, setVersion] = useState("1");
   const [description, setDescription] = useState("");
   const [datasetMarket, setDatasetMarket] = useState<Market>("realprice");
   const [visibility, setVisibility] = useState<Visibility>("private");
-  const [schemaVersion, setSchemaVersion] = useState("1");
+  const schemaVersion = "1" as const;
   const [marketSessionId, setMarketSessionId] = useState("");
   const [participantIds, setParticipantIds] = useState("");
   const [artifactPath, setArtifactPath] = useState("");
@@ -163,6 +163,14 @@ export default function BehaviorDatasets() {
     setCreating(true);
     setError(null);
     try {
+      const sourceReleaseIdValue = sourceReleaseId.trim()
+        ? Number(sourceReleaseId.trim())
+        : null;
+      if (
+        sourceReleaseIdValue !== null &&
+        (!Number.isInteger(sourceReleaseIdValue) || sourceReleaseIdValue <= 0)
+      )
+        throw new Error("Enter a valid source release ID.");
       let created: BehaviorDataset;
       if (createMode === "market_session") {
         const selectedParticipants = participantIds
@@ -170,9 +178,15 @@ export default function BehaviorDatasets() {
           .map((value) => value.trim())
           .filter(Boolean)
           .map(Number);
-        if (!marketSessionId.trim() || selectedParticipants.some(Number.isNaN))
+        if (
+          !marketSessionId.trim() ||
+          selectedParticipants.some((value) => !Number.isInteger(value))
+        )
           throw new Error("Enter a valid market session and participant IDs.");
-        created = await exportMarketSessionDataset(marketSessionId.trim(), {
+        const marketSessionIdValue = Number(marketSessionId.trim());
+        if (!Number.isInteger(marketSessionIdValue) || marketSessionIdValue <= 0)
+          throw new Error("Enter a valid market session ID.");
+        created = await exportMarketSessionDataset(marketSessionIdValue, {
           name: name.trim(),
           version: version.trim(),
           description: description.trim(),
@@ -181,7 +195,7 @@ export default function BehaviorDatasets() {
             ? selectedParticipants
             : null,
           license: license.trim(),
-          source_release_id: sourceReleaseId.trim() || null,
+          source_release_id: sourceReleaseIdValue,
         });
       } else {
         if (!artifactFile && !artifactPath.trim())
@@ -193,11 +207,11 @@ export default function BehaviorDatasets() {
           description: description.trim(),
           market: datasetMarket,
           visibility,
-          schema_version: schemaVersion.trim(),
+          schema_version: schemaVersion,
           artifact_path: artifactFile ? null : artifactPath.trim(),
           row_count: rowCount ? Number(rowCount) : 0,
           license: license.trim(),
-          source_release_id: sourceReleaseId.trim() || null,
+          source_release_id: sourceReleaseIdValue,
           manifest: { ...metadata, completeness },
         };
         created = await createBehaviorDataset(body);
@@ -342,7 +356,7 @@ export default function BehaviorDatasets() {
                     <input
                       required
                       value={schemaVersion}
-                      onChange={(event) => setSchemaVersion(event.target.value)}
+                      readOnly
                       className="eflux-input w-full font-mono"
                     />
                   </Field>

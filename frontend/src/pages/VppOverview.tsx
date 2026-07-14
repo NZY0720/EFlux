@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import { fetchManagedVPPPerformance, listManagedVPPs, listVPPs } from "../api/client";
 import type { ManagedVPP, ManagedVPPPerformance, VPP } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill } from "../components/DashboardCard";
-import { algorithmChipLabel, isLlmManaged, LLMBadge } from "./vpps/LegacyVppParts";
+import { algorithmChipLabel, isLlmManaged, LLMBadge } from "./vpps/VppParts";
 
 export default function VppOverview() {
   const [vpps, setVpps] = useState<VPP[]>([]);

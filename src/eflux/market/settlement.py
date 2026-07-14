@@ -1,4 +1,4 @@
-"""Interval settlement into the append-only V2 economic ledger."""
+"""Interval settlement into the append-only V1 economic ledger."""
 
 from __future__ import annotations
 

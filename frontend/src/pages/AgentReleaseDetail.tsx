@@ -21,10 +21,7 @@ import {
   createPopulationPack,
   createReleaseEvaluation,
   deployAgentRelease,
-  fetchAgentRelease,
   forkAgentRelease,
-  listPopulationPacks,
-  listReleaseEvaluations,
   publishAgentRelease,
   updateAgentRelease,
   type AgentRelease,
@@ -41,6 +38,7 @@ import {
   StatusPill,
 } from "../components/DashboardCard";
 import { AgentsNav } from "../components/WorkspaceNav";
+import { useAgentReleaseData } from "../features/agent-releases/hooks/useAgentReleaseData";
 
 const humanize = (value: string) =>
   value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
@@ -81,16 +79,23 @@ const objectString = (record: Record<string, unknown>) =>
 
 export default function AgentReleaseDetail() {
   const { id = "" } = useParams();
+  const releaseId = Number(id);
   const navigate = useNavigate();
-  const [release, setRelease] = useState<AgentRelease | null>(null);
-  const [evaluations, setEvaluations] = useState<ReleaseEvaluation[]>([]);
-  const [populationPacks, setPopulationPacks] = useState<PopulationPack[]>([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    release,
+    setRelease,
+    evaluations,
+    setEvaluations,
+    populationPacks,
+    setPopulationPacks,
+    loading,
+    loadError,
+  } = useAgentReleaseData(releaseId);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showFork, setShowFork] = useState(false);
   const [forkName, setForkName] = useState("");
-  const [forkVersion, setForkVersion] = useState("1.0.0");
+  const [forkVersion, setForkVersion] = useState("1");
   const [forkVisibility, setForkVisibility] = useState<Visibility>("private");
   const [showEdit, setShowEdit] = useState(false);
   const [showDeploy, setShowDeploy] = useState(false);
@@ -118,50 +123,17 @@ export default function AgentReleaseDetail() {
     setEnvironmentJson(objectString(next.environment));
   };
 
-  const load = async () => {
-    try {
-      const [nextRelease, nextEvaluations, nextPacks] = await Promise.all([
-        fetchAgentRelease(id),
-        listReleaseEvaluations(id),
-        listPopulationPacks(),
-      ]);
-      setRelease(nextRelease);
-      setEvaluations(nextEvaluations);
-      setPopulationPacks(nextPacks);
-      hydrateEdit(nextRelease);
-      setKind(
-        nextRelease.market === "realprice"
-          ? "deterministic_replay"
-          : nextRelease.market === "p2p"
-            ? "p2p_tournament"
-            : "hybrid_evaluation",
-      );
-      setError(null);
-    } catch (err) {
-      setError((err as Error).message || "Unable to load this release.");
-    } finally {
-      setLoading(false);
-    }
-  };
-
   useEffect(() => {
-    void load();
-  }, [id]);
-  useEffect(() => {
-    if (
-      !evaluations.some(
-        (evaluation) =>
-          evaluation.status === "queued" || evaluation.status === "running",
-      )
-    )
-      return;
-    const timer = window.setInterval(() => {
-      void listReleaseEvaluations(id)
-        .then(setEvaluations)
-        .catch(() => undefined);
-    }, 3_000);
-    return () => window.clearInterval(timer);
-  }, [evaluations, id]);
+    if (!release) return;
+    hydrateEdit(release);
+    setKind(
+      release.market === "realprice"
+        ? "deterministic_replay"
+        : release.market === "p2p"
+          ? "p2p_tournament"
+          : "hybrid_evaluation",
+    );
+  }, [release]);
 
   const isPopulationRun =
     kind === "p2p_tournament" || kind === "hybrid_evaluation";
@@ -174,7 +146,7 @@ export default function AgentReleaseDetail() {
     setBusy("publish");
     setError(null);
     try {
-      const updated = await publishAgentRelease(id);
+      const updated = await publishAgentRelease(releaseId);
       setRelease(updated);
       hydrateEdit(updated);
     } catch (err) {
@@ -188,7 +160,7 @@ export default function AgentReleaseDetail() {
     setBusy("fork");
     setError(null);
     try {
-      const created = await forkAgentRelease(id, {
+      const created = await forkAgentRelease(releaseId, {
         name: forkName.trim(),
         version: forkVersion.trim(),
         visibility: forkVisibility,
@@ -205,7 +177,7 @@ export default function AgentReleaseDetail() {
     setBusy("save");
     setError(null);
     try {
-      const updated = await updateAgentRelease(id, {
+      const updated = await updateAgentRelease(releaseId, {
         description: editDescription.trim(),
         visibility: editVisibility,
         recipe: parseObject(recipeJson, "Recipe"),
@@ -227,7 +199,7 @@ export default function AgentReleaseDetail() {
     setBusy("deploy");
     setError(null);
     try {
-      const deployment = await deployAgentRelease(id, {
+      const deployment = await deployAgentRelease(releaseId, {
         name: deployName.trim(),
         profile_id: deployProfile,
         params: {},
@@ -252,7 +224,7 @@ export default function AgentReleaseDetail() {
       if (windowEnd) config.window_end = windowEnd;
       if (isPopulationRun && populationPackId)
         config.population_pack_id = populationPackId;
-      const created = await createReleaseEvaluation(id, {
+      const created = await createReleaseEvaluation(releaseId, {
         kind,
         config,
       });
@@ -280,7 +252,7 @@ export default function AgentReleaseDetail() {
           icon={Bot}
           title="Agent release unavailable"
           body={
-            error ??
+            loadError ??
             "This release may have been removed or the link is invalid."
           }
         />
@@ -879,7 +851,7 @@ function PopulationPackCreator({
 }) {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState("");
-  const [version, setVersion] = useState("1.0.0");
+  const [version, setVersion] = useState("1");
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState<Visibility>("public");
   const [specJson, setSpecJson] = useState(

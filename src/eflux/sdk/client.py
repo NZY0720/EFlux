@@ -1,6 +1,6 @@
 """EFlux Python SDK — a thin async client for external (Tier A1) agents.
 
-Wraps auth, public market-data reads, VPP management, and the Agent Protocol v2 order
+Wraps auth, public market-data reads, VPP management, and the Agent Protocol v1 order
 endpoints so an agent author can write a `read → decide → submit_batch` loop without
 hand-rolling HTTP. See docs/AGENT_SPEC.md §5.
 
@@ -256,7 +256,7 @@ class EFluxClient:
     async def supply_curve(self) -> dict:
         return await self._request("GET", "/market/supply_curve")
 
-    # --- orders (Agent Protocol v2) ---
+    # --- orders (Agent Protocol v1) ---
 
     async def open_orders(self, vpp_id: int) -> list[dict]:
         """This VPP's resting orders — reconcile without scraping the whole market."""
@@ -297,10 +297,10 @@ class EFluxClient:
         idempotency_key: str | None = None,
         deadline: Any = None,
     ) -> dict:
-        """Agent Protocol v2 batch: submit orders + cancels in one call. Returns the
+        """Agent Protocol v1 batch: submit orders + cancels in one call. Returns the
         per-item result envelope (see docs/AGENT_SPEC.md §5)."""
         payload: dict[str, Any] = {
-            "protocol_version": 2,
+            "protocol_version": 1,
             "orders": [_order_json(o) for o in (orders or [])],
             "cancels": list(cancels or []),
         }

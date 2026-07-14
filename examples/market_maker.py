@@ -1,7 +1,7 @@
 """Minimal EFlux market-making agent using the Python SDK (Tier A1).
 
 Each cycle it reads the market, quotes a two-sided spread around the mid, cancels its stale
-quotes, and submits the new quotes as one Agent Protocol V2 batch (cancels-first). Educational,
+quotes, and submits the new quotes as one Agent Protocol V1 batch (cancels-first). Educational,
 not tuned — a starting point for your own read -> decide -> submit_batch loop.
 
     PYTHONPATH=src python examples/market_maker.py --base-url http://localhost:8000 --email me@example.com

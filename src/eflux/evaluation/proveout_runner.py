@@ -1,7 +1,7 @@
 """Gateway-backed historical prove-out execution.
 
 The strategy chooses orders, but every accepted quantity is reserved, matched,
-physically delivered and settled by the production V2 Simulator/Gateway path.
+physically delivered and settled by the production V1 Simulator/Gateway path.
 """
 
 from __future__ import annotations
@@ -348,7 +348,7 @@ def execute_gateway_proveout(
         "daily": daily,
         "ledger_breakdown": {key.value: round(float(value), 6) for key, value in breakdown.items()},
         "evidence_id": manifest.evidence_id,
-        "engine": "Simulator + TradingGatewayV2",
+        "engine": "Simulator + TradingGatewayV1",
         "price_resolution": "hourly LMP repeated over five-minute products",
         "audit_event_count": replay.event_count,
         "replay_state_sha256": replay.state_sha256,

@@ -1,12 +1,12 @@
 {
   "name": "eflux-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "generate:api": "../tasks.sh openapi && python3 ../scripts/generate_openapi_ts.py",
+    "generate:api": "../tasks.sh contracts",
     "preview": "vite preview"
   },
   "dependencies": {

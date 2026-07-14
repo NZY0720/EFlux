@@ -133,11 +133,11 @@ class Settings(BaseSettings):
     # fraction (deterministic per agent) so battery-band asks (price_ref/√eta)
     # and deficit bids don't all collapse onto one price level — otherwise the
     # market clears at ~2 discrete prints and the price chart is a square wave.
-    # 0 disables (every agent uses the default 50). LLM/reflective agents are
+    # 0 disables (every agent uses the default 50). LLM-managed agents are
     # always excluded. Gas is unaffected (its cost is set per-VPP already).
     price_ref_jitter_frac: float = 0.06
     # What the cost-basis reference (price_ref) and the PPO normalization scale are
-    # calibrated to. "static" = the fixed legacy 50 $/MWh. "caiso" = the trailing-month
+    # calibrated to. "static" = the fixed 50 $/MWh. "caiso" = the trailing-month
     # CAISO LMP mean (a *fixed* value computed once per run, never the live tick — see
     # data/caiso_reference.py). The live config.env sets this to "caiso"; the default stays
     # "static" so library/test use needs no network and stays deterministic.
@@ -182,9 +182,9 @@ class Settings(BaseSettings):
     llm_input_cost_per_million_tokens: float = 3.0
     llm_output_cost_per_million_tokens: float = 15.0
     # LLM-managed hybrid agents. Off by default so no key/base_url is needed for
-    # default dev runs. The EFLUX_REFLECTIVE_* env names are kept for compatibility.
-    reflective_enabled: bool = False
-    reflective_interval_ticks: int = 60
+    # default dev runs.
+    llm_enabled: bool = False
+    llm_guidance_interval_ticks: int = 60
 
     # --- Online PPO (live learning) ----------------------------------------------------
     # Global kill-switch for the custom online PPO learner. When False, a `ppo_online`
@@ -200,7 +200,7 @@ class Settings(BaseSettings):
     online_learning_save_dir: str = ""
     # Warm-start checkpoint used for API-provisioned managed hybrid/PPO agents. Missing
     # files already fall back to a fresh online policy with a warning in the executor builder.
-    managed_ppo_checkpoint: str = "checkpoints/bc_primitive_p2p_v4.pt"
+    managed_ppo_checkpoint: str = "checkpoints/bc_primitive_p2p_v1.pt"
 
     cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
 

@@ -16,7 +16,7 @@ import torch
 
 from eflux.agents.base import BaseAgent
 from eflux.agents.decision import AgentDecision, OrderRequest
-from eflux.agents.ppo.bc import BCNet
+from eflux.agents.ppo.bc import BCNet, save_bc
 from eflux.agents.ppo.online_buffer import RolloutBuffer
 from eflux.agents.ppo.online_net import (
     ActorCriticNet,
@@ -79,14 +79,14 @@ def test_warm_start_parity_with_bcnet():
         assert decode_action(ac_vec).mode == decode_action(bc_vec).mode
 
 
-def test_load_warm_start_autodetects_bc_and_resumed(tmp_path):
+def test_load_warm_start_accepts_v1_bc_and_online_envelopes(tmp_path):
     bc_path = tmp_path / "bc.pt"
-    torch.save(BCNet().state_dict(), bc_path)
+    save_bc(BCNet(), str(bc_path))
     net = load_warm_start(bc_path)
     assert isinstance(net, ActorCriticNet)
     # Round-trip a full ActorCriticNet checkpoint (resume path).
     ac_path = tmp_path / "ac.pt"
-    torch.save(net.state_dict(), ac_path)
+    OnlinePPOPolicy(learner=OnlineLearner(net=net), learning=False).save(str(ac_path))
     resumed = load_warm_start(ac_path)
     for k, v in net.state_dict().items():
         assert torch.allclose(resumed.state_dict()[k], v)
@@ -327,7 +327,7 @@ def test_risk_rejections_surface_into_context():
 
 # -- M6: LLM meta-controller -------------------------------------------------------------
 def test_policy_apply_meta_scales_weights_and_forwards_levers():
-    from eflux.agents.reflective.strategist import MetaControl
+    from eflux.agents.llm.strategist import MetaControl
 
     policy = build_online_policy(seed=0)
     base = RewardWeights()

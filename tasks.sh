@@ -1,52 +1,43 @@
 #!/usr/bin/env bash
 # Common dev tasks. Run as: ./tasks.sh <task>
-# Tasks: help | start | stop | sync | run | dev | fe-install | fe-dev | smoke | ws | openapi | clean
-#        migrate | makemigration | test | train-ppo | backtest | eval-worker | ecosystem-worker
+# Tasks: help | start | stop | sync | api | dev-stack | dev | fe-install | fe-dev | smoke | ws
+#        contracts | clean | migrate | makemigration | test | verify | train-ppo | backtest
+#        eval-worker | ecosystem-worker
 
 set -euo pipefail
 
 cd "$(dirname "$0")"
 
-export UV_PROJECT_ENVIRONMENT=.env
-PY=".env/bin/python"
-
-# macOS keeps re-adding UF_HIDDEN to everything under .env/ (the venv dir name
-# starts with a dot, which Finder/Spotlight treats as hidden). Python 3.12's
-# site.py refuses to process hidden .pth files for safety, which breaks the
-# editable install (`import eflux` fails). Strip the flag on every invocation
-# so the backend can always import its own package.
-unhide_venv() {
-  [[ -d .env ]] && chflags -R nohidden .env 2>/dev/null || true
-}
-
-# Run on every tasks.sh invocation — any subcommand that ends up importing
-# eflux (run/dev/smoke/ws/openapi) needs the editable .pth file to be visible.
-unhide_venv
+export PYTHONPATH="${PYTHONPATH:+$PYTHONPATH:}src"
+PY=".venv/bin/python"
 
 task="${1:-help}"
 
 case "$task" in
   help)
     cat <<'EOF'
-Tasks: start | stop | dev | sync | run | smoke | ws | clean | openapi | fe-dev | fe-install
-       migrate | makemigration | test | train-ppo | bench | eval-ppo | backtest | eval-worker | ecosystem-worker
+Tasks: start | stop | dev | sync | api | dev-stack | smoke | ws | clean | contracts | fe-dev | fe-install
+       migrate | makemigration | test | verify | train-ppo | bench | eval-ppo | backtest | eval-worker | ecosystem-worker
   start          - one-click: backend + frontend in background + open browser
   stop           - kill backend/frontend dev processes started by start
-  sync           - uv sync all deps into .env/
-  run            - start FastAPI server on :8000 (foreground)
+  sync           - sync all dependencies into .venv/
+  api            - start only the FastAPI server on :8000 (foreground)
+  run            - compatibility alias for api
+  dev-stack      - start API plus both local workers
   dev            - start FastAPI server with --reload
   fe-install     - install frontend deps (pnpm)
   fe-dev         - start Vite dev server on :5173
   smoke          - run REST smoke test (server must be running)
   ws             - run WebSocket smoke test
-  openapi        - dump OpenAPI spec to docs/openapi.json
+  contracts      - regenerate checked-in OpenAPI, agent schema and TypeScript contracts
   clean          - delete dev sqlite db + pycache
   migrate        - apply pending alembic migrations (= alembic upgrade head)
   makemigration  - autogenerate a new alembic migration; usage: ./tasks.sh makemigration "<message>"
   test           - run pytest suite (tests/)
+  verify         - run the complete local release gate
   train-ppo      - train the live torch PPO policy (BC warm-start; needs 'ai' extras). Per market:
-#                    train-ppo --real-data --market-mode p2p       --out checkpoints/bc_primitive_p2p.pt
-#                    train-ppo --real-data --market-mode realprice --out checkpoints/bc_primitive_realprice.pt
+#                    train-ppo --real-data --market-mode p2p       --out checkpoints/bc_primitive_p2p_v1.pt
+#                    train-ppo --real-data --market-mode realprice --out checkpoints/bc_primitive_realprice_grid_v1.pt
   bench          - score candidate agents vs a fixed counter-roster (leaderboard)
   eval-ppo       - score a trained torch checkpoint vs the benchmark baselines (--checkpoint FILE.pt)
   backtest       - run a strict historical backtest (default: 1 month, 1s ticks, hourly live LLM)
@@ -57,31 +48,18 @@ EOF
 
   sync)
     uv sync --extra dev
-    unhide_venv   # uv recreates files inside .env/, which inherit UF_HIDDEN
     ;;
 
-  run)
-    if [[ "${EFLUX_EVAL_WORKER_AUTOSTART:-true}" != "false" ]]; then
-      mkdir -p .run
-      worker_pid_file=".run/eval-worker.pid"
-      if [[ -f "$worker_pid_file" ]] && ! kill -0 "$(cat "$worker_pid_file")" 2>/dev/null; then
-        rm -f "$worker_pid_file"
-      fi
-      if [[ ! -f "$worker_pid_file" ]]; then
-        "$PY" -m eflux.evaluation.worker >.run/eval-worker.log 2>&1 &
-        echo $! > "$worker_pid_file"
-        echo "Started evaluation worker (pid=$(cat "$worker_pid_file"))"
-      fi
-      ecosystem_worker_pid_file=".run/ecosystem-worker.pid"
-      if [[ -f "$ecosystem_worker_pid_file" ]] && ! kill -0 "$(cat "$ecosystem_worker_pid_file")" 2>/dev/null; then
-        rm -f "$ecosystem_worker_pid_file"
-      fi
-      if [[ ! -f "$ecosystem_worker_pid_file" ]]; then
-        "$PY" -m eflux.ecosystem.worker >.run/ecosystem-worker.log 2>&1 &
-        echo $! > "$ecosystem_worker_pid_file"
-        echo "Started ecosystem worker (pid=$(cat "$ecosystem_worker_pid_file"))"
-      fi
-    fi
+  api|run)
+    exec "$PY" -m uvicorn eflux.api.main:app --host 127.0.0.1 --port 8000
+    ;;
+
+  dev-stack)
+    mkdir -p .run
+    "$PY" -m eflux.evaluation.worker >.run/eval-worker.log 2>&1 &
+    echo $! > .run/eval-worker.pid
+    "$PY" -m eflux.ecosystem.worker >.run/ecosystem-worker.log 2>&1 &
+    echo $! > .run/ecosystem-worker.pid
     exec "$PY" -m uvicorn eflux.api.main:app --host 127.0.0.1 --port 8000
     ;;
 
@@ -142,6 +120,14 @@ EOF
     echo "wrote docs/openapi.json"
     ;;
 
+  contracts)
+    mkdir -p docs
+    "$PY" -m eflux.cli openapi > docs/openapi.json
+    "$PY" -m eflux.cli agent-spec-schema > docs/agent_spec.schema.json
+    python3 scripts/generate_openapi_ts.py
+    echo "regenerated checked-in contracts"
+    ;;
+
   clean)
     rm -f eflux_dev.db eflux_dev.db-journal
     find . -name __pycache__ -type d -prune -exec rm -rf {} +
@@ -157,7 +143,7 @@ EOF
     ;;
 
   migrate)
-    exec .env/bin/alembic upgrade head
+    exec "$PY" -m alembic upgrade head
     ;;
 
   makemigration)
@@ -166,12 +152,34 @@ EOF
       echo "usage: ./tasks.sh makemigration \"<message>\"" >&2
       exit 1
     fi
-    exec .env/bin/alembic revision --autogenerate -m "$msg"
+    exec "$PY" -m alembic revision --autogenerate -m "$msg"
     ;;
 
   test)
     shift  # drop "test", forward the rest to pytest
     exec "$PY" -m pytest tests "$@"
+    ;;
+
+  verify)
+    tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/eflux-verify.XXXXXX")
+    trap 'rm -rf "$tmp_dir"' EXIT
+    cp docs/openapi.json "$tmp_dir/openapi.json"
+    cp docs/agent_spec.schema.json "$tmp_dir/agent_spec.schema.json"
+    cp frontend/src/api/schema.gen.ts "$tmp_dir/schema.gen.ts"
+    "$PY" -m ruff check src tests examples
+    "$PY" -m mypy src/eflux/agents/decision.py src/eflux/market \
+      src/eflux/ecosystem/release_contract.py src/eflux/ecosystem/deployment.py
+    "$PY" -m pytest tests -q
+    "$PY" scripts/verify_checkpoints.py
+    EFLUX_DB_URL="sqlite+aiosqlite:///$tmp_dir/fresh.db" "$PY" -m alembic upgrade head
+    EFLUX_DB_URL="sqlite+aiosqlite:///$tmp_dir/fresh.db" "$PY" -m alembic check
+    EFLUX_DB_URL="sqlite+aiosqlite:///$tmp_dir/upgrade.db" "$PY" -m alembic upgrade 0009
+    EFLUX_DB_URL="sqlite+aiosqlite:///$tmp_dir/upgrade.db" "$PY" -m alembic upgrade head
+    pnpm -C frontend build
+    ./tasks.sh contracts
+    cmp "$tmp_dir/openapi.json" docs/openapi.json
+    cmp "$tmp_dir/agent_spec.schema.json" docs/agent_spec.schema.json
+    cmp "$tmp_dir/schema.gen.ts" frontend/src/api/schema.gen.ts
     ;;
 
   train-ppo)

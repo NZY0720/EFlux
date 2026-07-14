@@ -48,24 +48,11 @@ def resolve_scenario_path(path: Path | str) -> Path:
     return resolved if resolved.is_absolute() else PROJECT_ROOT / resolved
 
 
-def load_scenario_spec(path: Path | str, *, allow_legacy: bool = True) -> ScenarioSpecV1:
+def load_scenario_spec(path: Path | str) -> ScenarioSpecV1:
     resolved = resolve_scenario_path(path)
     raw = yaml.safe_load(resolved.read_text(encoding="utf-8")) or {}
     if not isinstance(raw, dict):
         raise ValueError(f"Scenario file {resolved} must contain a YAML object")
-    if "vpps" in raw:
-        if not allow_legacy:
-            raise ValueError("legacy 'vpps' scenarios must be normalized to ScenarioSpec v1")
-        unknown = sorted(set(raw) - {"vpps"})
-        if unknown:
-            raise ValueError(f"legacy scenario contains unknown top-level keys: {unknown}")
-        raw = {
-            "schema_version": "1",
-            "name": resolved.stem,
-            "market_mode": "any",
-            "participants": raw["vpps"],
-            "metadata": {"legacy_adapter": True},
-        }
     return ScenarioSpecV1.model_validate(raw)
 
 

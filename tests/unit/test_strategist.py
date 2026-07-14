@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from eflux.agents.reflective.strategist import (
+from eflux.agents.llm.strategist import (
     GuidanceParseError,
     LLMStrategist,
     MetaControl,

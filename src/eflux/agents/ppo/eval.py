@@ -3,10 +3,10 @@
 Scores the learned policy in the same fixed scenario the scripted StrategyAgent and
 Truthful are scored in, so the leaderboard answers the acceptance question directly:
 is the structured action space learnable, and does the learned policy reach (or beat)
-the scripted baseline? The checkpoint is a torch state-dict (e.g. checkpoints/bc_primitive.pt)
+the scripted baseline? The checkpoint uses the canonical V1 envelope
 as produced by `./tasks.sh train-ppo`. Run via:
-    ./tasks.sh train-ppo --out checkpoints/bc_primitive.pt
-    .env/bin/python -m eflux.agents.ppo.eval --checkpoint checkpoints/bc_primitive.pt
+    ./tasks.sh train-ppo --out checkpoints/bc_primitive_p2p_v1.pt
+    .venv/bin/python -m eflux.agents.ppo.eval --checkpoint checkpoints/bc_primitive_p2p_v1.pt
 """
 
 from __future__ import annotations
@@ -14,20 +14,13 @@ from __future__ import annotations
 import argparse
 from decimal import Decimal
 
-import torch
-
 from eflux.agents.bench.metrics import format_leaderboard
 from eflux.agents.bench.run import score
 from eflux.agents.bench.scenarios import candidates
 from eflux.agents.hybrid import StrategyAgent
 from eflux.agents.ppo.bc import checkpoint_meta
 from eflux.agents.ppo.online_ppo import build_online_policy
-from eflux.agents.ppo.primitive_encoding import (
-    infer_obs_dim,
-    obs_version_for_obs_dim,
-    price_ref_scale,
-    set_price_ref_scale,
-)
+from eflux.agents.ppo.primitive_encoding import price_ref_scale, set_price_ref_scale
 
 # Match the training/serving valuation config so the obs channels line up.
 EVAL_DEMAND_BETA = 0.5
@@ -35,13 +28,7 @@ EVAL_DEMAND_BETA = 0.5
 
 def _checkpoint_obs_version(checkpoint: str) -> int:
     meta = checkpoint_meta(checkpoint)
-    if meta.get("obs_version") is not None:
-        return int(meta["obs_version"])
-    if meta.get("obs_dim") is not None:
-        return obs_version_for_obs_dim(int(meta["obs_dim"]))
-    raw = torch.load(checkpoint, map_location="cpu")
-    state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
-    return obs_version_for_obs_dim(infer_obs_dim(state))
+    return int(meta["obs_version"])
 
 
 def _make_online_agent(checkpoint: str, *, obs_version: int) -> StrategyAgent:
@@ -64,7 +51,7 @@ def main() -> None:
         description="Evaluate a trained torch checkpoint vs the benchmark baselines."
     )
     ap.add_argument(
-        "--checkpoint", required=True, help="path to the trained checkpoint (.pt state-dict)"
+        "--checkpoint", required=True, help="path to a trained V1 checkpoint (.pt)"
     )
     ap.add_argument("--ticks", type=int, default=144)
     ap.add_argument("--tick-minutes", type=float, default=10.0)

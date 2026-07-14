@@ -110,7 +110,7 @@ class RunManifest(BaseModel):
     engine_commit: str = Field(default_factory=engine_commit)
     engine_source_sha256: str = Field(default_factory=engine_source_sha256)
     source_dirty: bool = Field(default_factory=source_dirty)
-    protocol_version: int = 2
+    protocol_version: int = 1
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     market_mode: str
     rules_version: str | None = None

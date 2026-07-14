@@ -186,7 +186,7 @@ async def test_worker_executes_tiny_cached_window_end_to_end(db_session, tmp_pat
     assert completed.status == "done"
     assert completed.report is not None
     assert completed.report["days"] == 1
-    assert completed.report["engine"] == "Simulator + TradingGatewayV2"
+    assert completed.report["engine"] == "Simulator + TradingGatewayV1"
     assert completed.report["replay_verified"] is True
     assert completed.report["solar_generation_kwh"] > 0
     assert completed.report["wind_generation_kwh"] > 0

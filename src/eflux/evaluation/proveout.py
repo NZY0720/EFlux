@@ -552,7 +552,7 @@ def run_proveout(
     end_date: date,
     strategy: dict[str, Any],
 ) -> dict[str, Any]:
-    """Run the production V2 prove-out and return its public report."""
+    """Run the production V1 prove-out and return its public report."""
 
     return run_proveout_execution(endowment, start_date, end_date, strategy).report
 

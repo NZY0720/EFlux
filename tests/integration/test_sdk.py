@@ -31,7 +31,7 @@ async def test_sdk_end_to_end(client):
         ],
         idempotency_key="k1",
     )
-    assert res["protocol_version"] == 2
+    assert res["protocol_version"] == 1
     ids = [r["order_id"] for r in res["results"] if r["status"] == "accepted"]
     assert len(ids) == 2
 

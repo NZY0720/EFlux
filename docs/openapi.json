@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "EFlux \u2014 VPP Electricity Trading Platform",
-    "version": "0.1.0"
+    "version": "1.0.0"
   },
   "paths": {
     "/health": {
@@ -2717,7 +2717,7 @@
           "vpps"
         ],
         "summary": "Create Managed Vpp",
-        "description": "Provision a cloud-hosted, LLM-steered managed agent \u2014 Tier 0 of\ndocs/EXTERNAL_PARTICIPATION.md. The platform runs the HybridPolicyAgent (LLM strategist +\nPPO executor + Truthful oracle + TradingGatewayV2) autonomously on the user's behalf; the user\nsupplies only a DER endowment and an optional persona/preferences. Params and agent_params\nare validated against the same schema as the built-in roster (422 on bad input).",
+        "description": "Provision a cloud-hosted, LLM-steered managed agent \u2014 Tier 0 of\ndocs/EXTERNAL_PARTICIPATION.md. The platform runs the HybridPolicyAgent (LLM strategist +\nPPO executor + Truthful oracle + TradingGatewayV1) autonomously on the user's behalf; the user\nsupplies only a DER endowment and an optional persona/preferences. Params and agent_params\nare validated against the same schema as the built-in roster (422 on bad input).",
         "operationId": "create_managed_vpp_vpps_managed_post",
         "parameters": [
           {
@@ -3192,7 +3192,7 @@
           "vpps"
         ],
         "summary": "Put Guidance",
-        "description": "Steer your managed agent with your own model \u2014 Tier A3 of\ndocs/EXTERNAL_PARTICIPATION.md. The posted StrategyGuidance replaces the platform\nLLM strategist's steering (which stops being called \u2014 running your own model costs\nzero platform LLM budget) while the platform's PPO executor, order compiler, and\nTradingGatewayV2 keep doing the execution. Guidance stays soft: clamped on arrival, biases\nbut never commands (DELETE the guidance to hand control back to the platform LLM).\nPersisted with the agent definition, so it survives a backend restart.",
+        "description": "Steer your managed agent with your own model \u2014 Tier A3 of\ndocs/EXTERNAL_PARTICIPATION.md. The posted StrategyGuidance replaces the platform\nLLM strategist's steering (which stops being called \u2014 running your own model costs\nzero platform LLM budget) while the platform's PPO executor, order compiler, and\nTradingGatewayV1 keep doing the execution. Guidance stays soft: clamped on arrival, biases\nbut never commands (DELETE the guidance to hand control back to the platform LLM).\nPersisted with the agent definition, so it survives a backend restart.",
         "operationId": "put_guidance_vpps_managed__managed_id__guidance_put",
         "parameters": [
           {
@@ -3536,7 +3536,7 @@
           "orders"
         ],
         "summary": "Submit Batch",
-        "description": "Agent Protocol v2 \u2014 submit and cancel a batch of orders in one authenticated call.\n\nThe envelope carries a protocol_version, an optional idempotency_key (a replay returns the\noriginal result rather than re-submitting), and an optional deadline (a stale batch is\nrejected). Every order's vpp_id must be owned by the caller; cancels only ever touch the\ncaller's own resting orders. Each order is risk-gated independently, so one rejection\ndoesn't abort the batch. Per-account rate limited (429).",
+        "description": "Agent Protocol v1 \u2014 submit and cancel a batch of orders in one authenticated call.\n\nThe envelope carries a protocol_version, an optional idempotency_key (a replay returns the\noriginal result rather than re-submitting), and an optional deadline (a stale batch is\nrejected). Every order's vpp_id must be owned by the caller; cancels only ever touch the\ncaller's own resting orders. Each order is risk-gated independently, so one rejection\ndoesn't abort the batch. Per-account rate limited (429).",
         "operationId": "submit_batch_orders_batch_post",
         "parameters": [
           {
@@ -6245,8 +6245,7 @@
           },
           "schema_version": {
             "type": "string",
-            "maxLength": 32,
-            "minLength": 1,
+            "const": "1",
             "title": "Schema Version",
             "default": "1"
           },
@@ -6625,8 +6624,7 @@
             "anyOf": [
               {
                 "type": "string",
-                "maxLength": 32,
-                "minLength": 1
+                "const": "1"
               },
               {
                 "type": "null"
@@ -9542,7 +9540,7 @@
           "protocol_version": {
             "type": "integer",
             "title": "Protocol Version",
-            "default": 2
+            "default": 1
           },
           "idempotency_key": {
             "anyOf": [

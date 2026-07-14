@@ -1,4 +1,4 @@
-from eflux.agents.reflective.chat import (
+from eflux.agents.llm.chat import (
     CHAT_DIRECTIONS,
     build_chat_messages,
     chat_direction,

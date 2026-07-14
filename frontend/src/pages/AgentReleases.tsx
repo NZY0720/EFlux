@@ -65,7 +65,7 @@ export default function AgentReleases() {
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
-  const [version, setVersion] = useState("1.0.0");
+  const [version, setVersion] = useState("1");
   const [description, setDescription] = useState("");
   const [releaseMarket, setReleaseMarket] = useState<Market>("realprice");
   const [visibility, setVisibility] = useState<Visibility>("private");
@@ -106,7 +106,7 @@ export default function AgentReleases() {
       {
         runtime: "eflux-managed",
         dependencies_locked: true,
-        agent_protocol_version: 2,
+        agent_protocol_version: 1,
       },
       null,
       2,

@@ -1,205 +1,35 @@
 import { api } from "./client";
+import type { schemas } from "./schema.gen";
 
-export type ArtifactId = number | string;
-export type Market = "realprice" | "p2p" | "hybrid";
-export type Visibility = "public" | "private";
-export type ReleaseStatus = "draft" | "published" | "verified";
-export type Provenance =
-  | "platform_verified"
-  | "externally_attested"
-  | "self_reported";
-export type EvaluationKind =
-  | "deterministic_replay"
-  | "fresh_llm_replay"
-  | "forward_shadow"
-  | "verified_live"
-  | "p2p_tournament"
-  | "hybrid_evaluation";
-export type EvaluationStatus = "queued" | "running" | "done" | "failed";
-export type TrainingStatus = "queued" | "running" | "succeeded" | "failed";
-export type TrainingAlgorithm = "bc_warm_start" | "ppo_finetune";
+export type PathId = number;
+export type AgentRelease = schemas["AgentReleaseOut"];
+export type CreateAgentReleaseInput = schemas["AgentReleaseCreateIn"];
+export type UpdateAgentReleaseInput = schemas["AgentReleasePatchIn"];
+export type ForkAgentReleaseInput = schemas["AgentReleaseForkIn"];
+export type DeployAgentReleaseInput = schemas["AgentReleaseDeployIn"];
+export type AgentReleaseDeployment = schemas["AgentReleaseDeploymentOut"];
+export type ReleaseEvaluation = schemas["ReleaseEvaluationOut"];
+export type CreateReleaseEvaluationInput =
+  schemas["ReleaseEvaluationCreateIn"];
+export type BehaviorDataset = schemas["BehaviorDatasetOut"];
+export type CreateBehaviorDatasetInput = schemas["BehaviorDatasetCreateIn"];
+export type ExportMarketSessionDatasetInput =
+  schemas["BehaviorDatasetExportIn"];
+export type UpdateBehaviorDatasetInput = schemas["BehaviorDatasetPatchIn"];
+export type TrainingRun = schemas["DatasetTrainingRunOut"];
+export type CreateTrainingRunInput = schemas["DatasetTrainIn"];
+export type PopulationPack = schemas["PopulationPackOut"];
+export type CreatePopulationPackInput = schemas["PopulationPackCreateIn"];
+export type PlatformRuntimeIdentity = schemas["PlatformRuntimeIdentityOut"];
 
-export interface AgentRelease {
-  id: ArtifactId;
-  owner_id: ArtifactId;
-  name: string;
-  version: string;
-  description: string;
-  market: Market;
-  visibility: Visibility;
-  recipe: Record<string, unknown>;
-  state: Record<string, unknown>;
-  compatibility: Record<string, unknown>;
-  environment: Record<string, unknown>;
-  badges: string[];
-  status: ReleaseStatus;
-  parent_release_id: ArtifactId | null;
-  content_sha256: string | null;
-  created_at: string;
-  updated_at: string;
-  published_at: string | null;
-}
-
-export interface CreateAgentReleaseInput {
-  name: string;
-  version: string;
-  description?: string;
-  market: Market;
-  visibility: Visibility;
-  recipe: Record<string, unknown>;
-  state: Record<string, unknown>;
-  compatibility: Record<string, unknown>;
-  environment: Record<string, unknown>;
-  badges: string[];
-}
-
-export type UpdateAgentReleaseInput = Partial<CreateAgentReleaseInput>;
-
-export interface ForkAgentReleaseInput {
-  name?: string;
-  version?: string;
-  visibility?: Visibility;
-}
-
-export interface DeployAgentReleaseInput {
-  name: string;
-  profile_id: string;
-  params: Record<string, unknown>;
-  mode: "shadow" | "paper" | "live";
-  risk_acknowledged: boolean;
-  credential_bindings: string[];
-}
-
-export interface AgentReleaseDeployment {
-  id: number;
-  vpp_id: number;
-  release_id: number;
-  release_content_sha256: string;
-  name: string;
-  mode: "shadow" | "paper" | "live";
-  params: Record<string, unknown>;
-}
-
-export interface ReleaseEvaluation {
-  id: ArtifactId;
-  release_id: ArtifactId;
-  requested_by_id: ArtifactId;
-  kind: EvaluationKind;
-  provenance: Provenance;
-  status: EvaluationStatus;
-  config: Record<string, unknown>;
-  metrics: Record<string, unknown>;
-  evidence: Record<string, unknown> | null;
-  evidence_sha256: string | null;
-  error: string | null;
-  created_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-}
-
-export interface CreateReleaseEvaluationInput {
-  kind: EvaluationKind;
-  config: Record<string, unknown>;
-}
-
-export interface BehaviorDataset {
-  id: ArtifactId;
-  owner_id: ArtifactId;
-  name: string;
-  version: string;
-  description: string;
-  market: Market;
-  visibility: Visibility;
-  schema_version: string;
-  manifest: Record<string, unknown>;
-  download_available: boolean;
-  artifact_sha256: string | null;
-  size_bytes: number;
-  row_count: number;
-  license: string;
-  parent_dataset_id: ArtifactId | null;
-  source_release_id: ArtifactId | null;
-  status: ReleaseStatus;
-  content_sha256: string | null;
-  created_at: string;
-  updated_at: string;
-  published_at: string | null;
-}
-
-export interface CreateBehaviorDatasetInput {
-  name: string;
-  version: string;
-  description?: string;
-  market: Market;
-  visibility: Visibility;
-  schema_version: string;
-  manifest: Record<string, unknown>;
-  artifact_path?: string | null;
-  row_count?: number;
-  license: string;
-  parent_dataset_id?: ArtifactId | null;
-  source_release_id?: ArtifactId | null;
-}
-
-export interface ExportMarketSessionDatasetInput {
-  name: string;
-  version: string;
-  description?: string;
-  visibility: Visibility;
-  participant_ids?: number[] | null;
-  source_release_id?: ArtifactId | null;
-  license: string;
-}
-
-export type UpdateBehaviorDatasetInput = Partial<CreateBehaviorDatasetInput>;
-
-export interface TrainingRun {
-  id: ArtifactId;
-  dataset_id: ArtifactId;
-  owner_id: ArtifactId;
-  algorithm: TrainingAlgorithm;
-  status: TrainingStatus;
-  config: Record<string, unknown>;
-  metrics: Record<string, unknown>;
-  output_release_id: ArtifactId | null;
-  error: string | null;
-  created_at: string;
-  started_at: string | null;
-  finished_at: string | null;
-}
-
-export interface CreateTrainingRunInput {
-  algorithm: TrainingAlgorithm;
-  config: Record<string, unknown>;
-}
-
-export interface PopulationPack {
-  id: ArtifactId;
-  owner_id: ArtifactId | null;
-  name: string;
-  version: string;
-  description: string;
-  visibility: Visibility;
-  spec: Record<string, unknown>;
-  status: ReleaseStatus;
-  content_sha256: string | null;
-  created_at: string;
-  updated_at: string;
-  published_at: string | null;
-}
-
-export interface PlatformRuntimeIdentity {
-  git_commit: string | null;
-  configured_by: "EFLUX_GIT_COMMIT" | "repository" | "unavailable";
-}
-
-export interface CreatePopulationPackInput {
-  name: string;
-  version: string;
-  description?: string;
-  visibility: Visibility;
-  spec: Record<string, unknown>;
-}
+export type Market = AgentRelease["market"];
+export type Visibility = AgentRelease["visibility"];
+export type ReleaseStatus = AgentRelease["status"];
+export type Provenance = ReleaseEvaluation["provenance"];
+export type EvaluationKind = ReleaseEvaluation["kind"];
+export type EvaluationStatus = ReleaseEvaluation["status"];
+export type TrainingStatus = TrainingRun["status"];
+export type TrainingAlgorithm = TrainingRun["algorithm"];
 
 export async function listAgentReleases(): Promise<AgentRelease[]> {
   const { data } = await api.get<AgentRelease[]>("/agent-releases");
@@ -220,13 +50,18 @@ export async function createAgentRelease(
   return data;
 }
 
-export async function fetchAgentRelease(id: ArtifactId): Promise<AgentRelease> {
-  const { data } = await api.get<AgentRelease>(`/agent-releases/${id}`);
+export async function fetchAgentRelease(
+  id: PathId,
+  signal?: AbortSignal,
+): Promise<AgentRelease> {
+  const { data } = await api.get<AgentRelease>(`/agent-releases/${id}`, {
+    signal,
+  });
   return data;
 }
 
 export async function updateAgentRelease(
-  id: ArtifactId,
+  id: PathId,
   body: UpdateAgentReleaseInput,
 ): Promise<AgentRelease> {
   const { data } = await api.patch<AgentRelease>(`/agent-releases/${id}`, body);
@@ -234,7 +69,7 @@ export async function updateAgentRelease(
 }
 
 export async function publishAgentRelease(
-  id: ArtifactId,
+  id: PathId,
 ): Promise<AgentRelease> {
   const { data } = await api.post<AgentRelease>(
     `/agent-releases/${id}/publish`,
@@ -243,7 +78,7 @@ export async function publishAgentRelease(
 }
 
 export async function forkAgentRelease(
-  id: ArtifactId,
+  id: PathId,
   body: ForkAgentReleaseInput,
 ): Promise<AgentRelease> {
   const { data } = await api.post<AgentRelease>(
@@ -254,7 +89,7 @@ export async function forkAgentRelease(
 }
 
 export async function deployAgentRelease(
-  id: ArtifactId,
+  id: PathId,
   body: DeployAgentReleaseInput,
 ): Promise<AgentReleaseDeployment> {
   const { data } = await api.post<AgentReleaseDeployment>(
@@ -265,7 +100,7 @@ export async function deployAgentRelease(
 }
 
 export async function promoteAgentDeploymentLive(
-  deploymentId: ArtifactId,
+  deploymentId: PathId,
 ): Promise<AgentReleaseDeployment> {
   const { data } = await api.post<AgentReleaseDeployment>(
     `/agent-deployments/${deploymentId}/promote-live`,
@@ -275,16 +110,18 @@ export async function promoteAgentDeploymentLive(
 }
 
 export async function listReleaseEvaluations(
-  id: ArtifactId,
+  id: PathId,
+  signal?: AbortSignal,
 ): Promise<ReleaseEvaluation[]> {
   const { data } = await api.get<ReleaseEvaluation[]>(
     `/agent-releases/${id}/evaluations`,
+    { signal },
   );
   return data;
 }
 
 export async function createReleaseEvaluation(
-  id: ArtifactId,
+  id: PathId,
   body: CreateReleaseEvaluationInput,
 ): Promise<ReleaseEvaluation> {
   const { data } = await api.post<ReleaseEvaluation>(
@@ -307,7 +144,7 @@ export async function createBehaviorDataset(
 }
 
 export async function exportMarketSessionDataset(
-  marketSessionId: ArtifactId,
+  marketSessionId: PathId,
   body: ExportMarketSessionDatasetInput,
 ): Promise<BehaviorDataset> {
   const { data } = await api.post<BehaviorDataset>(
@@ -318,7 +155,7 @@ export async function exportMarketSessionDataset(
 }
 
 export async function uploadBehaviorDatasetArtifact(
-  id: ArtifactId,
+  id: PathId,
   file: File,
 ): Promise<BehaviorDataset> {
   const format = file.name.endsWith(".gz") ? "jsonl_gz" : "jsonl";
@@ -334,14 +171,14 @@ export async function uploadBehaviorDatasetArtifact(
 }
 
 export async function fetchBehaviorDataset(
-  id: ArtifactId,
+  id: PathId,
 ): Promise<BehaviorDataset> {
   const { data } = await api.get<BehaviorDataset>(`/behavior-datasets/${id}`);
   return data;
 }
 
 export async function updateBehaviorDataset(
-  id: ArtifactId,
+  id: PathId,
   body: UpdateBehaviorDatasetInput,
 ): Promise<BehaviorDataset> {
   const { data } = await api.patch<BehaviorDataset>(
@@ -352,7 +189,7 @@ export async function updateBehaviorDataset(
 }
 
 export async function publishBehaviorDataset(
-  id: ArtifactId,
+  id: PathId,
 ): Promise<BehaviorDataset> {
   const { data } = await api.post<BehaviorDataset>(
     `/behavior-datasets/${id}/publish`,
@@ -361,7 +198,7 @@ export async function publishBehaviorDataset(
 }
 
 export async function downloadBehaviorDataset(
-  id: ArtifactId,
+  id: PathId,
   fallbackName: string,
 ): Promise<void> {
   const { data, headers } = await api.get<Blob>(
@@ -385,7 +222,7 @@ export async function downloadBehaviorDataset(
 }
 
 export async function trainBehaviorDataset(
-  id: ArtifactId,
+  id: PathId,
   body: CreateTrainingRunInput,
 ): Promise<TrainingRun> {
   const { data } = await api.post<TrainingRun>(
@@ -395,13 +232,17 @@ export async function trainBehaviorDataset(
   return data;
 }
 
-export async function fetchTrainingRun(id: ArtifactId): Promise<TrainingRun> {
+export async function fetchTrainingRun(id: PathId): Promise<TrainingRun> {
   const { data } = await api.get<TrainingRun>(`/training-runs/${id}`);
   return data;
 }
 
-export async function listPopulationPacks(): Promise<PopulationPack[]> {
-  const { data } = await api.get<PopulationPack[]>("/population-packs");
+export async function listPopulationPacks(
+  signal?: AbortSignal,
+): Promise<PopulationPack[]> {
+  const { data } = await api.get<PopulationPack[]>("/population-packs", {
+    signal,
+  });
   return data;
 }
 

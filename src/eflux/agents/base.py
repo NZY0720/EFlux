@@ -2,7 +2,7 @@
 
 All agents (ZI / Truthful / PPO / Reflective) implement `decide()`. The simulator runner
 calls this each tick. An agent owns a VPP, observes its own state + market snapshot, and
-returns an AgentDecision that the runner submits through TradingGatewayV2.
+returns an AgentDecision that the runner submits through TradingGatewayV1.
 """
 
 from __future__ import annotations

@@ -27,7 +27,7 @@ from typing import Literal
 import yaml
 
 from eflux.agents.base import MarketSnapshot
-from eflux.agents.reflective.pool import validate_llm_connection
+from eflux.agents.llm.pool import validate_llm_connection
 from eflux.bridge.bus import InMemoryBus
 from eflux.config import PROJECT_ROOT, get_settings
 from eflux.data.electricity_market import ExternalMarketQuote, synthetic_quote
@@ -149,8 +149,8 @@ def inspect_scenario(path: Path | str) -> ScenarioInspection:
         p = PROJECT_ROOT / p
     scenario = load_scenario_spec(p)
     specs = scenario.participants
-    hybrids = tuple(s.name for s in specs if s.agent in ("hybrid", "reflective"))
-    mirrors = sum(1 for s in specs if s.agent in ("hybrid", "reflective") and s.mirror)
+    hybrids = tuple(s.name for s in specs if s.agent == "hybrid")
+    mirrors = sum(1 for s in specs if s.agent == "hybrid" and s.mirror)
     return ScenarioInspection(
         path=p,
         declared_count=len(specs),
@@ -276,11 +276,11 @@ async def _run_backtest(config: BacktestConfig) -> BacktestResult:
         quote_region = settings.market_region
         quote_node = settings.external_market_node
         quote_fee = Decimal(str(settings.external_market_transaction_fee))
-        llm_enabled = bool(settings.reflective_enabled)
+        llm_enabled = bool(settings.llm_enabled)
         if config.validate_llm and llm_enabled:
             _validate_live_strict_llm(settings)
         elif not llm_enabled:
-            _log_progress("LLM strategist refresh disabled for backtest by EFLUX_REFLECTIVE_ENABLED=false")
+            _log_progress("LLM strategist refresh disabled for backtest by EFLUX_LLM_ENABLED=false")
         sim = Simulator(bus=InMemoryBus(), sim_epoch=start)
         sim.order_ttl_sec = max(config.tick_seconds * 180.0, config.tick_seconds)
         _log_progress(f"loading scenario for strict backtest: {scenario_for_run}")
@@ -834,7 +834,7 @@ def _train_ppo_checkpoint(config: BacktestConfig, run_dir: Path, start: datetime
 
     train_end = start.date()
     train_start = train_end - timedelta(days=30)
-    out = run_dir / f"bc_primitive_{config.market_mode}_backtest.pt"
+    out = run_dir / f"bc_primitive_{config.market_mode}_backtest_v1.pt"
     run_training(
         str(out),
         real_data=True,
@@ -861,15 +861,15 @@ def _write_scenario_with_checkpoint(source: Path, checkpoint: Path, run_dir: Pat
 
 @contextmanager
 def _backtest_env(config: BacktestConfig, scenario: Path) -> Iterator[None]:
-    reflective_enabled = os.environ.get("EFLUX_REFLECTIVE_ENABLED", "true")
+    llm_enabled = os.environ.get("EFLUX_LLM_ENABLED", "true")
     updates = {
         "EFLUX_MARKET_MODE": config.market_mode,
         "EFLUX_SCENARIO_FILE": str(scenario),
-        "EFLUX_REFLECTIVE_ENABLED": reflective_enabled,
+        "EFLUX_LLM_ENABLED": llm_enabled,
         "EFLUX_MARKET_TICK_SEC": str(config.tick_seconds),
         # Backtest owns strict LLM cadence explicitly via _refresh_llm_fleet().
         # Keep HybridPolicyAgent's live async cadence inert so hourly means hourly.
-        "EFLUX_REFLECTIVE_INTERVAL_TICKS": "1000000000",
+        "EFLUX_LLM_GUIDANCE_INTERVAL_TICKS": "1000000000",
         # The backtest runner owns historical timing explicitly. Do not let the
         # live scenario loader prefetch wall-clock weather for historical dates.
         "EFLUX_PV_PHYSICAL": "false",

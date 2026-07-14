@@ -35,7 +35,7 @@ from eflux.agents.decision import (
     SilenceReason,
     classify_silence_reason,
 )
-from eflux.agents.reflective.chat import (
+from eflux.agents.llm.chat import (
     build_chat_messages,
     chat_direction,
     chat_line_is_repetitive,
@@ -56,7 +56,7 @@ from eflux.forecasting.service import ForecastService
 from eflux.market.clock import RollingClock
 from eflux.market.delivery import OrderPurpose
 from eflux.market.events import EventKind, ExternalTradeEvent, TickEvent, TradeEvent
-from eflux.market.gateway import DecisionExecution, GatewayRejected, TradingGatewayV2
+from eflux.market.gateway import DecisionExecution, GatewayRejected, TradingGatewayV1
 from eflux.market.ledger import LedgerCategory, usd_for_energy
 from eflux.market.metering import IntervalMeterBook
 from eflux.market.product_engine import ProductMatchingEngine, ProductOrderEvent, ProductTrade
@@ -72,8 +72,8 @@ from eflux.vpp.base import VPPParams, VPPState
 from eflux.vpp.der import PV, Battery, FlexibleLoad, WindTurbine
 
 if TYPE_CHECKING:
+    from eflux.agents.llm.pool import SharedLLM
     from eflux.agents.ppo.training_data import RealMarketData
-    from eflux.agents.reflective.pool import SharedLLM
     from eflux.forecasting.schema import ForecastBundle
 
 log = logging.getLogger(__name__)
@@ -180,7 +180,7 @@ class Simulator:
         # (~27 hours at the default 1 Hz cadence), not the chart's visible window.
         self.tick_log: deque[TickEvent] = deque(maxlen=MARKET_TICK_HISTORY_MAXLEN)
         self.engine = ProductMatchingEngine(publish_cb=self._publish_product_event)
-        self.gateway = TradingGatewayV2(engine=self.engine)
+        self.gateway = TradingGatewayV1(engine=self.engine)
         self.clock = RollingClock(
             sim_epoch=sim_epoch or _default_sim_epoch(settings.site_timezone),
             speed=settings.market_speed,
@@ -1709,7 +1709,7 @@ class Simulator:
         # Per-market checkpoint: retrain the checkpoint this market's PPO agents loaded, against
         # this market's own structure, so a p2p renew never overwrites the realprice prior.
         suffix = "realprice_grid" if self.market_mode == "realprice" else "p2p"
-        checkpoint = str(PROJECT_ROOT / "checkpoints" / f"bc_primitive_{suffix}_v4.pt")
+        checkpoint = str(PROJECT_ROOT / "checkpoints" / f"bc_primitive_{suffix}_v1.pt")
         self._ppo_renew_task = asyncio.create_task(
             self._run_ppo_renew(
                 days=days, episodes=episodes, epochs=epochs, checkpoint_path=checkpoint
@@ -2126,7 +2126,7 @@ class Simulator:
     def _refresh_realprice_grid(
         self, sim_ts: datetime, products: tuple[DeliveryInterval, ...]
     ) -> None:
-        """Reprice deep external-grid liquidity through the normal V2 gateway.
+        """Reprice deep external-grid liquidity through the normal V1 gateway.
 
         The system counterparty is an infinite bus: it owns no DER and receives
         no SOC/physical settlement.  Every participant fill still creates a
@@ -2207,7 +2207,7 @@ class Simulator:
         vpp.state.pending_net_kwh = vpp.state.net_kw * interval.duration_h
 
     def run_interval_once(self, sim_ts: datetime) -> datetime:
-        """Deterministic synchronous V2 interval step for benchmark/evaluation."""
+        """Deterministic synchronous V1 interval step for benchmark/evaluation."""
 
         wall_ts = sim_ts.astimezone(UTC)
         products = self._ensure_products(sim_ts)
@@ -2343,7 +2343,7 @@ class Simulator:
                 self._record_silence(vpp.vpp_id, sim_ts, SilenceReason.REJECTED)
             # If every new order in a tactical decision was rejected, the hybrid
             # agent may opt into one safe fallback decision.  The fallback still
-            # traverses the same V2 gateway and physical reservations.
+            # traverses the same V1 gateway and physical reservations.
             if all_orders_rejected:
                 fallback = getattr(vpp.agent, "risk_fallback", None)
                 if fallback is None:

@@ -1,4 +1,4 @@
-"""Canonical V2 agent decision contract.
+"""Canonical V1 agent decision contract.
 
 An agent decides against an immutable observation and returns declarative order,
 cancel, and replace requests.  It never mutates the book or physical resources
@@ -25,9 +25,11 @@ class SilenceReason(StrEnum):
 
 def classify_silence_reason(reason: str | None) -> SilenceReason:
     """Map legacy/free-text hold rationales into the closed silence taxonomy."""
+    if reason is None:
+        return SilenceReason.POLICY_HOLD
     try:
         return SilenceReason(reason)
-    except (TypeError, ValueError):
+    except ValueError:
         return SilenceReason.POLICY_HOLD
 
 

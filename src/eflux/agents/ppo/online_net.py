@@ -5,7 +5,7 @@ offline path uses (`primitive_encoding.ACTION_DIM`), so a checkpoint trained off
 behavior-cloned `BCNet`) warm-starts it 1:1. Deliberately RLlib-free: the live learner must
 update inside the simulator without Ray's env-runner/training machinery.
 
-Layout mirrors `bc.BCNet`'s trunk (`Linear(18,64)→Tanh→Linear(64,64)→Tanh`) so the cloned
+Layout mirrors `bc.BCNet`'s trunk (`Linear(33,64)→Tanh→Linear(64,64)→Tanh`) so the cloned
 weights map straight across; on top sit an actor-mean head, a learnable diagonal log-std,
 and a value head. The policy is a diagonal Gaussian over the raw action vector — exactly
 what `decode_action` expects — matching how the RLlib path samples (mean+log_std).
@@ -19,10 +19,11 @@ import numpy as np
 import torch
 from torch import nn
 
+from eflux.agents.ppo.checkpoints import load_checkpoint
 from eflux.agents.ppo.primitive_encoding import (
     ACTION_DIM,
     ACTION_PROFILE_P2P,
-    OBS_DIM_V4,
+    OBS_DIM_V1,
     action_profile_for_action_dim,
     encoding_version_for_action_dim,
     infer_action_dim,
@@ -45,7 +46,7 @@ class ActorCriticNet(nn.Module):
 
     def __init__(
         self,
-        obs_dim: int = OBS_DIM_V4,
+        obs_dim: int = OBS_DIM_V1,
         action_dim: int = ACTION_DIM,
         hidden: int = 64,
         *,
@@ -142,7 +143,7 @@ def _is_bcnet_state(state: dict) -> bool:
 def load_warm_start(
     path: str | Path,
     *,
-    obs_dim: int = OBS_DIM_V4,
+    obs_dim: int = OBS_DIM_V1,
     action_dim: int = ACTION_DIM,
     hidden: int = 64,
     map_location: str = "cpu",
@@ -150,14 +151,11 @@ def load_warm_start(
     """Build an ActorCriticNet from a checkpoint, autodetecting its kind: a BC `BCNet`
     state_dict warm-starts the trunk+actor; a previously-saved ActorCriticNet state_dict
     (live weights persisted on shutdown) is loaded whole to resume learning."""
-    raw = torch.load(str(path), map_location=map_location)
-    # v2 BC checkpoints wrap the state-dict with metadata (price scale, market mode); legacy
-    # checkpoints are a bare state-dict. Either way we only need the weights here — the scale
-    # is restored by the entry points (training / scenario-load / eval), not the loader.
-    state = raw["state_dict"] if isinstance(raw, dict) and "state_dict" in raw else raw
+    raw = load_checkpoint(path, map_location=map_location)
+    state = raw["state_dict"]
     version = infer_encoding_version(state)
     checkpoint_action_dim = infer_action_dim(state)
-    action_profile = infer_action_profile(raw if isinstance(raw, dict) else state)
+    action_profile = infer_action_profile(raw)
     checkpoint_obs_dim = infer_obs_dim(state)
     net = ActorCriticNet(
         obs_dim=checkpoint_obs_dim,

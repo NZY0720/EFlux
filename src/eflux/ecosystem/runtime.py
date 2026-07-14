@@ -22,7 +22,7 @@ from eflux.agents.bench.scenarios import BenchVPP
 from eflux.agents.decision import AgentDecision, OrderRequest
 from eflux.agents.gd_agent import GDAgent
 from eflux.agents.hybrid import HybridPolicyAgent, StrategyAgent
-from eflux.agents.reflective.strategist import StaticStrategist, StrategyGuidance
+from eflux.agents.llm.strategist import StaticStrategist, StrategyGuidance
 from eflux.agents.truthful import TruthfulAgent
 from eflux.agents.zip_agent import ZIPAgent
 from eflux.config import PROJECT_ROOT
@@ -34,10 +34,7 @@ _CHECKPOINT_ROOTS = (
     PROJECT_ROOT / "checkpoints",
     PROJECT_ROOT / "artifacts" / "training_runs",
 )
-_P2P_CHECKPOINT_CANDIDATES = (
-    PROJECT_ROOT / "checkpoints" / "bc_primitive_p2p_v5.pt",
-    PROJECT_ROOT / "checkpoints" / "bc_primitive_p2p_v4.pt",
-)
+_P2P_CHECKPOINT = PROJECT_ROOT / "checkpoints" / "bc_primitive_p2p_v1.pt"
 _RESERVED_AGENT_FIELDS = {
     "character",
     "executor",
@@ -286,9 +283,8 @@ class ArchivedGuidanceHybridAgent(HybridPolicyAgent):
 
 
 def _platform_p2p_checkpoint() -> Path:
-    for candidate in _P2P_CHECKPOINT_CANDIDATES:
-        if candidate.is_file():
-            return _contained_checkpoint(candidate)
+    if _P2P_CHECKPOINT.is_file():
+        return _contained_checkpoint(_P2P_CHECKPOINT)
     raise ValueError("the platform P2P PPO checkpoint is unavailable")
 
 

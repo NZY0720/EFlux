@@ -15,8 +15,8 @@ pytest.importorskip("gymnasium")
 
 
 from eflux.agents.ppo.primitive_encoding import (
-    ACTION_DIM_V2,
-    ENCODING_V2,
+    ACTION_DIM_V1,
+    ENCODING_V1,
     OBS_DIM,
     decode_action,
     encode_action,
@@ -49,7 +49,7 @@ def test_collect_demonstrations_shapes():
     obs, acts = collect_demonstrations(ScriptedStrategyPolicy(), n_episodes=3, seed=0)
     assert obs.shape[0] == acts.shape[0] > 0
     assert obs.shape[1] == OBS_DIM
-    assert acts.shape[1] == ACTION_DIM_V2
+    assert acts.shape[1] == ACTION_DIM_V1
 
 
 def test_demo_curriculum_reserves_battery_only_episodes_with_finite_observations(monkeypatch):
@@ -94,18 +94,18 @@ def test_demo_curriculum_reserves_battery_only_episodes_with_finite_observations
     assert np.isfinite(obs).all()
 
 
-def test_bc_version_plumbing_uses_v2_width():
+def test_bc_version_plumbing_uses_v1_width():
     from eflux.agents.ppo.bc import BCNet, BCPolicy, collect_demonstrations, train_bc
     from eflux.agents.strategy.policy import ScriptedStrategyPolicy
 
     obs, acts = collect_demonstrations(
-        ScriptedStrategyPolicy(), n_episodes=1, seed=0, encoding_version=ENCODING_V2
+        ScriptedStrategyPolicy(), n_episodes=1, seed=0, encoding_version=ENCODING_V1
     )
-    assert acts.shape[1] == ACTION_DIM_V2
-    net = train_bc(obs, acts, epochs=1, seed=0, encoding_version=ENCODING_V2)
+    assert acts.shape[1] == ACTION_DIM_V1
+    net = train_bc(obs, acts, epochs=1, seed=0, encoding_version=ENCODING_V1)
     assert isinstance(net, BCNet)
-    assert net.net[-1].out_features == ACTION_DIM_V2
-    assert BCPolicy(net).encoding_version == ENCODING_V2
+    assert net.net[-1].out_features == ACTION_DIM_V1
+    assert BCPolicy(net).encoding_version == ENCODING_V1
 
 
 def test_bc_clones_expert_trade_decisions():
@@ -160,6 +160,6 @@ def test_bc_policy_actions_are_valid_on_benchmark():
 
     policy = train_bc_policy(n_episodes=30, epochs=300, seed=2)
     m = score("bc", lambda: build_bc_agent(policy), n_ticks=144, tick_h=10 / 60)
-    # Decoded actions clear TradingGatewayV2, and the agent participates.
+    # Decoded actions clear TradingGatewayV1, and the agent participates.
     assert m.risk_rejections == 0
     assert m.energy_traded_kwh > 0

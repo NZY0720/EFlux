@@ -741,7 +741,7 @@ class Trade(Base):
 
 
 class MarketAuditEvent(Base):
-    """Append-only V2 audit stream for deterministic replay and investigation."""
+    """Append-only V1 audit stream for deterministic replay and investigation."""
 
     __tablename__ = "market_audit_events"
     __table_args__ = (

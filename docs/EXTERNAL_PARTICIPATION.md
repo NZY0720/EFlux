@@ -1,8 +1,8 @@
-# External Participation — Agent Protocol V2
+# External Participation — Agent Protocol V1
 
 External agents and built-in agents use one execution model. Both emit an
 `AgentDecision`; every order, cancel and replace terminates at
-`TradingGatewayV2`, uses the same product venue, reservations, USD ledger,
+`TradingGatewayV1`, uses the same product venue, reservations, USD ledger,
 metering and settlement. There is no privileged external or internal route.
 
 ## Participation choices
@@ -70,7 +70,7 @@ The canonical HTTP envelope is:
 
 ```json
 {
-  "protocol_version": 2,
+  "protocol_version": 1,
   "idempotency_key": "decision-001",
   "deadline": "2026-07-11T05:00:30Z",
   "orders": [{
@@ -116,7 +116,7 @@ from the append-only audit stream.
 | `GET /market/snapshot?product_id=...` | Read one product book |
 | `GET /market/trades` | Backfill fills |
 | `GET /orders/open?vpp_id=...` | Reconcile owned resting orders |
-| `POST /orders` | Submit one V2 order |
+| `POST /orders` | Submit one V1 order |
 | `POST /orders/batch` | Retry-safe decision batch |
 | `POST /orders/cancel` | Cancel one owned order |
 | `WS /ws/market` | Stream order/trade/tick events |
@@ -138,5 +138,5 @@ not constrained by an application-level cost budget.
 
 ## Version policy
 
-V2 is the only supported Agent Protocol in this unreleased project. V1 payloads,
-legacy raw-intent routes and old checkpoints are intentionally unsupported.
+V1 is the only supported Agent Protocol. Pre-reset payloads, raw-intent routes
+and checkpoints are intentionally unsupported.

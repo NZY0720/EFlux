@@ -32,7 +32,15 @@ from eflux.db.models import (
 )
 from eflux.ecosystem import service
 from eflux.ecosystem.catalog import get_standard_profile, list_standard_profiles
+from eflux.ecosystem.deployment import (
+    InvalidDeployment,
+    UnsafeLiveDeployment,
+    assert_deployment_compatibility,
+    assert_live_risk_contract,
+    normalize_credential_bindings,
+)
 from eflux.ecosystem.runtime import agent_factory_from_release
+from eflux.ecosystem.runtime_identity import repository_git_commit
 from eflux.simulator.agent_spec import validate_vpp_params
 from eflux.simulator.scenarios import provision_managed_vpp
 
@@ -252,7 +260,7 @@ class BehaviorDatasetCreateIn(BaseModel):
     description: str = Field(default="", max_length=10_000)
     market: Market
     visibility: Visibility = "private"
-    schema_version: str = Field(default="1", min_length=1, max_length=32)
+    schema_version: Literal["1"] = "1"
     manifest: dict[str, Any] = Field(default_factory=dict)
     artifact_path: str | None = Field(default=None, max_length=500)
     row_count: int = Field(default=0, ge=0)
@@ -267,7 +275,7 @@ class BehaviorDatasetPatchIn(BaseModel):
     description: str | None = Field(default=None, max_length=10_000)
     market: Market | None = None
     visibility: Visibility | None = None
-    schema_version: str | None = Field(default=None, min_length=1, max_length=32)
+    schema_version: Literal["1"] | None = None
     manifest: dict[str, Any] | None = None
     artifact_path: str | None = Field(default=None, max_length=500)
     row_count: int | None = Field(default=None, ge=0)
@@ -514,96 +522,6 @@ async def fork_agent_release(
     )
 
 
-def _assert_deployment_compatibility(
-    release: AgentRelease,
-    *,
-    profile: dict[str, Any],
-    profile_id: str,
-    params: dict[str, Any],
-    available_credit_usd: float,
-) -> None:
-    compatibility = dict(release.compatibility or {})
-    declared_market = compatibility.get("market")
-    if declared_market is not None and declared_market != release.market:
-        raise HTTPException(422, "release compatibility market does not match the Release")
-
-    exact_profile = compatibility.get("profile_id")
-    if isinstance(exact_profile, str) and profile_id != exact_profile:
-        raise HTTPException(422, f"release requires asset profile {exact_profile!r}")
-    profile_ids = compatibility.get("profile_ids")
-    if isinstance(profile_ids, list) and profile_ids and profile_id not in profile_ids:
-        raise HTTPException(422, f"asset profile {profile_id!r} is not supported by this release")
-    vpp_types = compatibility.get("vpp_types")
-    asset_type = str(profile.get("spec", {}).get("asset_type") or "")
-    if isinstance(vpp_types, list) and vpp_types and asset_type not in vpp_types:
-        raise HTTPException(422, f"asset type {asset_type!r} is not supported by this release")
-
-    for field in (
-        "battery_kwh",
-        "battery_kw_max",
-        "pv_kw_peak",
-        "load_kw_base",
-        "wind_kw_rated",
-        "gas_kw_max",
-    ):
-        bounds = compatibility.get(f"{field}_range")
-        if isinstance(bounds, list) and len(bounds) == 2:
-            value = float(params.get(field, 0.0))
-            if not float(bounds[0]) <= value <= float(bounds[1]):
-                raise HTTPException(422, f"{field}={value} is outside release compatibility")
-
-    minimum_cash = float(compatibility.get("minimum_cash_usd", 0.0))
-    starting_cash = float(params.get("starting_cash_usd", 0.0))
-    if starting_cash < minimum_cash:
-        raise HTTPException(
-            422,
-            f"starting_cash_usd={starting_cash} is below release minimum {minimum_cash}",
-        )
-    minimum_credit = float(compatibility.get("minimum_credit_usd", 0.0))
-    if available_credit_usd < minimum_credit:
-        raise HTTPException(
-            422,
-            f"available credit {available_credit_usd} is below release minimum {minimum_credit}",
-        )
-
-    settings = get_settings()
-    expected_decision = compatibility.get("decision_interval_seconds")
-    if expected_decision is not None and float(expected_decision) != float(
-        settings.agent_decision_interval_sec
-    ):
-        raise HTTPException(
-            422,
-            "release decision_interval_seconds is incompatible with this market process",
-        )
-    expected_product = compatibility.get("product_granularity_seconds")
-    if expected_product is not None and float(expected_product) != float(
-        settings.delivery_interval_sec
-    ):
-        raise HTTPException(
-            422,
-            "release product_granularity_seconds is incompatible with this market process",
-        )
-
-
-def _assert_live_risk_contract(release: AgentRelease, sim: Any) -> None:
-    """Require the process gateway to be at least as strict as the declared limits."""
-
-    risk = dict(release.recipe.get("risk_limits") or {})
-    limits = sim.gateway.limits
-    checks = (
-        ("max_open_orders", int(limits.max_open_orders)),
-        ("max_new_orders_per_decision", int(limits.max_new_orders_per_decision)),
-        ("credit_limit_usd", float(limits.credit_limit_usd)),
-    )
-    for field, enforced in checks:
-        declared = float(risk[field])
-        if enforced > declared:
-            raise HTTPException(
-                409,
-                f"live gateway {field}={enforced} is looser than release limit {declared}",
-            )
-
-
 async def _platform_evaluation_id(session: AsyncSession, release_id: int) -> int | None:
     return (
         await session.execute(
@@ -679,40 +597,32 @@ async def deploy_agent_release(
     except (KeyError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
-    _assert_deployment_compatibility(
-        release,
-        profile=profile,
-        profile_id=body.profile_id,
-        params=parsed,
-        available_credit_usd=float(parsed.get("starting_cash_usd", 0.0))
-        + float(sim.gateway.limits.credit_limit_usd),
-    )
-    if body.mode == "live":
-        _assert_live_risk_contract(release, sim)
+    settings = get_settings()
+    try:
+        assert_deployment_compatibility(
+            release,
+            profile=profile,
+            profile_id=body.profile_id,
+            params=parsed,
+            available_credit_usd=float(parsed.get("starting_cash_usd", 0.0))
+            + float(sim.gateway.limits.credit_limit_usd),
+            decision_interval_seconds=settings.agent_decision_interval_sec,
+            product_granularity_seconds=settings.delivery_interval_sec,
+        )
+        if body.mode == "live":
+            assert_live_risk_contract(release, sim.gateway.limits)
+        credential_bindings = normalize_credential_bindings(
+            release, body.credential_bindings
+        )
+    except InvalidDeployment as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except UnsafeLiveDeployment as exc:
+        raise HTTPException(409, str(exc)) from exc
 
     raw_algorithm = str(release.recipe.get("algorithm") or "").lower()
     algorithm = "scripted" if raw_algorithm in {"scripted", "strategy"} else raw_algorithm
     llm = release.recipe.get("llm") if isinstance(release.recipe.get("llm"), dict) else {}
     checkpoint = release.state.get("checkpoint_path")
-    credential_bindings = sorted(set(body.credential_bindings))
-    invalid_bindings = [
-        name
-        for name in credential_bindings
-        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None
-    ]
-    if invalid_bindings:
-        raise HTTPException(422, "credential_bindings must contain environment variable names only")
-    credential_placeholder = llm.get("credential_env")
-    if isinstance(credential_placeholder, str):
-        required_binding = (
-            credential_placeholder.removeprefix("env://")
-            if credential_placeholder.startswith("env://")
-            else credential_placeholder.removeprefix("${").removesuffix("}")
-        )
-        if required_binding not in credential_bindings:
-            raise HTTPException(
-                422, f"LLM deployment requires credential binding {required_binding!r}"
-            )
     config = {
         "algorithm": algorithm,
         "llm_enabled": bool(llm),
@@ -834,15 +744,23 @@ async def promote_agent_deployment_live(
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(422, str(exc)) from exc
-    _assert_deployment_compatibility(
-        release,
-        profile=profile,
-        profile_id=profile_id,
-        params=parsed,
-        available_credit_usd=float(parsed.get("starting_cash_usd", 0.0))
-        + float(sim.gateway.limits.credit_limit_usd),
-    )
-    _assert_live_risk_contract(release, sim)
+    settings = get_settings()
+    try:
+        assert_deployment_compatibility(
+            release,
+            profile=profile,
+            profile_id=profile_id,
+            params=parsed,
+            available_credit_usd=float(parsed.get("starting_cash_usd", 0.0))
+            + float(sim.gateway.limits.credit_limit_usd),
+            decision_interval_seconds=settings.agent_decision_interval_sec,
+            product_granularity_seconds=settings.delivery_interval_sec,
+        )
+        assert_live_risk_contract(release, sim.gateway.limits)
+    except InvalidDeployment as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except UnsafeLiveDeployment as exc:
+        raise HTTPException(409, str(exc)) from exc
 
     runtime = next(
         (vpp for vpp in sim.my_managed_vpps(user.id) if vpp.managed_def_id == row.id),
@@ -1171,10 +1089,8 @@ async def standard_asset_profiles() -> list[StandardAssetProfileOut]:
 
 @router.get("/platform-runtime-identity", response_model=PlatformRuntimeIdentityOut)
 def platform_runtime_identity() -> PlatformRuntimeIdentityOut:
-    from eflux.ecosystem.worker import _repository_git_commit
-
     configured = bool(os.environ.get("EFLUX_GIT_COMMIT", "").strip())
-    commit = _repository_git_commit()
+    commit = repository_git_commit()
     return PlatformRuntimeIdentityOut(
         git_commit=commit,
         configured_by=(

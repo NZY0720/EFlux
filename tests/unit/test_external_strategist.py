@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import deque
 
-from eflux.agents.reflective.strategist import (
+from eflux.agents.llm.strategist import (
     ExternalStrategist,
     LLMStrategist,
     StrategyGuidance,
@@ -70,7 +70,7 @@ def test_external_guidance_from_dict_clamps_and_sanitizes():
     assert g_rp.mode_pin is None
 
 
-def test_external_guidance_round_trips_v2_fields():
+def test_external_guidance_round_trips_v1_fields():
     g, _ = external_guidance_from_dict(
         {
             "mode_pin": "cover_deficit",

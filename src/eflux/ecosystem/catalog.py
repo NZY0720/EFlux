@@ -13,7 +13,7 @@ import json
 from copy import deepcopy
 from typing import Any
 
-_CATALOG_VERSION = "1.0.0"
+_CATALOG_VERSION = "1"
 _STANDARD_SEEDS = [11, 23, 37, 53, 71]
 
 
