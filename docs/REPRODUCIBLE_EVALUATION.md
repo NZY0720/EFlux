@@ -5,6 +5,13 @@ backtests. A manifest records engine version, commit and executable source-tree 
 rules versions, scenario/config hashes, seed labels, model hashes and input-data hashes.
 The evidence id excludes only the creation timestamp.
 
+Evaluation results produced before the 2026-07-14 interval-semantics correction are not
+score-comparable with current results. Earlier synchronous episodes skipped alternating
+delivery intervals, the real-price PPO environment could not trade with its grid
+counterparty, and Prove-out used inconsistent interval and inverter-power semantics. Rerun
+older benchmarks or Prove-out jobs before comparing them with current evidence; manifests'
+commit and source-tree hashes identify which implementation produced a result.
+
 ## Prove-out
 
 The managed historical battery strategy submits five-minute product orders to

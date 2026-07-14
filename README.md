@@ -190,8 +190,6 @@ Useful market endpoints (all public, no auth):
 - `GET /leaderboard?scope=session|alltime` — durable rankings (endowment-normalized score v1);
   results persist across restarts (`/leaderboard/sessions`, `/leaderboard/history` for equity curves)
 - `GET /benchmarks` — recorded offline backtest runs (manifest, per-agent metrics, charts)
-- `POST /market/speed` (auth) — switch the rolling clock between 1x/10x/100x at runtime
-
 The *My VPPs* page surfaces the LLM agent end-to-end: click the `my-llm-vpp`
 card for PnL/SOC/trades plus the **guidance timeline** — each LLM round-trip
 with risk/primitive guidance, the model's rationale, and failures (the badge shows

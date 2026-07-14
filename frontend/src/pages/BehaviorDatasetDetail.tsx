@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -19,6 +19,7 @@ import {
   downloadBehaviorDataset,
   fetchBehaviorDataset,
   fetchTrainingRun,
+  listDatasetTrainingRuns,
   publishBehaviorDataset,
   trainBehaviorDataset,
   updateBehaviorDataset,
@@ -120,6 +121,7 @@ export default function BehaviorDatasetDetail() {
   const [trainingConfigJson, setTrainingConfigJson] = useState(
     JSON.stringify({ epochs: 20, learning_rate: 0.0003, seed: 7 }, null, 2),
   );
+  const loadEpochRef = useRef(0);
 
   const hydrate = (next: BehaviorDataset) => {
     setEditDescription(next.description ?? "");
@@ -127,22 +129,36 @@ export default function BehaviorDatasetDetail() {
     setEditLicense(next.license);
     setManifestJson(JSON.stringify(next.manifest, null, 2));
   };
-  const load = async () => {
+  const load = async (epoch: number) => {
     try {
       if (!Number.isInteger(datasetId) || datasetId <= 0)
         throw new Error("The dataset ID is invalid.");
-      const next = await fetchBehaviorDataset(datasetId);
+      const [next, persistedRuns] = await Promise.all([
+        fetchBehaviorDataset(datasetId),
+        listDatasetTrainingRuns(datasetId),
+      ]);
+      if (loadEpochRef.current !== epoch) return;
       setDataset(next);
+      setTrainingRuns(persistedRuns);
       hydrate(next);
       setError(null);
     } catch (err) {
-      setError((err as Error).message || "Unable to load this dataset.");
+      if (loadEpochRef.current === epoch)
+        setError((err as Error).message || "Unable to load this dataset.");
     } finally {
-      setLoading(false);
+      if (loadEpochRef.current === epoch) setLoading(false);
     }
   };
   useEffect(() => {
-    void load();
+    const epoch = ++loadEpochRef.current;
+    setDataset(null);
+    setTrainingRuns([]);
+    setLoading(true);
+    setError(null);
+    void load(epoch);
+    return () => {
+      if (loadEpochRef.current === epoch) loadEpochRef.current += 1;
+    };
   }, [datasetId]);
   useEffect(() => {
     if (
@@ -151,6 +167,8 @@ export default function BehaviorDatasetDetail() {
       )
     )
       return;
+    let cancelled = false;
+    const epoch = loadEpochRef.current;
     const timer = window.setInterval(() => {
       void Promise.all(
         trainingRuns.map((run) =>
@@ -159,10 +177,16 @@ export default function BehaviorDatasetDetail() {
             : Promise.resolve(run),
         ),
       )
-        .then(setTrainingRuns)
+        .then((runs) => {
+          if (!cancelled && loadEpochRef.current === epoch)
+            setTrainingRuns(runs);
+        })
         .catch(() => undefined);
     }, 3_000);
-    return () => window.clearInterval(timer);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [trainingRuns]);
 
   const completeness = useMemo(
@@ -240,6 +264,7 @@ export default function BehaviorDatasetDetail() {
   };
   const train = async (event: FormEvent) => {
     event.preventDefault();
+    const epoch = loadEpochRef.current;
     setBusy("train");
     setError(null);
     try {
@@ -258,11 +283,13 @@ export default function BehaviorDatasetDetail() {
         algorithm,
         config,
       });
-      setTrainingRuns((current) => [created, ...current]);
+      if (loadEpochRef.current === epoch)
+        setTrainingRuns((current) => [created, ...current]);
     } catch (err) {
-      setError((err as Error).message || "Unable to start this training run.");
+      if (loadEpochRef.current === epoch)
+        setError((err as Error).message || "Unable to start this training run.");
     } finally {
-      setBusy(null);
+      if (loadEpochRef.current === epoch) setBusy(null);
     }
   };
 
@@ -661,7 +688,7 @@ export default function BehaviorDatasetDetail() {
           icon={BrainCircuit}
           action={
             <span className="font-mono text-xs text-[var(--text-subtle)]">
-              {trainingRuns.length} started here
+              {trainingRuns.length} persisted
             </span>
           }
         >
@@ -670,7 +697,7 @@ export default function BehaviorDatasetDetail() {
         {trainingRuns.length === 0 ? (
           <EmptyState
             icon={BrainCircuit}
-            title="No training runs in this session"
+            title="No training runs yet"
             body="Publish a complete dataset, then create a BC warm start or fine-tune an existing warm start with PPO."
           />
         ) : (

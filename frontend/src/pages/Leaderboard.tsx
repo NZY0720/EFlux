@@ -3,6 +3,7 @@ import { BrainCircuit, ChartSpline, Info, Trophy } from "lucide-react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { fetchCompetitionLeaderboard, fetchLeaderboard, fetchLeaderboardSessions } from "../api/client";
+import { resolveActiveCompetition, type CompetitionTarget } from "../api/competitions";
 import type { CompetitionLeaderboard, LeaderboardOut, LeaderboardRow, LeaderboardSession, MarketAgent } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill, TableShell } from "../components/DashboardCard";
 import EquityCurves from "../components/EquityCurves";
@@ -437,17 +438,28 @@ function TrackTab({ id, active, setActive, children }: { id: Track; active: Trac
 function ManagedLeaderboard() {
   const navigate = useNavigate();
   const [board, setBoard] = useState<CompetitionLeaderboard | null>(null);
+  const [competition, setCompetition] = useState<CompetitionTarget | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    fetchCompetitionLeaderboard("season-0")
-      .then((data) => { if (!cancelled) { setBoard(data); setError(null); } })
-      .catch((err: Error) => { if (!cancelled) setError(err.message || "Unable to load the managed leaderboard."); })
-      .finally(() => { if (!cancelled) setLoading(false); });
+    const load = async () => {
+      try {
+        const target = await resolveActiveCompetition();
+        if (cancelled) return;
+        setCompetition(target);
+        const data = await fetchCompetitionLeaderboard(target.slug);
+        if (!cancelled) { setBoard(data); setError(null); }
+      } catch (err) {
+        if (!cancelled) setError((err as Error).message || "Unable to load the managed leaderboard.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void load();
     return () => { cancelled = true; };
   }, []);
-  const openCompetition = () => navigate("/competitions/season-0");
+  const openCompetition = () => { if (competition) navigate(`/competitions/${competition.slug}`); };
   const onRowKeyDown = (event: React.KeyboardEvent<HTMLTableRowElement>) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); openCompetition(); } };
   return <DashboardCard><CardTitle icon={Trophy}>Managed ranking</CardTitle>{error ? <p role="alert" className="text-sm text-[var(--danger)]">{error}</p> : loading ? <p className="text-sm text-[var(--text-muted)]">Loading managed results…</p> : !board?.entries.length ? <EmptyState icon={Trophy} title="No managed results yet" body="Managed submissions will appear after their evaluation runs complete." /> : <TableShell><table className="eflux-table min-w-[700px] text-sm"><thead><tr><th className="px-3 py-2 text-left">Rank</th><th className="px-3 py-2 text-left">Participant</th><th className="px-3 py-2 text-left">Algorithm</th><th className="px-3 py-2 text-right">Score</th><th className="px-3 py-2 text-right">Seeds ok</th><th className="px-3 py-2 text-right">Seeds failed</th></tr></thead><tbody>{board.entries.map((entry) => <tr key={entry.submission_id} role="link" tabIndex={0} onClick={openCompetition} onKeyDown={onRowKeyDown} className="cursor-pointer hover:bg-[var(--surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-[var(--accent)]"><td className="px-3 py-2 font-mono tabular-nums text-[var(--text)]">{entry.rank}</td><td className="px-3 py-2 text-[var(--text-muted)]">{maskEmail(entry.user_email)}</td><td className="px-3 py-2 text-[var(--text)]">{entry.algorithm}</td><td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--text)]">{entry.score.toFixed(4)}</td><td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--success)]">{entry.seed_ok_count}</td><td className="px-3 py-2 text-right font-mono tabular-nums text-[var(--danger)]">{entry.seed_failed_count}</td></tr>)}</tbody></table></TableShell>}</DashboardCard>;
 }

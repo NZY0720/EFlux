@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -22,6 +22,7 @@ from eflux.simulator.scenarios import (
     MANAGED_BASELINE_FACTORIES,
     apply_chat_prefs,
     apply_external_guidance,
+    build_managed_brain,
     normalize_managed_config,
     provision_managed_vpp,
     validate_managed_agent_params,
@@ -110,6 +111,8 @@ class ManagedVPPOut(BaseModel):
     release_id: int | None = None
     release_content_sha256: str | None = None
     deployment_mode: Literal["shadow", "paper", "live"] = "live"
+    deployment_status: Literal["running", "failed"] = "running"
+    deployment_error: str | None = None
     agent_kind: str
     strategy: str
     llm_live: bool
@@ -268,6 +271,7 @@ def _managed_vpp_out(vpp) -> ManagedVPPOut:
         release_id=getattr(vpp, "release_id", None),
         release_content_sha256=getattr(vpp, "release_content_sha256", None),
         deployment_mode=getattr(vpp, "deployment_mode", "live"),
+        deployment_status="running",
         agent_kind=vpp.agent.__class__.__name__,
         strategy=vpp.strategy,
         llm_live=vpp.llm_live,
@@ -282,12 +286,70 @@ def _managed_vpp_out(vpp) -> ManagedVPPOut:
     )
 
 
+def _failed_managed_vpp_out(row: VPP) -> ManagedVPPOut:
+    config = dict(row.managed_config or {})
+    chat = config.get("chat") if isinstance(config.get("chat"), dict) else {}
+    mode = config.get("deployment_mode", "live")
+    if mode not in {"shadow", "paper", "live"}:
+        mode = "live"
+    return ManagedVPPOut(
+        id=row.id,
+        vpp_id=-row.id,
+        name=row.name,
+        params=dict(row.params),
+        is_active=False,
+        is_external=False,
+        algorithm=str(config.get("algorithm") or "ppo"),
+        llm_enabled=bool(config.get("llm_enabled", False)),
+        release_id=row.release_id,
+        release_content_sha256=row.release_content_sha256,
+        deployment_mode=mode,
+        deployment_status="failed",
+        deployment_error=str(config.get("deployment_error") or "deployment rehydration failed"),
+        agent_kind="Unavailable",
+        strategy="Deployment failed",
+        llm_live=False,
+        llm_status="Deployment unavailable",
+        llm_health_state="offline",
+        persona=config.get("persona"),
+        model=config.get("model"),
+        guidance_source="none",
+        chat_style=chat.get("style"),
+        chat_color=chat.get("color"),
+        chat_avatar=chat.get("avatar"),
+    )
+
+
 @router.get("/managed", response_model=list[ManagedVPPOut])
 async def list_my_managed_vpps(
     user: CurrentUser,
     sim: SimulatorDep,
+    session: DbSession,
 ) -> list[ManagedVPPOut]:
-    return [_managed_vpp_out(vpp) for vpp in sim.my_managed_vpps(user.id)]
+    running = sim.my_managed_vpps(user.id)
+    running_ids = {vpp.managed_def_id for vpp in running}
+    failed = (
+        (
+            await session.execute(
+                select(VPP).where(
+                    VPP.owner_id == user.id,
+                    VPP.is_managed.is_(True),
+                    VPP.is_active.is_(True),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [
+        *[_managed_vpp_out(vpp) for vpp in running],
+        *[
+            _failed_managed_vpp_out(row)
+            for row in failed
+            if row.id not in running_ids
+            and dict(row.managed_config or {}).get("deployment_status") == "failed"
+        ],
+    ]
 
 
 @router.get("/managed/{vpp_id}/performance", response_model=ManagedVPPPerformanceOut)
@@ -654,9 +716,9 @@ async def update_managed_vpp(
     sim: SimulatorDep,
 ) -> ManagedVPPOut:
     """Adjust a managed agent's trading preferences (persona, agent_params, DER params) and
-    re-provision it. Applying changes restarts the agent's trading session — open orders reset
-    and SOC returns to default — but the PnL scoreboard (realized PnL, energy traded, trade
-    count) carries over. Ownership enforced; validation mirrors creation (422 on bad input)."""
+    re-provision it. Brain-only changes preserve the complete physical/economic runtime;
+    physical parameter changes restart that runtime only when no contracts remain unsettled.
+    Ownership enforced; validation mirrors creation (422 on bad input)."""
     row = (
         await session.execute(
             select(VPP).where(
@@ -716,6 +778,7 @@ async def update_managed_vpp(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             [{"loc": ["body"], "msg": str(e), "type": "value_error"}],
         ) from e
+    physical_params_changed = VPPParams.from_dict(parsed) != VPPParams.from_dict(row.params)
 
     # Update the stored definition (re-assign so SQLAlchemy tracks the JSON change).
     # MERGE into the existing config: it also carries guidance_mode/external_guidance
@@ -732,47 +795,73 @@ async def update_managed_vpp(
         "online_learning": cfg.get("online_learning", True),
     }
 
-    # Re-provision the live agent, carrying over the PnL scoreboard.
     async with sim._lock:
         old = next((v for v in sim.vpps.values() if v.managed_def_id == managed_id), None)
-        carry = (
-            (
-                old.state.pnl,
-                old.state.cumulative_energy_bought_kwh,
-                old.state.cumulative_energy_sold_kwh,
-                old.trade_count,
-                list(old.recent_trades),
+        if old is not None and not physical_params_changed:
+            brain = build_managed_brain(
+                sim,
+                name=row.name,
+                params=parsed,
+                persona_prompt=new_persona,
+                agent_params=new_agent_params,
+                seed=new_seed,
+                model=new_model,
+                checkpoint=cfg.get("checkpoint"),
+                algorithm=algorithm,
+                llm_enabled=llm_enabled,
+                online_learning=cfg.get("online_learning", True),
             )
-            if old is not None
-            else None
-        )
-        sim.remove_managed_vpp(managed_id)
-        vpp = provision_managed_vpp(
-            sim,
-            owner_id=user.id,
-            name=row.name,
-            params=parsed,
-            persona_prompt=new_persona,
-            agent_params=new_agent_params,
-            seed=new_seed,
-            model=new_model,
-            managed_def_id=managed_id,
-            release_id=row.release_id,
-            release_content_sha256=row.release_content_sha256,
-            checkpoint=cfg.get("checkpoint"),
-            deployment_mode=cfg.get("deployment_mode", "live"),
-            algorithm=algorithm,
-            llm_enabled=llm_enabled,
-            online_learning=cfg.get("online_learning", True),
-        )
-        if carry is not None:
-            (
-                vpp.state.pnl,
-                vpp.state.cumulative_energy_bought_kwh,
-                vpp.state.cumulative_energy_sold_kwh,
-                vpp.trade_count,
-                vpp.recent_trades,
-            ) = carry
+            old.agent = brain.agent
+            old.strategy = brain.strategy
+            old.llm_live = brain.llm_live
+            old.llm_status = brain.llm_status
+            old.algorithm = brain.algorithm
+            old.llm_enabled = brain.llm_enabled
+            vpp = old
+        else:
+            if old is not None and sim.has_unsettled_contracts(old.vpp_id):
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "managed VPP has unsettled contracted intervals; update after final settlement",
+                )
+            carry = (
+                (
+                    old.state.cumulative_energy_bought_kwh,
+                    old.state.cumulative_energy_sold_kwh,
+                    old.trade_count,
+                    list(old.recent_trades),
+                )
+                if old is not None
+                else None
+            )
+            vpp = provision_managed_vpp(
+                sim,
+                owner_id=user.id,
+                name=row.name,
+                params=parsed,
+                persona_prompt=new_persona,
+                agent_params=new_agent_params,
+                seed=new_seed,
+                model=new_model,
+                managed_def_id=managed_id,
+                release_id=row.release_id,
+                release_content_sha256=row.release_content_sha256,
+                checkpoint=cfg.get("checkpoint"),
+                deployment_mode=cfg.get("deployment_mode", "live"),
+                algorithm=algorithm,
+                llm_enabled=llm_enabled,
+                online_learning=cfg.get("online_learning", True),
+            )
+            if old is not None:
+                vpp = sim.replace_managed_vpp(managed_id, vpp)
+            if carry is not None:
+                (
+                    vpp.state.cumulative_energy_bought_kwh,
+                    vpp.state.cumulative_energy_sold_kwh,
+                    vpp.trade_count,
+                    vpp.recent_trades,
+                ) = carry
+            vpp.state.pnl = sim.gateway.ledger.balance(vpp.vpp_id)
         # The fresh agent instance must inherit the owner's standing state: external
         # steering (Tier A3) and chatroom presence both survive a preferences patch.
         guidance = cfg.get("external_guidance")
@@ -1039,13 +1128,7 @@ async def deactivate_vpp(
     runtime = sim.vpps.get(vpp_id)
     if runtime is not None:
         async with sim._lock:
-            sim.gateway.cancel_all(
-                vpp_id,
-                sim_ts=sim.clock.now_sim(),
-                wall_ts=datetime.now(UTC),
-            )
-            sim.gateway.participants.pop(vpp_id, None)
-            sim.vpps.pop(vpp_id, None)
+            sim.request_vpp_removal(vpp_id)
     vpp.is_active = False
     return None
 
@@ -1057,8 +1140,11 @@ async def delete_managed_vpp(
     user: CurrentUser,
     sim: SimulatorDep,
 ) -> None:
-    """Remove a managed agent: drop it from the simulator (cancelling its resting orders) and
-    delete its persisted definition. Ownership enforced (404 on anything that isn't yours)."""
+    """Deactivate a managed agent and delete its persisted definition.
+
+    Resting orders are cancelled immediately; filled positions remain in the
+    simulator until their final delivery settlement. Ownership is enforced.
+    """
     stmt = select(VPP).where(
         VPP.id == managed_id, VPP.owner_id == user.id, VPP.is_managed.is_(True)
     )

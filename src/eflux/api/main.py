@@ -34,8 +34,10 @@ from eflux.bridge import InMemoryBus, set_bus
 from eflux.bridge.bus import EventBus
 from eflux.config import get_settings
 from eflux.db.base import Base
-from eflux.db.models import AuditEvent, Competition, CompetitionRuleSet
+from eflux.db.models import AgentRelease, AuditEvent, Competition, CompetitionRuleSet
 from eflux.db.session import get_engine, get_sessionmaker
+from eflux.ecosystem.runtime import verified_release_checkpoint
+from eflux.evaluation.rules import OFFICIAL_DECIDE_DEADLINE_MS
 from eflux.simulator.runner import Simulator
 from eflux.simulator.scenarios import (
     apply_chat_prefs,
@@ -50,7 +52,7 @@ log = logging.getLogger(__name__)
 
 _SEASON_0_RULES = {
     "window_sec": 300,
-    "deadline_ms": 500,
+    "deadline_ms": OFFICIAL_DECIDE_DEADLINE_MS,
     "practice_seeds": 3,
     "hidden_seeds": 5,
     "holdout_seeds": 2,
@@ -252,6 +254,20 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                     row.managed_config = cfg
                     scrubbed_any = True
                 try:
+                    checkpoint = cfg.get("checkpoint")
+                    if row.release_id is not None:
+                        release = await session.get(AgentRelease, row.release_id)
+                        if release is None:
+                            raise ValueError("bound Agent Release no longer exists")
+                        if release.owner_id != row.owner_id:
+                            raise ValueError("bound Agent Release owner does not match deployment")
+                        if (
+                            not release.content_sha256
+                            or release.content_sha256 != row.release_content_sha256
+                        ):
+                            raise ValueError("bound Agent Release digest does not match deployment")
+                        if str(release.recipe.get("algorithm") or "").lower() == "ppo":
+                            checkpoint = str(verified_release_checkpoint(release))
                     vpp = provision_managed_vpp(
                         sim,
                         owner_id=row.owner_id,
@@ -264,7 +280,7 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                         managed_def_id=row.id,
                         release_id=row.release_id,
                         release_content_sha256=row.release_content_sha256,
-                        checkpoint=cfg.get("checkpoint"),
+                        checkpoint=checkpoint,
                         deployment_mode=cfg.get("deployment_mode", "live"),
                         algorithm=algorithm,
                         llm_enabled=llm_enabled,
@@ -275,8 +291,16 @@ async def _rehydrate_managed_vpps(sim: Simulator) -> None:
                     if llm_enabled and guidance is not None:
                         apply_external_guidance(vpp, guidance, market_mode=sim.market_mode)
                     apply_chat_prefs(vpp, cfg.get("chat"))
+                    if cfg.pop("deployment_status", None) is not None:
+                        cfg.pop("deployment_error", None)
+                        row.managed_config = cfg
+                        scrubbed_any = True
                     count += 1
-                except Exception:
+                except Exception as exc:
+                    cfg["deployment_status"] = "failed"
+                    cfg["deployment_error"] = f"{type(exc).__name__}: {exc}"[:1000]
+                    row.managed_config = cfg
+                    scrubbed_any = True
                     log.exception("Failed to rehydrate managed VPP id=%s name=%s", row.id, row.name)
             if scrubbed_any:
                 await session.commit()

@@ -120,7 +120,10 @@ export function MarketStreamProvider({ children }: { children: React.ReactNode }
   // drives staleness: >5s without a successful snapshot flips the warning on.
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
     const tick = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const s = await fetchSnapshot(10);
         if (cancelled) return;
@@ -129,6 +132,8 @@ export function MarketStreamProvider({ children }: { children: React.ReactNode }
         setSnapshot(s);
       } catch {
         if (!cancelled && Date.now() - lastSnapshotOkRef.current > 5000) setStale(true);
+      } finally {
+        inFlight = false;
       }
     };
     tick();

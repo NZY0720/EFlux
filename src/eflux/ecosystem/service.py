@@ -27,6 +27,7 @@ from eflux.datasets.trajectory import (
     inspect_trajectory_artifact,
 )
 from eflux.db.models import (
+    VPP,
     AgentRelease,
     AuditEvent,
     BehaviorDataset,
@@ -397,6 +398,35 @@ async def create_release_evaluation(
         raise EcosystemError(422, "P2P tournaments require a P2P or hybrid release")
     if kind == "hybrid_evaluation" and release.market != "hybrid":
         raise EcosystemError(422, "hybrid evaluation requires a hybrid release")
+    if kind in {"forward_shadow", "verified_live"}:
+        managed_def_id = data.get("config", {}).get("managed_def_id")
+        if managed_def_id is None:
+            raise EcosystemError(422, "deployment-bound evaluation requires managed_def_id")
+        try:
+            managed_def_id = int(managed_def_id)
+        except (TypeError, ValueError) as exc:
+            raise EcosystemError(422, "managed_def_id must be an integer") from exc
+        deployment = (
+            await session.execute(
+                select(VPP).where(
+                    VPP.id == int(managed_def_id),
+                    VPP.owner_id == user.id,
+                    VPP.is_managed.is_(True),
+                    VPP.is_active.is_(True),
+                    VPP.release_id == release.id,
+                    VPP.release_content_sha256 == release.content_sha256,
+                )
+            )
+        ).scalar_one_or_none()
+        expected_mode = "live" if kind == "verified_live" else "shadow"
+        if (
+            deployment is None
+            or dict(deployment.managed_config or {}).get("deployment_mode", "live")
+            != expected_mode
+        ):
+            raise EcosystemError(
+                422, f"evaluation requires an owned {expected_mode} deployment of this release"
+            )
     evaluation = ReleaseEvaluation(
         release_id=release.id,
         requested_by_id=user.id,
@@ -965,6 +995,26 @@ async def get_dataset_training_run(
     if run.owner_id != user.id and not _is_admin(user):
         raise EcosystemError(404, "training run not found")
     return run
+
+
+async def list_dataset_training_runs(
+    session: AsyncSession, dataset_id: int, user: User
+) -> list[DatasetTrainingRun]:
+    dataset = await session.get(BehaviorDataset, dataset_id)
+    if dataset is None or dataset.owner_id != user.id:
+        raise EcosystemError(404, "behavior dataset not found")
+    return list(
+        (
+            await session.execute(
+                select(DatasetTrainingRun)
+                .where(
+                    DatasetTrainingRun.dataset_id == dataset_id,
+                    DatasetTrainingRun.owner_id == user.id,
+                )
+                .order_by(DatasetTrainingRun.created_at.desc(), DatasetTrainingRun.id.desc())
+            )
+        ).scalars()
+    )
 
 
 def population_content(pack: PopulationPack) -> dict[str, Any]:

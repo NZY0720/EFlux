@@ -67,6 +67,7 @@ class ParticipantRuntimeV1:
     params: VPPParams
     battery: Battery
     is_system: bool = False
+    trading_enabled: bool = True
     balance_reservations: BalanceReservationBook = field(default_factory=BalanceReservationBook)
     positions: dict[str, DeliveryPosition] = field(default_factory=dict)
     reserved_cash_by_order: dict[int, Decimal] = field(default_factory=dict)
@@ -255,6 +256,16 @@ class TradingGatewayV1:
                 cancelled.append(removed.order_id)
         return tuple(cancelled)
 
+    def deactivate_participant(
+        self, participant_id: int, *, sim_ts: datetime, wall_ts: datetime
+    ) -> tuple[int, ...]:
+        """Stop new risk immediately while retaining runtime state for settlement."""
+
+        runtime = self._participant(participant_id)
+        cancelled = self.cancel_all(participant_id, sim_ts=sim_ts, wall_ts=wall_ts)
+        runtime.trading_enabled = False
+        return cancelled
+
     def record_meter_data(
         self,
         participant_id: int,
@@ -280,6 +291,7 @@ class TradingGatewayV1:
         *,
         prices: SettlementPrices,
         occurred_at: datetime,
+        imbalance_settlement_enabled: bool = True,
     ) -> SettlementResult:
         if not interval.is_settleable(occurred_at):
             raise ValueError("delivery interval is not finished")
@@ -318,6 +330,7 @@ class TradingGatewayV1:
                 str(runtime.params.battery_degradation_cost_per_mwh_throughput)
             ),
             battery_cell_throughput_kwh=Decimal(str(battery_delivery.cell_throughput_kwh)),
+            imbalance_settlement_enabled=imbalance_settlement_enabled,
         )
         runtime.battery_reservations.settle_interval(iid, ending_soc_kwh=runtime.battery.soc_kwh)
         runtime.dispatchable_reservations.settle_interval(iid, ending_power_kw=gas_power)
@@ -452,6 +465,8 @@ class TradingGatewayV1:
     ) -> None:
         lim = self.limits
         self.engine.register(request.interval)
+        if not runtime.trading_enabled:
+            raise GatewayRejected("participant is deactivated")
         if runtime.is_system and request.purpose != OrderPurpose.SYSTEM_GRID:
             raise GatewayRejected("system participant orders require purpose=system_grid")
         if not runtime.is_system and request.purpose == OrderPurpose.SYSTEM_GRID:
@@ -460,7 +475,9 @@ class TradingGatewayV1:
             raise GatewayRejected(
                 f"price {request.price} outside [{lim.price_min}, {lim.price_max}]"
             )
-        if request.qty_kwh < lim.qty_min_kwh or request.qty_kwh > lim.qty_max_kwh:
+        if request.qty_kwh < lim.qty_min_kwh or (
+            request.qty_kwh > lim.qty_max_kwh and not runtime.is_system
+        ):
             raise GatewayRejected(
                 f"qty {request.qty_kwh} outside [{lim.qty_min_kwh}, {lim.qty_max_kwh}]"
             )
@@ -470,7 +487,7 @@ class TradingGatewayV1:
         if not runtime.is_system:
             needed = self._worst_case_cash_debit(request)
             available = self.available_credit_usd(runtime.participant_id) + released_credit_usd
-            if needed > available:
+            if needed > 0 and needed > available:
                 raise GatewayRejected(
                     f"cash reservation {needed} USD exceeds available credit {available} USD"
                 )

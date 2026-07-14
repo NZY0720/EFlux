@@ -17,8 +17,14 @@ from eflux.agents.ppo.primitive_encoding import (
     decode_action,
     encode_action,
 )
-from eflux.agents.ppo.primitive_env import SOC_HIGH, SOC_LOW, W_SOC, VPPPrimitiveEnv
-from eflux.agents.strategy.schema import StrategyAction
+from eflux.agents.ppo.primitive_env import (
+    COUNTERPARTY_ID,
+    SOC_HIGH,
+    SOC_LOW,
+    W_SOC,
+    VPPPrimitiveEnv,
+)
+from eflux.agents.strategy.schema import StrategyAction, StrategyMode
 
 
 def test_decode_action_selects_mode_by_argmax():
@@ -93,6 +99,20 @@ def test_noop_action_keeps_reward_finite():
     for _ in range(5):
         _, r, _, _, _ = env.step(noop)
         assert np.isfinite(r)
+
+
+def test_realprice_env_trades_with_registered_system_grid():
+    env = VPPPrimitiveEnv({"seed": 0, "episode_ticks": 1, "market_mode": "realprice"})
+    env.reset(seed=0)
+    action = encode_action(
+        StrategyAction(mode=StrategyMode.COVER_DEFICIT, aggressiveness=1.0),
+        market_mode="realprice",
+    )
+
+    env.step(action)
+
+    assert env._gateway.participants[COUNTERPARTY_ID].is_system
+    assert env._engine.trade_count >= 1
 
 
 def test_soc_reward_band_allows_high_solar_charge():

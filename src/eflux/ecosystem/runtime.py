@@ -191,6 +191,14 @@ def _ppo_policy(checkpoint: Path, *, learning: bool, seed: int):
     return build_online_policy(str(checkpoint), learning=learning, auto_update=learning, seed=seed)
 
 
+def verified_release_checkpoint(release_or_mapping: object) -> Path:
+    """Return a PPO Release checkpoint only after trusted-path and digest checks."""
+
+    state = _mapping(_value(release_or_mapping, "state"), label="release.state")
+    _reject_unsafe_runtime_data(state, path="release.state")
+    return _verified_release_checkpoint(state)
+
+
 def agent_factory_from_release(release_or_mapping: object, *, learning: bool = False) -> BaseAgent:
     """Construct one shipped EFlux agent from an Agent Release.
 
@@ -220,7 +228,7 @@ def agent_factory_from_release(release_or_mapping: object, *, learning: bool = F
     if algorithm == "ppo":
         params = _constructor_params(StrategyAgent, recipe.get("agent_params"))
         seed = int(recipe.get("seed", 0))
-        checkpoint = _verified_release_checkpoint(state)
+        checkpoint = verified_release_checkpoint(release_or_mapping)
         params["policy"] = _ppo_policy(checkpoint, learning=learning, seed=seed)
         return StrategyAgent(**params)
     supported = sorted([*factories, "ppo"])
@@ -380,4 +388,5 @@ __all__ = [
     "SeededZeroIntelligenceAgent",
     "agent_factory_from_release",
     "bench_roster_from_population",
+    "verified_release_checkpoint",
 ]

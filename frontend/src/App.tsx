@@ -41,8 +41,9 @@ function RouteFallback() {
 }
 
 function RequireAuth({ children }: { children: React.ReactElement }) {
-  const { token } = useAuth();
+  const { token, restoring } = useAuth();
   const loc = useLocation();
+  if (restoring && !token) return <RouteFallback />;
   if (!token) return <Navigate to="/login" state={{ from: `${loc.pathname}${loc.search}` }} replace />;
   return children;
 }

@@ -1,5 +1,6 @@
 import ReactECharts from "echarts-for-react";
 import { useEffect, useMemo, useState } from "react";
+import { RefreshCw } from "lucide-react";
 
 import { fetchSupplyCurve } from "../api/client";
 import type { SupplyCurve } from "../api/types";
@@ -31,16 +32,22 @@ interface RenderApi {
  */
 export default function MeritOrderChart() {
   const [curve, setCurve] = useState<SupplyCurve | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
   const theme = useChartTheme();
 
   useEffect(() => {
     let cancelled = false;
+    setError(null);
     const tick = async () => {
       try {
         const c = await fetchSupplyCurve();
-        if (!cancelled) setCurve(c);
-      } catch {
-        /* transient — keep the previous stack on screen */
+        if (!cancelled) {
+          setCurve(c);
+          setError(null);
+        }
+      } catch (err) {
+        if (!cancelled) setError((err as Error).message || "Unable to load the supply stack.");
       }
     };
     tick();
@@ -49,7 +56,7 @@ export default function MeritOrderChart() {
       cancelled = true;
       clearInterval(id);
     };
-  }, []);
+  }, [retryKey]);
 
   const { segmentsByCategory, demand } = useMemo(() => {
     const byCat = new Map<string, Segment[]>();
@@ -75,6 +82,16 @@ export default function MeritOrderChart() {
   }, [curve]);
 
   if (!curve) {
+    if (error) {
+      return (
+        <div className="flex h-72 flex-col items-center justify-center rounded-lg bg-[var(--danger-soft)] p-4 text-center" role="alert">
+          <p className="text-sm text-[var(--danger)]">{error}</p>
+          <button type="button" onClick={() => setRetryKey((current) => current + 1)} className="eflux-btn mt-3 h-8 px-3 text-xs">
+            <RefreshCw size={14} /> Retry
+          </button>
+        </div>
+      );
+    }
     return <EmptyState className="h-72" title="Loading supply stack..." />;
   }
   if (curve.asks.length === 0 && curve.bids.length === 0) {

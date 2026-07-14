@@ -397,3 +397,40 @@ def test_gateway_charges_gas_startup_once_on_transition_from_off():
         occurred_at=interval.end,
     )
     assert gateway.ledger.breakdown(1)[LedgerCategory.DISPATCHABLE_STARTUP] == Decimal("-0.250000")
+
+
+@pytest.mark.parametrize(
+    ("side", "price", "projection"),
+    (("sell", "50", 1.0), ("buy", "-50", -1.0)),
+)
+def test_cash_improving_orders_pass_when_available_credit_is_negative(side, price, projection):
+    gateway = TradingGatewayV1(limits=GatewayRiskLimits(credit_limit_usd=Decimal("0")))
+    gateway.register_participant(
+        participant_id=1,
+        params=VPPParams(
+            pv_kw_peak=12,
+            battery_kwh=0,
+            battery_kw_max=0,
+            load_kw_base=12,
+            starting_cash_usd=0,
+        ),
+    )
+    gateway.ledger.post(
+        participant_id=1,
+        category=LedgerCategory.MESSAGE_FEE,
+        amount_usd=Decimal("-1"),
+        occurred_at=NOW,
+    )
+    interval = _interval()
+    gateway.set_balance_projection(1, interval, projection)
+
+    outcome = gateway.execute_decision(
+        participant_id=1,
+        decision=AgentDecision(orders=(_request(interval, side=side, price=price),)),
+        sim_ts=NOW,
+        wall_ts=NOW,
+    )
+
+    assert gateway.available_credit_usd(1) < 0
+    assert outcome.accepted_order_ids
+    assert not outcome.rejected

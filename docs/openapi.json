@@ -2330,6 +2330,68 @@
         }
       }
     },
+    "/ecosystem/datasets/{dataset_id}/training-runs": {
+      "get": {
+        "tags": [
+          "ecosystem"
+        ],
+        "summary": "List Dataset Training Runs",
+        "operationId": "list_dataset_training_runs_ecosystem_datasets__dataset_id__training_runs_get",
+        "parameters": [
+          {
+            "name": "dataset_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Dataset Id"
+            }
+          },
+          {
+            "name": "authorization",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Authorization"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DatasetTrainingRunOut"
+                  },
+                  "title": "Response List Dataset Training Runs Ecosystem Datasets  Dataset Id  Training Runs Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation Error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/population-packs": {
       "get": {
         "tags": [
@@ -2935,7 +2997,7 @@
           "vpps"
         ],
         "summary": "Update Managed Vpp",
-        "description": "Adjust a managed agent's trading preferences (persona, agent_params, DER params) and\nre-provision it. Applying changes restarts the agent's trading session \u2014 open orders reset\nand SOC returns to default \u2014 but the PnL scoreboard (realized PnL, energy traded, trade\ncount) carries over. Ownership enforced; validation mirrors creation (422 on bad input).",
+        "description": "Adjust a managed agent's trading preferences (persona, agent_params, DER params) and\nre-provision it. Brain-only changes preserve the complete physical/economic runtime;\nphysical parameter changes restart that runtime only when no contracts remain unsettled.\nOwnership enforced; validation mirrors creation (422 on bad input).",
         "operationId": "update_managed_vpp_vpps_managed__managed_id__patch",
         "parameters": [
           {
@@ -3002,7 +3064,7 @@
           "vpps"
         ],
         "summary": "Delete Managed Vpp",
-        "description": "Remove a managed agent: drop it from the simulator (cancelling its resting orders) and\ndelete its persisted definition. Ownership enforced (404 on anything that isn't yours).",
+        "description": "Deactivate a managed agent and delete its persisted definition.\n\nResting orders are cancelled immediately; filled positions remain in the\nsimulator until their final delivery settlement. Ownership is enforced.",
         "operationId": "delete_managed_vpp_vpps_managed__managed_id__delete",
         "parameters": [
           {
@@ -4267,65 +4329,6 @@
                     "$ref": "#/components/schemas/ChatMessageOut"
                   },
                   "title": "Response Market Chatter Market Chatter Get"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Validation Error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/market/speed": {
-      "post": {
-        "tags": [
-          "market"
-        ],
-        "summary": "Set Market Speed",
-        "operationId": "set_market_speed_market_speed_post",
-        "parameters": [
-          {
-            "name": "authorization",
-            "in": "header",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Authorization"
-            }
-          }
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/SpeedUpdate"
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successful Response",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SpeedStatusOut"
                 }
               }
             }
@@ -8830,6 +8833,26 @@
             "title": "Deployment Mode",
             "default": "live"
           },
+          "deployment_status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "failed"
+            ],
+            "title": "Deployment Status",
+            "default": "running"
+          },
+          "deployment_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Deployment Error"
+          },
           "agent_kind": {
             "type": "string",
             "title": "Agent Kind"
@@ -10956,37 +10979,6 @@
           "email"
         ],
         "title": "SessionResponse"
-      },
-      "SpeedStatusOut": {
-        "properties": {
-          "speed": {
-            "type": "number",
-            "title": "Speed"
-          },
-          "is_realtime": {
-            "type": "boolean",
-            "title": "Is Realtime"
-          }
-        },
-        "type": "object",
-        "required": [
-          "speed",
-          "is_realtime"
-        ],
-        "title": "SpeedStatusOut"
-      },
-      "SpeedUpdate": {
-        "properties": {
-          "speed": {
-            "type": "number",
-            "title": "Speed"
-          }
-        },
-        "type": "object",
-        "required": [
-          "speed"
-        ],
-        "title": "SpeedUpdate"
       },
       "StandardAssetProfileOut": {
         "properties": {

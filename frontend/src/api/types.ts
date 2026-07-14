@@ -177,6 +177,8 @@ export interface ManagedVPP {
   release_id?: number | null;
   release_content_sha256?: string | null;
   deployment_mode?: "shadow" | "paper" | "live";
+  deployment_status?: "running" | "failed";
+  deployment_error?: string | null;
   llm_live: boolean;
   llm_status: string;
   llm_health_state: "live" | "degraded" | "offline" | string;

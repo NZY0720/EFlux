@@ -230,6 +230,7 @@ def execute_gateway_proveout(
     wind_generation_kwh = 0.0
     load_consumption_kwh = 0.0
     interval_h = settings.delivery_interval_sec / 3600.0
+    interval_label = f"{settings.delivery_interval_sec}s"
     while decision_ts < end:
         price = Decimal(str(_price_for(prices, decision_ts)))
         quote = synthetic_quote(
@@ -238,7 +239,7 @@ def execute_gateway_proveout(
             price=price,
             status="real",
             source="Historical CAISO cache",
-            detail="Hourly historical LMP replayed over five-minute delivery products.",
+            detail=f"Hourly historical LMP replayed over {interval_label} delivery products.",
             now=decision_ts,
             transaction_fee=transaction_fee,
         )
@@ -255,7 +256,7 @@ def execute_gateway_proveout(
         solar_generation_kwh += solar_kwh
         wind_generation_kwh += wind_kwh
         load_consumption_kwh += load_kwh
-        decision_ts += timedelta(minutes=5)
+        decision_ts += timedelta(seconds=settings.delivery_interval_sec)
 
     sim._audit_new_ledger_entries()
     entries = [
@@ -300,8 +301,8 @@ def execute_gateway_proveout(
             "endowment": endowment,
             "strategy": strategy,
             "window": {"start": start_date.isoformat(), "end": end_date.isoformat()},
-            "delivery_interval_sec": 300,
-            "price_resolution": "1h repeated over 5m products",
+            "delivery_interval_sec": settings.delivery_interval_sec,
+            "price_resolution": f"1h repeated over {interval_label} products",
             "transaction_fee_usd_per_mwh": float(transaction_fee),
             "resource_model": {
                 "solar": "deterministic CAISO-local diurnal profile",
@@ -349,7 +350,7 @@ def execute_gateway_proveout(
         "ledger_breakdown": {key.value: round(float(value), 6) for key, value in breakdown.items()},
         "evidence_id": manifest.evidence_id,
         "engine": "Simulator + TradingGatewayV1",
-        "price_resolution": "hourly LMP repeated over five-minute products",
+        "price_resolution": f"hourly LMP repeated over {interval_label} products",
         "audit_event_count": replay.event_count,
         "replay_state_sha256": replay.state_sha256,
         "replay_verified": replay.ok,

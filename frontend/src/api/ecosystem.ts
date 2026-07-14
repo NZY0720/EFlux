@@ -237,6 +237,15 @@ export async function fetchTrainingRun(id: PathId): Promise<TrainingRun> {
   return data;
 }
 
+export async function listDatasetTrainingRuns(
+  datasetId: PathId,
+): Promise<TrainingRun[]> {
+  const { data } = await api.get<TrainingRun[]>(
+    `/ecosystem/datasets/${datasetId}/training-runs`,
+  );
+  return data;
+}
+
 export async function listPopulationPacks(
   signal?: AbortSignal,
 ): Promise<PopulationPack[]> {

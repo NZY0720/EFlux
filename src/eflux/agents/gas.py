@@ -27,7 +27,12 @@ class GasGeneratorAgent(BaseAgent):
         if cap_kw <= 0:
             return AgentDecision.hold("no dispatchable capacity")
 
-        qty_f = cap_kw * ctx.primary_interval.duration_h
+        qty_f = max(
+            0.0,
+            cap_kw * ctx.primary_interval.duration_h
+            - ctx.contracted_dispatchable_kwh
+            - ctx.resting_dispatchable_kwh,
+        )
         qty = Decimal(str(qty_f)).quantize(Decimal("0.0001"), rounding=ROUND_DOWN)
         if qty < self.min_qty:
             return AgentDecision.hold("dispatchable interval capacity below minimum quantity")

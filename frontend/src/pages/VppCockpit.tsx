@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { AlertCircle, Bot, CheckCircle2, Layers3, ShoppingCart, Trash2, Zap } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 
 import { deleteManagedVPP, deleteVPP, fetchManagedVPPPerformance, fetchProducts, listManagedVPPs, listModels, listVPPs, submitOrder } from "../api/client";
+import { resolveActiveCompetition, type CompetitionTarget } from "../api/competitions";
 import { promoteAgentDeploymentLive } from "../api/ecosystem";
 import type { DeliveryProduct, ManagedVPP, ManagedVPPPerformance, OrderPurpose, TimeInForce, VPP } from "../api/types";
 import { CardTitle, DashboardCard, EmptyState, StatusPill } from "../components/DashboardCard";
@@ -20,19 +21,52 @@ export default function VppCockpit() {
   const [performance, setPerformance] = useState<ManagedVPPPerformance>();
   const [models, setModels] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadedVppId, setLoadedVppId] = useState<number | null>(null);
+  const [competition, setCompetition] = useState<CompetitionTarget | null>(null);
   const [promoting, setPromoting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestEpochRef = useRef(0);
+  const vppIdRef = useRef(vppId);
+  vppIdRef.current = vppId;
 
   const reload = useCallback(async () => {
+    if (vppIdRef.current !== vppId) return;
+    const epoch = ++requestEpochRef.current;
     try {
       const [vpps, agents] = await Promise.all([listVPPs(), listManagedVPPs()]);
+      if (requestEpochRef.current !== epoch || vppIdRef.current !== vppId) return;
       const agent = agents.find((item) => item.id === vppId) ?? null;
       setManaged(agent);
       setExternal(agent ? null : (vpps.find((item) => item.id === vppId) ?? null));
-      if (agent) setPerformance(await fetchManagedVPPPerformance(agent.id));
-    } catch (err) { setError((err as Error).message); } finally { setLoading(false); }
+      setPerformance(undefined);
+      setLoadedVppId(vppId);
+      if (agent && agent.deployment_status !== "failed") {
+        const nextPerformance = await fetchManagedVPPPerformance(agent.id);
+        if (requestEpochRef.current !== epoch || vppIdRef.current !== vppId) return;
+        setPerformance(nextPerformance);
+      }
+    } catch (err) {
+      if (requestEpochRef.current === epoch && vppIdRef.current === vppId) {
+        setLoadedVppId(vppId);
+        setError((err as Error).message);
+      }
+    } finally {
+      if (requestEpochRef.current === epoch && vppIdRef.current === vppId) setLoading(false);
+    }
   }, [vppId]);
-  useEffect(() => { if (Number.isInteger(vppId) && vppId > 0) void reload(); else setLoading(false); }, [vppId, reload]);
+  useEffect(() => {
+    requestEpochRef.current += 1;
+    setLoading(true);
+    setLoadedVppId(null);
+    setManaged(null);
+    setExternal(null);
+    setPerformance(undefined);
+    setPromoting(false);
+    setError(null);
+    if (Number.isInteger(vppId) && vppId > 0) void reload();
+    else setLoading(false);
+    return () => { requestEpochRef.current += 1; };
+  }, [vppId, reload]);
   useEffect(() => {
     const syncManagedVpp = (event: Event) => {
       const updatedId = (event as CustomEvent<{ id?: number }>).detail?.id;
@@ -43,37 +77,55 @@ export default function VppCockpit() {
   }, [vppId, reload]);
   useEffect(() => { listModels().then((result) => setModels(result.models)).catch(() => {}); }, []);
   useEffect(() => {
-    if (!managed) return;
-    const timer = window.setInterval(() => fetchManagedVPPPerformance(managed.id).then(setPerformance).catch((err: Error) => setError(err.message)), 2000);
-    return () => window.clearInterval(timer);
-  }, [managed]);
+    if (!managed || managed.deployment_status === "failed" || loadedVppId !== vppId) return;
+    let cancelled = false;
+    const epoch = requestEpochRef.current;
+    const refresh = async () => {
+      try {
+        const nextPerformance = await fetchManagedVPPPerformance(managed.id);
+        if (!cancelled && requestEpochRef.current === epoch) setPerformance(nextPerformance);
+      } catch (err) {
+        if (!cancelled && requestEpochRef.current === epoch) setError((err as Error).message);
+      }
+    };
+    const timer = window.setInterval(refresh, 2000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [managed, loadedVppId, vppId]);
+  useEffect(() => {
+    let cancelled = false;
+    void resolveActiveCompetition().then((target) => { if (!cancelled) setCompetition(target); });
+    return () => { cancelled = true; };
+  }, []);
 
   const removeManaged = async () => {
-    if (!managed) return;
-    try { await deleteManagedVPP(managed.id); window.location.assign("/vpps"); } catch (err) { setError((err as Error).message); }
+    if (!managed || loadedVppId !== vppId) return;
+    try { await deleteManagedVPP(managed.id); if (vppIdRef.current === vppId) window.location.assign("/vpps"); }
+    catch (err) { if (vppIdRef.current === vppId) setError((err as Error).message); }
   };
   const removeExternal = async () => {
-    if (!external || !window.confirm("Delete this VPP? Its resting orders are cancelled.")) return;
-    try { await deleteVPP(external.id); window.location.assign("/vpps"); } catch (err) { setError((err as Error).message); }
+    if (!external || loadedVppId !== vppId || !window.confirm("Delete this VPP? Its resting orders are cancelled.")) return;
+    try { await deleteVPP(external.id); if (vppIdRef.current === vppId) window.location.assign("/vpps"); }
+    catch (err) { if (vppIdRef.current === vppId) setError((err as Error).message); }
   };
   const promoteLive = async () => {
-    if (!managed || !window.confirm("Promote this exact shadow/paper instance to live trading? Its current positions, learning state, and Release hash will be retained.")) return;
+    if (!managed || loadedVppId !== vppId || !window.confirm("Promote this exact shadow/paper instance to live trading? Its current positions, learning state, and Release hash will be retained.")) return;
     setPromoting(true); setError(null);
-    try { await promoteAgentDeploymentLive(managed.id); await reload(); }
-    catch (err) { setError((err as Error).message); }
-    finally { setPromoting(false); }
+    try { await promoteAgentDeploymentLive(managed.id); if (vppIdRef.current === vppId) await reload(); }
+    catch (err) { if (vppIdRef.current === vppId) setError((err as Error).message); }
+    finally { if (vppIdRef.current === vppId) setPromoting(false); }
   };
 
-  if (loading) return <div className="mx-auto w-full max-w-[1800px] px-4 py-5 text-sm text-[var(--text-muted)] md:p-6">Loading VPP…</div>;
+  if (loading || (Number.isInteger(vppId) && vppId > 0 && loadedVppId !== vppId)) return <div className="mx-auto w-full max-w-[1800px] px-4 py-5 text-sm text-[var(--text-muted)] md:p-6">Loading VPP…</div>;
   if (!managed && !external) return <div className="mx-auto w-full max-w-2xl px-4 py-12 text-center md:p-6"><EmptyState icon={Layers3} title="VPP not found" body="This VPP may have been deleted or is not available to your account." /><Link to="/vpps" className="eflux-btn eflux-btn-primary mt-4 h-9 px-4 text-sm">Back to VPPs</Link></div>;
+  if (managed?.deployment_status === "failed") return <div className="mx-auto w-full max-w-2xl space-y-4 px-4 py-12 md:p-6"><DashboardCard><CardTitle icon={AlertCircle}>Deployment failed</CardTitle><p className="text-sm text-[var(--danger)]">{managed.deployment_error ?? "The deployment could not be restored safely."}</p><p className="mt-2 text-xs text-[var(--text-muted)]">The agent was not provisioned and cannot trade. Restore the bound checkpoint artifact or delete this deployment.</p><button type="button" onClick={removeManaged} className="eflux-btn eflux-btn-danger mt-4 h-8 px-3 text-xs"><Trash2 size={14} /> Delete deployment</button></DashboardCard><Link to="/vpps" className="eflux-btn h-9 px-4 text-sm">Back to VPPs</Link></div>;
 
   return <div className="mx-auto grid w-full max-w-[1800px] grid-cols-1 gap-6 px-4 py-5 lg:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)] md:p-6">
     {managed ? <>
-      <DashboardCard className="lg:col-span-2"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><Bot size={18} className="text-[var(--accent)]" /><h1 className="text-xl font-semibold text-[var(--text)]">{managed.name}</h1><StatusPill tone="accent">{algorithmChipLabel(managed)}</StatusPill>{managed.release_id != null && <StatusPill tone={managed.deployment_mode === "live" ? "success" : "amber"}>{managed.deployment_mode ?? "live"}</StatusPill>}{isLlmManaged(managed) && <LLMBadge state={managed.llm_health_state} />}</div><p className="mt-2 text-sm text-[var(--text-muted)]">PV {managed.params.pv_kw_peak}kW / Batt {managed.params.battery_kwh}kWh / Load {managed.params.load_kw_base}kW</p><p className="mt-1 text-xs text-[var(--accent)]">{strategyLabel(managed.strategy)}</p>{managed.release_id != null && <Link to={`/agents/releases/${managed.release_id}`} className="mt-1 block font-mono text-xs text-[var(--text-subtle)]">Release {managed.release_id} · {managed.release_content_sha256?.slice(0, 12)}…</Link>}{isLlmManaged(managed) && <p className="mt-1 text-xs text-[var(--text-subtle)]">{managed.llm_status}</p>}</div><div className="flex flex-wrap gap-2">{managed.release_id != null && managed.deployment_mode !== "live" && <button type="button" disabled={promoting} onClick={promoteLive} className="eflux-btn h-9 px-4 text-sm disabled:opacity-50">{promoting ? "Promoting…" : "Promote to live"}</button>}<Link to={`/competitions/season-0/submit?vpp=${managed.id}`} className="eflux-btn eflux-btn-primary h-9 px-4 text-sm">Submit to Season 0</Link></div></div></DashboardCard>
+      <DashboardCard className="lg:col-span-2"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="flex flex-wrap items-center gap-2"><Bot size={18} className="text-[var(--accent)]" /><h1 className="text-xl font-semibold text-[var(--text)]">{managed.name}</h1><StatusPill tone="accent">{algorithmChipLabel(managed)}</StatusPill>{managed.release_id != null && <StatusPill tone={managed.deployment_mode === "live" ? "success" : "amber"}>{managed.deployment_mode ?? "live"}</StatusPill>}{isLlmManaged(managed) && <LLMBadge state={managed.llm_health_state} />}</div><p className="mt-2 text-sm text-[var(--text-muted)]">PV {managed.params.pv_kw_peak}kW / Batt {managed.params.battery_kwh}kWh / Load {managed.params.load_kw_base}kW</p><p className="mt-1 text-xs text-[var(--accent)]">{strategyLabel(managed.strategy)}</p>{managed.release_id != null && <Link to={`/agents/releases/${managed.release_id}`} className="mt-1 block font-mono text-xs text-[var(--text-subtle)]">Release {managed.release_id} · {managed.release_content_sha256?.slice(0, 12)}…</Link>}{isLlmManaged(managed) && <p className="mt-1 text-xs text-[var(--text-subtle)]">{managed.llm_status}</p>}</div><div className="flex flex-wrap gap-2">{managed.release_id != null && managed.deployment_mode !== "live" && <button type="button" disabled={promoting} onClick={promoteLive} className="eflux-btn h-9 px-4 text-sm disabled:opacity-50">{promoting ? "Promoting…" : "Promote to live"}</button>}{competition ? <Link to={`/competitions/${competition.slug}/submit?vpp=${managed.id}`} className="eflux-btn eflux-btn-primary h-9 px-4 text-sm">Submit to {competition.title}</Link> : <button type="button" disabled className="eflux-btn eflux-btn-primary h-9 px-4 text-sm opacity-50">Loading competition…</button>}</div></div></DashboardCard>
       <DashboardCard className="lg:col-span-2"><CardTitle icon={Bot}>Performance & activity</CardTitle><ManagedPerformancePanel data={performance} /></DashboardCard>
       <VppActivity id={managed.vpp_id} name={managed.name} />
       <DashboardCard><CardTitle icon={Layers3}>Strategy & risk</CardTitle><p className="text-sm text-[var(--text-muted)]">{managed.persona || "No custom strategy brief. The selected algorithm uses platform defaults."}</p><dl className="mt-4 space-y-2 text-xs"><div className="flex justify-between gap-3"><dt className="text-[var(--text-subtle)]">Algorithm</dt><dd className="text-[var(--text)]">{algorithmChipLabel(managed)}</dd></div><div className="flex justify-between gap-3"><dt className="text-[var(--text-subtle)]">Guidance</dt><dd className="text-[var(--text)]">{managed.guidance_source ?? "platform"}</dd></div><div className="flex justify-between gap-3"><dt className="text-[var(--text-subtle)]">Risk</dt><dd className="text-[var(--text)]">Platform risk gate enabled</dd></div></dl></DashboardCard>
-      <DashboardCard><CardTitle icon={Bot}>Agent controls</CardTitle>{managed.release_id != null ? <div className="space-y-3 text-sm text-[var(--text-muted)]"><p>This deployment is bound to an immutable Release. Fork the Release to change its recipe, model, or checkpoint.</p><div className="flex gap-2"><Link to={`/agents/releases/${managed.release_id}`} className="eflux-btn h-8 px-3 text-xs">Open Release</Link><button type="button" onClick={removeManaged} className="eflux-btn eflux-btn-danger h-8 px-3 text-xs">Delete deployment</button></div></div> : <ManagedControls vpp={managed} models={models} onSaved={reload} onDelete={removeManaged} onError={setError} />}</DashboardCard>
+      <DashboardCard><CardTitle icon={Bot}>Agent controls</CardTitle>{managed.release_id != null ? <div className="space-y-3 text-sm text-[var(--text-muted)]"><p>This deployment is bound to an immutable Release. Fork the Release to change its recipe, model, or checkpoint.</p><div className="flex gap-2"><Link to={`/agents/releases/${managed.release_id}`} className="eflux-btn h-8 px-3 text-xs">Open Release</Link><button type="button" onClick={removeManaged} className="eflux-btn eflux-btn-danger h-8 px-3 text-xs">Delete deployment</button></div></div> : <ManagedControls key={managed.id} vpp={managed} models={models} onSaved={reload} onDelete={removeManaged} onError={setError} />}</DashboardCard>
     </> : <>
       <DashboardCard className="lg:col-span-2"><div className="flex items-start justify-between gap-3"><div><h1 className="text-xl font-semibold text-[var(--text)]">{external!.name}</h1><p className="mt-2 text-sm text-[var(--text-muted)]">PV {external!.params.pv_kw_peak}kW / Batt {external!.params.battery_kwh}kWh / Load {external!.params.load_kw_base}kW</p></div><StatusPill tone={external!.is_active ? "success" : "danger"}>{external!.is_active ? "active" : "inactive"}</StatusPill></div></DashboardCard>
       <VppActivity id={external!.id} name={external!.name} />

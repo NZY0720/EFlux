@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 
+import { listManagedVPPs } from "../api/client";
 import {
   createPopulationPack,
   createReleaseEvaluation,
@@ -31,6 +32,7 @@ import {
   type ReleaseEvaluation,
   type Visibility,
 } from "../api/ecosystem";
+import type { ManagedVPP } from "../api/types";
 import {
   CardTitle,
   DashboardCard,
@@ -113,6 +115,8 @@ export default function AgentReleaseDetail() {
   const [windowStart, setWindowStart] = useState("");
   const [windowEnd, setWindowEnd] = useState("");
   const [populationPackId, setPopulationPackId] = useState("");
+  const [deploymentId, setDeploymentId] = useState("");
+  const [deployments, setDeployments] = useState<ManagedVPP[]>([]);
 
   const hydrateEdit = (next: AgentRelease) => {
     setEditDescription(next.description ?? "");
@@ -135,8 +139,40 @@ export default function AgentReleaseDetail() {
     );
   }, [release]);
 
+  useEffect(() => {
+    if (!release) return;
+    let cancelled = false;
+    setDeploymentId("");
+    setDeployments([]);
+    void listManagedVPPs()
+      .then((rows) => {
+        if (!cancelled)
+          setDeployments(
+          rows.filter(
+            (row) =>
+              row.release_id === release.id && row.deployment_status !== "failed",
+          ),
+          );
+      })
+      .catch(() => {
+        if (!cancelled) setDeployments([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [release]);
+
   const isPopulationRun =
     kind === "p2p_tournament" || kind === "hybrid_evaluation";
+  const isDeploymentRun = kind === "forward_shadow" || kind === "verified_live";
+  const eligibleDeployments = deployments.filter(
+    (deployment) =>
+      deployment.deployment_mode ===
+      (kind === "verified_live" ? "live" : "shadow"),
+  );
+  const selectedDeployment = eligibleDeployments.find(
+    (deployment) => String(deployment.id) === deploymentId,
+  );
   const selectedPack = useMemo(
     () => populationPacks.find((pack) => String(pack.id) === populationPackId),
     [populationPackId, populationPacks],
@@ -224,6 +260,11 @@ export default function AgentReleaseDetail() {
       if (windowEnd) config.window_end = windowEnd;
       if (isPopulationRun && populationPackId)
         config.population_pack_id = populationPackId;
+      if (isDeploymentRun) {
+        if (!selectedDeployment)
+          throw new Error("Choose an eligible deployment for this evaluation.");
+        config.managed_def_id = selectedDeployment.id;
+      }
       const created = await createReleaseEvaluation(releaseId, {
         kind,
         config,
@@ -654,7 +695,7 @@ export default function AgentReleaseDetail() {
               }
               className="eflux-input w-full"
             >
-              <option value="deterministic_replay">Deterministic replay</option>
+              {release.market !== "p2p" && <option value="deterministic_replay">Deterministic replay</option>}
               <option value="fresh_llm_replay">Fresh-LLM replay</option>
               <option value="forward_shadow">Forward shadow</option>
               <option value="verified_live">Verified live</option>
@@ -686,27 +727,43 @@ export default function AgentReleaseDetail() {
             />
           </Field>
           <div>
-            <Field label="Population pack">
+            <Field label={isDeploymentRun ? "Deployment" : "Population pack"}>
               <select
-                value={populationPackId}
-                onChange={(event) => setPopulationPackId(event.target.value)}
-                disabled={!isPopulationRun}
+                value={isDeploymentRun ? deploymentId : populationPackId}
+                onChange={(event) =>
+                  isDeploymentRun
+                    ? setDeploymentId(event.target.value)
+                    : setPopulationPackId(event.target.value)
+                }
+                disabled={!isPopulationRun && !isDeploymentRun}
                 className="eflux-input w-full disabled:opacity-50"
               >
                 <option value="">
-                  {isPopulationRun
+                  {isDeploymentRun
+                    ? eligibleDeployments.length
+                      ? "Choose deployment"
+                      : "No eligible deployment"
+                    : isPopulationRun
                     ? "All platform packs"
                     : "Not used"}
                 </option>
-                {populationPacks.map((pack) => (
-                  <option key={pack.id} value={String(pack.id)}>
-                    {pack.name} · v{pack.version}
-                  </option>
-                ))}
+                {isDeploymentRun
+                  ? eligibleDeployments.map((deployment) => (
+                      <option key={deployment.id} value={String(deployment.id)}>
+                        {deployment.name} · {deployment.deployment_mode}
+                      </option>
+                    ))
+                  : populationPacks.map((pack) => (
+                      <option key={pack.id} value={String(pack.id)}>
+                        {pack.name} · v{pack.version}
+                      </option>
+                    ))}
               </select>
             </Field>
             <button
-              disabled={busy === "evaluate"}
+              disabled={
+                busy === "evaluate" || (isDeploymentRun && !selectedDeployment)
+              }
               className="eflux-btn eflux-btn-primary mt-2 h-9 w-full px-4 text-sm disabled:opacity-50"
             >
               {busy === "evaluate" ? (

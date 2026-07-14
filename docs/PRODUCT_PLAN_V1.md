@@ -13,13 +13,13 @@
 | 2 | **Standard-track tick math fixed** | Draft: 24h @ 60s windows × 500ms deadline = 1,440 ticks × 0.5s = 12 min of pure deadline budget vs a 15-min pod cap — compliant bots would bust the cap. Now: 5-min windows (288 ticks) and a derived cap (§6). |
 | 3 | **Seed-leak defense added** | Fixed hidden seeds + visible own-replays allow probe-then-overfit (record observations, then submit a lookup table). Quantopian's own research showed backtest scores don't predict out-of-sample; Numerai obfuscates data and scores forward. Now: rotating seed pools, holdout seeds, submission cooldowns, replay embargo (§6). |
 | 4 | **Image cap 1GB → 4GB (Standard track)** | 1GB compressed excludes even a 7B Q4 model, contradicting "local weights allowed". Model track stays 1GB (weights live behind the Model Proxy). |
-| 5 | **Role model added (`User.role`)** | `POST /market/ppo/renew` is callable by *any* authenticated user; no admin concept exists anywhere. UI removal alone doesn't fix authz. |
+| 5 | **Role model added (`User.role`)** | The draft allowed any authenticated user to call `POST /market/ppo/renew` and had no admin role. The implemented role model and admin guard fix the authorization boundary. |
 | 6 | **Acceptance criteria repaired** | "Suite remains 452 passed" was wrong (actual: 451+1 skipped) and freezes test growth. "CI < 3 min" referenced a CI that doesn't exist. Now: no-regression + new-surface-covered, and a two-tier CI (§9). |
 | 7 | **Real-trader "Prove-out" tier added** | New positioning (§4). |
 | 8 | **Forecast-quality workstream added** | The Forecast Hub was producing provably bad output; fixed 2026-07-10 (§8). Trust in forecasts is a precondition for the trader audience. |
 | 9 | Numeric aesthetic dials removed | "Variation 6 / motion 4 / density 7" are unmeasurable; the concrete rules (§5) already do the job. |
 
-Historical baseline (2026-07-10 audit): 27→17 ruff issues; suite 465 passed (~33s natively); frontend one 470.6KB-gzip chunk, no route splitting, eager ECharts; `MyVPPs.tsx` 1,492 lines; Inter declared but never loaded; localStorage Bearer auth, no `/auth/me`; magic link = dev token echo (no email); SQLite default with Postgres URL + 3 alembic migrations ready; optional Redis Streams bus with in-memory fallback; working Python SDK + examples; **no CI**; no competition/evaluation/k8s/registry code.
+Historical baseline (2026-07-10 audit; not a description of the current tree): 27→17 ruff issues; suite 465 passed (~33s natively); frontend one 470.6KB-gzip chunk, no route splitting, eager ECharts; `MyVPPs.tsx` 1,492 lines; Inter declared but never loaded; localStorage Bearer auth, no `/auth/me`; magic link = dev token echo (no email); SQLite default with Postgres URL + 3 alembic migrations ready; optional Redis Streams bus with in-memory fallback; working Python SDK + examples; **no CI**; no competition/evaluation/k8s/registry code.
 
 Implementation update (2026-07-13): managed competition/evaluation and private Prove-out
 now exist. Prove-out executes through Simulator + TradingGatewayV1 and stores a manifest,
@@ -46,7 +46,8 @@ Product routes are consolidated around `/evaluate` and `/agents`. Legacy `/arena
 - Desktop nav: `Live Market / Leaderboard / Evaluate / My VPPs`; Agents, Compete, Participants, Forecasts and Developer under **Explore**. Evaluate contains Quick test + a unified Runs view for private, release-bound and reference evidence; Agents contains Releases + Training data. Mobile uses the same grouping in a drawer.
 - New-user journey (competition): land → email sign-in → managed agent **or** container bot → sandbox validation → official submission → rankings + replays.
 - New-user journey (trader): land → email sign-in → **describe endowment** → historical prove-out report → live paper trading → (optional, opt-in) prove-out leaderboard.
-- `/vpps` (1,492-line `MyVPPs.tsx`) splits into: deployment wizard, Agent Cockpit, manual trading, Developer Console.
+- The former 1,492-line `MyVPPs.tsx` was split into the VPP overview, deployment wizard,
+  Agent Cockpit, manual-trading surfaces, and Developer Console.
 - Managed presets: Solar Trader, Battery Arbitrageur, Demand Optimizer; advanced params collapsed.
 - Cockpit shows: runtime status, first trade, PnL, vs-benchmark, strategy log, risk rejections, model usage, submissions, replays.
 

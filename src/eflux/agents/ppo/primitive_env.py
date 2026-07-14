@@ -205,18 +205,21 @@ class VPPPrimitiveEnv(gym.Env):
             params=self._params,
             battery=self._battery,
         )
-        counterparty_params = VPPParams(
-            pv_kw_peak=0.0,
-            battery_kwh=1_000_000.0,
-            battery_kw_max=1_000_000.0,
-            battery_initial_soc_frac=0.5,
-            load_kw_base=0.0,
-            starting_cash_usd=1_000_000.0,
-        )
-        self._gateway.register_participant(
-            participant_id=COUNTERPARTY_ID,
-            params=counterparty_params,
-        )
+        if self._market_mode == "realprice":
+            self._gateway.register_system_participant(participant_id=COUNTERPARTY_ID)
+        else:
+            counterparty_params = VPPParams(
+                pv_kw_peak=0.0,
+                battery_kwh=1_000_000.0,
+                battery_kw_max=1_000_000.0,
+                battery_initial_soc_frac=0.5,
+                load_kw_base=0.0,
+                starting_cash_usd=1_000_000.0,
+            )
+            self._gateway.register_participant(
+                participant_id=COUNTERPARTY_ID,
+                params=counterparty_params,
+            )
         self._tick = 0
         self._last_price_ref = price_ref_scale()
         self._oracle.reset()
@@ -257,7 +260,8 @@ class VPPPrimitiveEnv(gym.Env):
             renewable_generation_kwh=max(0.0, self._state.pv_kw) * duration_h,
             load_demand_kwh=max(0.0, self._state.load_kw) * duration_h,
         )
-        self._gateway.record_meter_data(COUNTERPARTY_ID, self._product)
+        if self._market_mode != "realprice":
+            self._gateway.record_meter_data(COUNTERPARTY_ID, self._product)
         ref = Decimal(str(self._last_price_ref))
         spread = abs(ref) * Decimal("0.25")
         prices = SettlementPrices(ref - spread, ref + spread)
@@ -267,12 +271,13 @@ class VPPPrimitiveEnv(gym.Env):
             prices=prices,
             occurred_at=self._product.end,
         )
-        self._gateway.settle_participant(
-            COUNTERPARTY_ID,
-            self._product,
-            prices=prices,
-            occurred_at=self._product.end,
-        )
+        if self._market_mode != "realprice":
+            self._gateway.settle_participant(
+                COUNTERPARTY_ID,
+                self._product,
+                prices=prices,
+                occurred_at=self._product.end,
+            )
         self._state.pnl = self._gateway.ledger.balance(VPP_ID)
         self._state.soc_kwh = self._battery.soc_kwh
 
@@ -289,7 +294,7 @@ class VPPPrimitiveEnv(gym.Env):
         )
 
         self._tick += 1
-        self._sim_ts = self._product.end
+        self._sim_ts = self._product.start
         self._step_der()
         self._prepare_product()
 
@@ -431,7 +436,7 @@ class VPPPrimitiveEnv(gym.Env):
                     Decimal(str(round(price, 4))),
                     Decimal(str(depth)),
                     self._product,
-                    OrderPurpose.BATTERY,
+                    OrderPurpose.SYSTEM_GRID,
                     ttl_sec=DECISION_INTERVAL_SEC * ORDER_TTL_TICKS,
                 )
             )

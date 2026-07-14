@@ -167,8 +167,6 @@ class Settings(BaseSettings):
     backtest_artifacts_dir: str = "artifacts/backtests"
     # Dedicated official-evaluation worker queue poll cadence (wall seconds).
     evaluation_poll_sec: float = 5.0
-    # `tasks.sh run` starts a local queue worker unless this is explicitly disabled.
-    evaluation_worker_autostart: bool = True
 
     llm_provider: str = "opencode"
     llm_key_file: str = "key.txt"

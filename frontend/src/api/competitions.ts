@@ -1,4 +1,23 @@
-import { api } from "./client";
+import { api, listCompetitions } from "./client";
+
+export interface CompetitionTarget {
+  slug: string;
+  title: string;
+}
+
+const FALLBACK_COMPETITION: CompetitionTarget = { slug: "season-0", title: "Season 0" };
+
+export async function resolveActiveCompetition(): Promise<CompetitionTarget> {
+  try {
+    const competitions = await listCompetitions();
+    const active = competitions.find((item) => item.status === "open")
+      ?? competitions.find((item) => item.status === "active")
+      ?? competitions[0];
+    return active ? { slug: active.slug, title: active.title } : FALLBACK_COMPETITION;
+  } catch {
+    return FALLBACK_COMPETITION;
+  }
+}
 
 export interface ManagedSubmissionPayload {
   algorithm: string;

@@ -73,7 +73,7 @@ class TruthfulValuationOracle:
             if ctx.projected_net_kwh is not None
             else ctx.state.pending_net_kwh
         )
-        effective_kwh = net_kwh - ctx.open_orders_net_kwh
+        effective_kwh = net_kwh - ctx.contracted_net_kwh - ctx.open_orders_net_kwh
         surplus_kwh = max(0.0, effective_kwh)
         deficit_kwh = max(0.0, -effective_kwh)
 

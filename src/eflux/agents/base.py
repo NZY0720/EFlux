@@ -139,6 +139,11 @@ class AgentContext:
     contracted_net_kwh: float = 0.0
     # Current dispatchable output, used to value startup decisions.
     dispatchable_power_kw: float = 0.0
+    # Filled and resting dispatchable energy for the primary product. Gas agents
+    # use these separately from aggregate net contracts so they only reoffer
+    # residual nameplate capacity after partial fills.
+    contracted_dispatchable_kwh: float = 0.0
+    resting_dispatchable_kwh: float = 0.0
     # Signed energy this VPP has resting in non-dispatched book orders: sell
     # remainders positive, buy remainders negative — the same convention as
     # pending_net_kwh. Populated by the runner.

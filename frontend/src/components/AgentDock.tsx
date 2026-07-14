@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -370,6 +370,7 @@ export default function AgentDock() {
   const { snapshot, recent, stale, state: streamState } = useMarket();
   const [agents, setAgents] = useState<ManagedVPP[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const selectedIdRef = useRef<number | null>(null);
   const [performance, setPerformance] = useState<ManagedVPPPerformance>();
   const [open, setOpen] = useState(false);
   const [tab, setTab] = useState<DockTab>("activity");
@@ -386,8 +387,12 @@ export default function AgentDock() {
     if (!token) return;
     try {
       const rows = await listManagedVPPs();
-      setAgents(rows);
-      setSelectedId((current) => current != null && rows.some((row) => row.id === current) ? current : (rows[0]?.id ?? null));
+      const running = rows.filter((row) => row.deployment_status !== "failed");
+      setAgents(running);
+      const current = selectedIdRef.current;
+      const next = current != null && running.some((row) => row.id === current) ? current : (running[0]?.id ?? null);
+      selectedIdRef.current = next;
+      setSelectedId(next);
     } catch {
       // Keep the last successful roster; the app-wide connection banner owns transport errors.
     }
@@ -395,14 +400,15 @@ export default function AgentDock() {
 
   const loadPerformance = useCallback(async (id: number) => {
     try {
-      setPerformance(await fetchManagedVPPPerformance(id));
+      const next = await fetchManagedVPPPerformance(id);
+      if (selectedIdRef.current === id) setPerformance(next);
     } catch {
       // Preserve the last factual snapshot while the connection recovers.
     }
   }, []);
 
   useEffect(() => {
-    if (!token) { setAgents([]); setSelectedId(null); return; }
+    if (!token) { setAgents([]); selectedIdRef.current = null; setSelectedId(null); return; }
     void loadAgents();
     const timer = window.setInterval(loadAgents, 30_000);
     return () => window.clearInterval(timer);
@@ -565,7 +571,7 @@ export default function AgentDock() {
         {agents.length > 1 && (
           <label className="mt-3 block text-[11px] font-medium text-[var(--text-subtle)]">
             Active agent
-            <select value={agent.id} onChange={(event) => { setSelectedId(Number(event.target.value)); setSelectedPlan(null); }} className="eflux-select mt-1 h-9 w-full px-3 text-xs">
+            <select value={agent.id} onChange={(event) => { const next = Number(event.target.value); selectedIdRef.current = next; setSelectedId(next); setSelectedPlan(null); }} className="eflux-select mt-1 h-9 w-full px-3 text-xs">
               {agents.map((row) => <option key={row.id} value={row.id}>{row.name}</option>)}
             </select>
           </label>

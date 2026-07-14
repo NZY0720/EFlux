@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
 import { fetchLeaderboardHistory } from "../api/client";
 import type { PnlPoint } from "./useStrategyPnl";
@@ -18,8 +18,6 @@ export function useServerEquity(
   const [history, setHistory] = useState<Record<string, PnlPoint[]>>({});
   // Key the effect on content, not array identity, so callers can pass literals.
   const key = identities.join("\u0000");
-  const sessionRef = useRef<number | undefined>(sessionId);
-  sessionRef.current = sessionId;
 
   useEffect(() => {
     const ids = key ? key.split("\u0000") : [];
@@ -27,6 +25,7 @@ export function useServerEquity(
       setHistory({});
       return;
     }
+    setHistory({});
     let cancelled = false;
     const tick = async () => {
       const next: Record<string, PnlPoint[]> = {};
@@ -39,7 +38,7 @@ export function useServerEquity(
               ...(kind === "managed"
                 ? { managed_def_id: Number(value) }
                 : { name: value }),
-              session_id: sessionRef.current,
+              session_id: sessionId,
             });
             const label = kind === "managed" ? `managed #${value}` : value;
             next[label] = h.points.map((p) => ({
@@ -59,7 +58,7 @@ export function useServerEquity(
       cancelled = true;
       clearInterval(id);
     };
-  }, [key, intervalMs]);
+  }, [key, sessionId, intervalMs]);
 
   return history;
 }

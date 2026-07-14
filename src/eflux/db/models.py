@@ -240,6 +240,9 @@ class VppStatSnapshot(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     managed_def_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     owner_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    deployment_mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="unknown", server_default="unknown"
+    )
     strategy: Mapped[str] = mapped_column(String(100), nullable=False, default="")
     category: Mapped[str] = mapped_column(String(20), nullable=False, default="")
     is_llm: Mapped[bool] = mapped_column(default=False, nullable=False)
@@ -390,6 +393,10 @@ class ReleaseEvaluation(Base):
         DateTime(timezone=True), default=utcnow, nullable=False
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     release: Mapped[AgentRelease] = relationship(back_populates="evaluations")
@@ -485,6 +492,10 @@ class DatasetTrainingRun(Base):
         DateTime(timezone=True), default=utcnow, nullable=False
     )
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     dataset: Mapped[BehaviorDataset] = relationship(back_populates="training_runs")
@@ -615,6 +626,10 @@ class EvaluationRun(Base):
     evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     evidence_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
@@ -711,6 +726,10 @@ class ProveOutRun(Base):
     evidence: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     evidence_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, nullable=False
     )

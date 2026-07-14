@@ -32,6 +32,7 @@ from eflux.db.session import get_sessionmaker
 from eflux.ecosystem import service
 from eflux.ecosystem.catalog import get_standard_profile
 from eflux.ecosystem.runtime_identity import repository_git_commit
+from eflux.job_leases import lease_values, maintain_job_lease, requeue_expired_jobs
 
 log = logging.getLogger(__name__)
 TRAINING_ARTIFACTS_BASE = PROJECT_ROOT / "artifacts" / "training_runs"
@@ -50,6 +51,10 @@ async def claim_next_ecosystem_job(
 
     factory = session_factory or get_sessionmaker()
     async with factory() as session:
+        now = datetime.now(UTC)
+        await requeue_expired_jobs(
+            session, ReleaseEvaluation, DatasetTrainingRun, now=now
+        )
         candidates: list[tuple[datetime, str, int]] = []
         evaluation = (
             await session.execute(
@@ -76,11 +81,12 @@ async def claim_next_ecosystem_job(
             claimed = await session.execute(
                 update(model)
                 .where(model.id == job_id, model.status == "queued")
-                .values(status="running", started_at=datetime.now(UTC))
+                .values(status="running", started_at=now, **lease_values(now))
             )
             await session.commit()
             if claimed.rowcount == 1:
                 return EcosystemJob(kind=kind, id=job_id)  # type: ignore[arg-type]
+        await session.commit()
         return None
 
 
@@ -347,6 +353,8 @@ async def execute_training_job(
             current.status = "succeeded"
             current.metrics = metrics
             current.output_release_id = release.id
+            current.claimed_at = None
+            current.lease_expires_at = None
             current.finished_at = datetime.now(UTC)
             await session.commit()
     except Exception as exc:
@@ -357,6 +365,8 @@ async def execute_training_job(
                 .values(
                     status="failed",
                     error=f"{type(exc).__name__}: {exc}"[:4000],
+                    claimed_at=None,
+                    lease_expires_at=None,
                     finished_at=datetime.now(UTC),
                 )
             )
@@ -384,7 +394,9 @@ async def run_worker(*, once: bool = False, stop_event: asyncio.Event | None = N
         job = await claim_next_ecosystem_job(factory)
         if job is not None:
             try:
-                await execute_ecosystem_job(job, factory)
+                model = ReleaseEvaluation if job.kind == "evaluation" else DatasetTrainingRun
+                async with maintain_job_lease(factory, model, job.id):
+                    await execute_ecosystem_job(job, factory)
             except asyncio.CancelledError:
                 raise
             except Exception:

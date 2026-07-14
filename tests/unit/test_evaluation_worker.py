@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import struct
+import threading
+from datetime import UTC, datetime, timedelta
+from time import monotonic
 from types import SimpleNamespace
 
 from sqlalchemy import select
@@ -76,6 +79,11 @@ async def _queue_runs(db_session, *, count: int, hidden_seeds: int = 1) -> list[
     return [run.id for run in runs]
 
 
+def test_episode_shape_uses_whole_delivery_products():
+    assert scoring._episode_shape(24, 600) == (144, 10 / 60)
+    assert scoring._episode_shape(1 / 60, 60) == (1, 5 / 60)
+
+
 def test_same_submission_and_seed_are_bit_identical():
     payload = {"algorithm": "truthful", "llm_enabled": True, "preset": "benchmark"}
     first = score_seed(payload, 123456, seed_hours=24, window_sec=600)
@@ -108,6 +116,20 @@ class _RaisingAgent(BaseAgent):
         return AgentDecision.hold("before injected failure")
 
 
+class _BlockingAgent(BaseAgent):
+    def __init__(self, release: threading.Event) -> None:
+        self.release = release
+
+    def decide(self, ctx: AgentContext):
+        self.release.wait(10)
+        return AgentDecision.hold("released")
+
+
+class _ExitingAgent(BaseAgent):
+    def decide(self, ctx: AgentContext):
+        raise SystemExit("participant exit")
+
+
 def test_agent_exception_scores_at_roster_floor(monkeypatch):
     monkeypatch.setattr(scoring, "_make_submission_agent", lambda *args, **kwargs: _RaisingAgent())
 
@@ -121,6 +143,79 @@ def test_agent_exception_scores_at_roster_floor(monkeypatch):
     assert result.status == "participant_failure"
     assert result.score == result.metrics["floor_score"]
     assert "participant boom" in result.metrics["reason"]
+
+
+def test_agent_base_exception_scores_at_roster_floor(monkeypatch):
+    monkeypatch.setattr(scoring, "_make_submission_agent", lambda *args, **kwargs: _ExitingAgent())
+
+    result = score_seed(
+        {"algorithm": "truthful", "endowment": benchmark_endowment().to_dict()},
+        12345,
+        seed_hours=1 / 60,
+        window_sec=60,
+    )
+
+    assert result.status == "participant_failure"
+    assert result.score == result.metrics["floor_score"]
+    assert "SystemExit: participant exit" in result.metrics["reason"]
+
+
+def test_decision_deadline_fails_fast_at_roster_floor(monkeypatch):
+    release = threading.Event()
+    monkeypatch.setattr(
+        scoring,
+        "_make_submission_agent",
+        lambda *args, **kwargs: _BlockingAgent(release),
+    )
+    started = monotonic()
+    try:
+        result = score_seed(
+            {"algorithm": "truthful", "endowment": benchmark_endowment().to_dict()},
+            87654,
+            seed_hours=1 / 60,
+            window_sec=60,
+        )
+    finally:
+        release.set()
+
+    assert monotonic() - started < 2
+    assert result.status == "participant_failure"
+    assert result.score == result.metrics["floor_score"]
+    assert "500ms" in result.metrics["reason"]
+
+
+async def test_expired_evaluation_lease_is_reclaimed(db_session):
+    (run_id,) = await _queue_runs(db_session, count=1)
+    expired_claim = datetime.now(UTC) - timedelta(minutes=5)
+    run = await db_session.get(EvaluationRun, run_id)
+    assert run is not None
+    run.status = "running"
+    run.claimed_at = expired_claim
+    run.lease_expires_at = expired_claim + timedelta(minutes=1)
+    await db_session.commit()
+
+    assert await worker.claim_next_run(get_sessionmaker()) == run_id
+    await db_session.refresh(run)
+    assert run.status == "running"
+    assert run.claimed_at != expired_claim
+    assert run.lease_expires_at is not None
+
+
+async def test_live_evaluation_lease_is_not_reclaimed(db_session):
+    (run_id,) = await _queue_runs(db_session, count=1)
+    claimed_at = datetime.now(UTC)
+    run = await db_session.get(EvaluationRun, run_id)
+    assert run is not None
+    run.status = "running"
+    run.claimed_at = claimed_at
+    run.lease_expires_at = claimed_at + timedelta(minutes=5)
+    await db_session.commit()
+
+    assert await worker.claim_next_run(get_sessionmaker()) is None
+    await db_session.refresh(run)
+    assert run.status == "running"
+    assert run.claimed_at is not None
+    assert run.claimed_at.replace(tzinfo=UTC) == claimed_at
 
 
 async def test_two_participant_failures_exclude_the_scored_run(db_session, monkeypatch):

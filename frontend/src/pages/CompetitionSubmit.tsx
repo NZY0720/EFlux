@@ -39,10 +39,11 @@ export default function CompetitionSubmit() {
     setLoading(true); setError(null);
     Promise.all([fetchCompetition(slug), listManagedVPPs(), listVppPresets()])
       .then(([detail, managed, availablePresets]) => {
-        setCompetition(detail); setVpps(managed); setPresets(availablePresets);
-        const requested = managed.find((vpp) => vpp.id === requestedVpp);
+        const running = managed.filter((vpp) => vpp.deployment_status !== "failed");
+        setCompetition(detail); setVpps(running); setPresets(availablePresets);
+        const requested = running.find((vpp) => vpp.id === requestedVpp);
         if (requested) { setSourceKind("vpp"); setVppId(requested.id); }
-        else if (managed.length > 0) setVppId(managed[0].id);
+        else if (running.length > 0) setVppId(running[0].id);
         else {
           const firstPreset = Object.keys(availablePresets)[0] ?? null;
           setSourceKind("preset"); setPreset(firstPreset);

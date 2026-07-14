@@ -1069,6 +1069,19 @@ async def get_training_run(
     )
 
 
+@router.get(
+    "/ecosystem/datasets/{dataset_id}/training-runs",
+    response_model=list[DatasetTrainingRunOut],
+)
+async def list_dataset_training_runs(
+    dataset_id: int, session: DbSession, user: CurrentUser
+) -> list[DatasetTrainingRunOut]:
+    rows = await _service_call(
+        service.list_dataset_training_runs(session, dataset_id, user)
+    )
+    return [_training_out(row) for row in rows]
+
+
 @router.get("/population-packs", response_model=list[PopulationPackOut])
 async def list_population_packs(
     session: DbSession,

@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 
@@ -61,6 +62,20 @@ MANAGED_BASELINE_FACTORIES: dict[str, type[BaseAgent]] = {
     "gd": GDAgent,
     "aa": AAAgent,
 }
+
+
+@dataclass(frozen=True, slots=True)
+class ManagedBrain:
+    """Side-effect-free managed-agent construction result."""
+
+    agent: BaseAgent
+    params: VPPParams
+    seed: int
+    strategy: str
+    llm_live: bool
+    llm_status: str
+    algorithm: str
+    llm_enabled: bool
 
 # Cost-based agents whose price_ref is re-based to the CAISO reference + jittered for cost
 # diversification (LLM/gas/strategy-with-pinned-ref are handled elsewhere).
@@ -341,8 +356,7 @@ def _build_params(spec: AgentSpec, use_real_weather: bool) -> VPPParams:
     return VPPParams.from_dict(validate_vpp_params(params_dict))
 
 
-def _add_hybrid_vpp(
-    sim: Simulator,
+def _build_hybrid_agent(
     spec: AgentSpec,
     *,
     shared: SharedLLM,
@@ -350,13 +364,11 @@ def _add_hybrid_vpp(
     default_seed: int,
     offset_index: int,
     n_managed: int,
-    owner_id: int | None = None,
     model: str | None = None,
     executor_override: StrategyPolicy | None = None,
-    algorithm: str = "ppo",
     strategy_label: str | None = None,
-) -> SimulatorVPP:
-    """Add one HybridPolicyAgent VPP sharing the SharedLLM connection.
+) -> tuple[HybridPolicyAgent, VPPParams, int, str]:
+    """Construct one HybridPolicyAgent without registering a participant.
 
     Offsets are spread evenly over the reflection interval (index-based —
     deterministic, no collisions) so calls to the single endpoint stagger
@@ -364,7 +376,7 @@ def _add_hybrid_vpp(
 
     `executor_override` swaps in a pre-built tactical policy (e.g. a BaselinePolicy wrapping
     AA/ZIP/GD/Truthful) in place of the default PPO executor, so the same LLM strategist coaches
-    a classical baseline; `algorithm`/`strategy_label` tag the resulting VPP for the UI.
+    a classical baseline.
     """
     settings = get_settings()
     interval = settings.llm_guidance_interval_ticks
@@ -403,13 +415,46 @@ def _add_hybrid_vpp(
         refresh_offset_ticks=offset,
         persona_prompt=spec.persona.prompt if spec.persona else None,
     )
+    strategy = strategy_label or (
+        f"HybridPolicyAgent ({model or shared.default_model or shared.strategy_suffix})"
+    )
+    return agent, hybrid_params, seed, strategy
+
+
+def _add_hybrid_vpp(
+    sim: Simulator,
+    spec: AgentSpec,
+    *,
+    shared: SharedLLM,
+    use_real_weather: bool,
+    default_seed: int,
+    offset_index: int,
+    n_managed: int,
+    owner_id: int | None = None,
+    model: str | None = None,
+    executor_override: StrategyPolicy | None = None,
+    algorithm: str = "ppo",
+    strategy_label: str | None = None,
+) -> SimulatorVPP:
+    """Construct and register one HybridPolicyAgent VPP."""
+
+    agent, hybrid_params, seed, strategy = _build_hybrid_agent(
+        spec,
+        shared=shared,
+        use_real_weather=use_real_weather,
+        default_seed=default_seed,
+        offset_index=offset_index,
+        n_managed=n_managed,
+        model=model,
+        executor_override=executor_override,
+        strategy_label=strategy_label,
+    )
     vpp = sim.add_builtin_vpp(
         name=spec.name,
         params=hybrid_params,
         agent=agent,
         seed=seed,
-        strategy=strategy_label
-        or f"HybridPolicyAgent ({model or shared.default_model or shared.strategy_suffix})",
+        strategy=strategy,
         is_my_vpp=True,
         owner_id=owner_id,
         llm_live=shared.live,
@@ -422,36 +467,33 @@ def _add_hybrid_vpp(
     log.info(
         "Hybrid LLM VPP %s loaded (interval=%d ticks, offset=%d, live_llm=%s)",
         spec.name,
-        interval,
-        offset,
+        get_settings().llm_guidance_interval_ticks,
+        round(
+            offset_index
+            * get_settings().llm_guidance_interval_ticks
+            / max(1, n_managed)
+        ),
         shared.live,
     )
     return vpp
 
 
-def provision_managed_vpp(
+def build_managed_brain(
     sim: Simulator,
     *,
-    owner_id: int,
     name: str,
     params: dict,
     persona_prompt: str | None = None,
     agent_params: dict | None = None,
     seed: int | None = None,
     model: str | None = None,
-    managed_def_id: int | None = None,
-    release_id: int | None = None,
-    release_content_sha256: str | None = None,
     checkpoint: str | None = None,
-    deployment_mode: str = "live",
     algorithm: str = "ppo",
     llm_enabled: bool = True,
     online_learning: bool = True,
     use_real_weather: bool | None = None,
-) -> SimulatorVPP:
-    """Provision a cloud-hosted managed VPP for an external user at runtime, attributed to
-    ``owner_id`` so ``my_managed_vpps(owner_id)`` scopes it to that user. The agent is then
-    driven autonomously by the simulator tick loop.
+) -> ManagedBrain:
+    """Build a managed agent without touching the simulator roster or gateway.
 
     ``algorithm`` is the *base* tactical algorithm (ppo / truthful / zip / gd / aa) and
     ``llm_enabled`` layers the LLM strategist on top: ppo+LLM is the classic Hybrid stack (PPO
@@ -459,8 +501,7 @@ def provision_managed_vpp(
     ``BaselinePolicy`` executor so the *same* guidance seam applies. Without the LLM the
     standalone agent runs directly.
 
-    Raises ``ValueError`` / pydantic ``ValidationError`` on invalid params or agent_params
-    (the API layer maps these to HTTP 422). Nothing is added to the simulator on failure.
+    Raises ``ValueError`` / pydantic ``ValidationError`` on invalid params or agent_params.
     """
     algorithm = algorithm or "ppo"
     if algorithm not in RUNTIME_MANAGED_ALGORITHMS:
@@ -498,17 +539,14 @@ def provision_managed_vpp(
                     else ExecutorSpec(kind="scripted", online_learning=False)
                 ),
             )
-            vpp = _add_hybrid_vpp(
-                sim,
+            agent, physical_params, agent_seed, strategy = _build_hybrid_agent(
                 spec,
                 shared=sim.shared_llm,
                 use_real_weather=real_weather,
                 default_seed=seed if seed is not None else 42,
                 offset_index=existing,
                 n_managed=existing + 1,
-                owner_id=owner_id,
                 model=model,
-                algorithm=algorithm,
             )
         else:
             # Wrap the classical baseline as the tactical executor the strategist coaches. Its
@@ -530,27 +568,27 @@ def provision_managed_vpp(
                 persona=persona,
                 executor=None,
             )
-            vpp = _add_hybrid_vpp(
-                sim,
+            agent, physical_params, agent_seed, strategy = _build_hybrid_agent(
                 spec,
                 shared=sim.shared_llm,
                 use_real_weather=real_weather,
                 default_seed=seed if seed is not None else 42,
                 offset_index=existing,
                 n_managed=existing + 1,
-                owner_id=owner_id,
                 model=model,
                 executor_override=BaselinePolicy(baseline, use_forecast=True),
-                algorithm=algorithm,
                 strategy_label=f"LLM + {algorithm.upper()} (managed)",
             )
-        vpp.managed_def_id = managed_def_id
-        vpp.release_id = release_id
-        vpp.release_content_sha256 = release_content_sha256
-        vpp.deployment_mode = deployment_mode
-        vpp.algorithm = algorithm
-        vpp.llm_enabled = True
-        return vpp
+        return ManagedBrain(
+            agent=agent,
+            params=physical_params,
+            seed=agent_seed,
+            strategy=strategy,
+            llm_live=sim.shared_llm.live,
+            llm_status=sim.shared_llm.status,
+            algorithm=algorithm,
+            llm_enabled=True,
+        )
 
     spec = AgentSpec(
         name=name,
@@ -565,13 +603,12 @@ def provision_managed_vpp(
         else None,
     )
     agent_seed = spec.seed if spec.seed is not None else 42
+    physical_params = _build_params(spec, real_weather)
     if algorithm in {"ppo", "scripted"}:
         params_for_agent = _managed_agent_params(name, agent_params, algorithm)
         params_for_agent.setdefault("use_forecast", True)
         if get_settings().agent_character_enabled:
-            params_for_agent.setdefault(
-                "character", derive_character(_build_params(spec, real_weather))
-            )
+            params_for_agent.setdefault("character", derive_character(physical_params))
         params_for_agent["policy"] = (
             _build_executor(name, spec.executor, seed=agent_seed, auto_update=True)
             if algorithm == "ppo"
@@ -591,23 +628,71 @@ def provision_managed_vpp(
         strategy = f"{factory.__name__} (managed)"
         llm_status = "Baseline agent (no LLM)"
 
-    vpp = sim.add_builtin_vpp(
-        name=spec.name,
-        params=_build_params(spec, real_weather),
+    return ManagedBrain(
         agent=agent,
         seed=agent_seed,
+        params=physical_params,
         strategy=strategy,
-        is_my_vpp=True,
-        owner_id=owner_id,
         llm_live=False,
         llm_status=llm_status,
         algorithm=algorithm,
+        llm_enabled=False,
+    )
+
+
+def provision_managed_vpp(
+    sim: Simulator,
+    *,
+    owner_id: int,
+    name: str,
+    params: dict,
+    persona_prompt: str | None = None,
+    agent_params: dict | None = None,
+    seed: int | None = None,
+    model: str | None = None,
+    managed_def_id: int | None = None,
+    release_id: int | None = None,
+    release_content_sha256: str | None = None,
+    checkpoint: str | None = None,
+    deployment_mode: str = "live",
+    algorithm: str = "ppo",
+    llm_enabled: bool = True,
+    online_learning: bool = True,
+    use_real_weather: bool | None = None,
+) -> SimulatorVPP:
+    """Construct and register a cloud-hosted managed VPP for an external user."""
+
+    brain = build_managed_brain(
+        sim,
+        name=name,
+        params=params,
+        persona_prompt=persona_prompt,
+        agent_params=agent_params,
+        seed=seed,
+        model=model,
+        checkpoint=checkpoint,
+        algorithm=algorithm,
+        llm_enabled=llm_enabled,
+        online_learning=online_learning,
+        use_real_weather=use_real_weather,
+    )
+    vpp = sim.add_builtin_vpp(
+        name=name,
+        params=brain.params,
+        agent=brain.agent,
+        seed=brain.seed,
+        strategy=brain.strategy,
+        is_my_vpp=True,
+        owner_id=owner_id,
+        llm_live=brain.llm_live,
+        llm_status=brain.llm_status,
+        algorithm=brain.algorithm,
     )
     vpp.managed_def_id = managed_def_id
     vpp.release_id = release_id
     vpp.release_content_sha256 = release_content_sha256
     vpp.deployment_mode = deployment_mode
-    vpp.llm_enabled = False
+    vpp.llm_enabled = brain.llm_enabled
     return vpp
 
 

@@ -30,7 +30,9 @@ POST /agent-releases/{id}/evaluations
 GET  /agent-releases/{id}/evaluations
 ```
 
-The API request queues platform work; `python -m eflux.ecosystem.worker` processes the queue. `./tasks.sh run` starts this worker automatically unless worker autostart is disabled.
+The API request queues platform work; `./tasks.sh ecosystem-worker` processes that queue.
+For local development, `./tasks.sh dev-stack` starts the API together with the evaluation
+and ecosystem workers. `./tasks.sh run` starts only the API.
 
 ## Evidence modes
 

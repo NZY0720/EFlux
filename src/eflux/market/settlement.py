@@ -69,6 +69,7 @@ def settle_delivery_position(
     dispatchable_startup_cost_usd: Decimal = Decimal("0"),
     battery_degradation_cost_per_mwh_throughput: Decimal = Decimal("0"),
     battery_cell_throughput_kwh: Decimal = Decimal("0"),
+    imbalance_settlement_enabled: bool = True,
 ) -> SettlementResult:
     """Book non-trade economics after physical delivery is complete.
 
@@ -95,7 +96,11 @@ def settle_delivery_position(
         prices.long_imbalance_price if imbalance >= 0.0 else prices.short_imbalance_price
     )
     imbalance_value = usd_for_energy(imbalance_price, Decimal(str(abs(imbalance))))
-    imbalance_usd = imbalance_value if imbalance >= 0.0 else -imbalance_value
+    imbalance_usd = (
+        (imbalance_value if imbalance >= 0.0 else -imbalance_value)
+        if imbalance_settlement_enabled
+        else Decimal("0")
+    )
     fuel_cost = usd_for_energy(
         fuel_cost_per_mwh, Decimal(str(position.dispatchable_generation_kwh))
     )

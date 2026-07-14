@@ -114,3 +114,15 @@ def test_gas_agent_silent_without_capacity():
     agent = GasGeneratorAgent()
     ctx = _gas_ctx(gas_kw_max=0.0)
     assert agent.decide(ctx).is_empty
+
+
+def test_gas_agent_reoffers_only_uncommitted_unresting_capacity():
+    agent = GasGeneratorAgent()
+    ctx = _gas_ctx(gas_kw_max=30.0, cost=58.0)
+    ctx.contracted_dispatchable_kwh = 1.0
+    ctx.resting_dispatchable_kwh = 0.5
+
+    decision = agent.decide(ctx)
+
+    assert len(decision.orders) == 1
+    assert decision.orders[0].qty_kwh == Decimal("1.0000")

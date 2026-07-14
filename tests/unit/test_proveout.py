@@ -12,7 +12,10 @@ from eflux.config import get_settings
 from eflux.db.models import AuditEvent, ProveOutRun, User
 from eflux.db.session import get_sessionmaker
 from eflux.evaluation import proveout, worker
+from eflux.evaluation.manifest import DataArtifact
 from eflux.evaluation.proveout import CAISO_TZ, PriceHour, perfect_foresight_usd
+from eflux.evaluation.proveout_runner import execute_gateway_proveout
+from eflux.simulator.runner import Simulator
 
 
 def _two_day_prices() -> list[PriceHour]:
@@ -40,6 +43,68 @@ def test_perfect_foresight_two_day_fixture_is_exact():
     # Day 2: 2*(50-5)-10 + 2*(40-10)-10 = 130.
     assert actual == 198.0
     print(f"PF fixture expected=198.0 actual={actual}")
+
+
+def test_perfect_foresight_respects_terminal_power_limit_with_losses():
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    prices = [
+        PriceHour(timestamp=start, price=10.0),
+        PriceHour(timestamp=start + timedelta(hours=1), price=100.0),
+    ]
+    endowment = {
+        "battery": {
+            "power_mw": 1.0,
+            "energy_mwh": 1.0,
+            "round_trip_efficiency": 0.81,
+            "cycle_cost_per_mwh": 0.0,
+        }
+    }
+
+    actual = perfect_foresight_usd(prices, endowment)
+
+    # Charge is capped at 1 terminal MWh; only 0.81 terminal MWh can later discharge.
+    assert actual == pytest.approx(0.81 * 100.0 - 1.0 * 10.0)
+
+
+def test_gateway_proveout_uses_configured_delivery_interval(monkeypatch):
+    monkeypatch.setenv("EFLUX_DELIVERY_INTERVAL_SEC", "600")
+    get_settings.cache_clear()
+    calls: list[datetime] = []
+    original = Simulator.run_interval_once
+
+    def recording_step(self, sim_ts):
+        calls.append(sim_ts.astimezone(UTC))
+        return original(self, sim_ts)
+
+    monkeypatch.setattr(Simulator, "run_interval_once", recording_step)
+    start = datetime(2026, 1, 1, 8, tzinfo=UTC)
+    artifact = DataArtifact(
+        name="fixture",
+        source="unit-test",
+        resolution="1h",
+        sha256="0" * 64,
+        rows=1,
+        start=start,
+        end=start,
+    )
+    try:
+        result = execute_gateway_proveout(
+            prices=[PriceHour(timestamp=start, price=50.0)],
+            endowment={"cash_usd": 10000.0},
+            strategy={"algorithm": "battery_arbitrageur"},
+            strategy_params=proveout._strategy_params(None),
+            start_date=date(2026, 1, 1),
+            end_date=date(2026, 1, 1),
+            battery_perfect_foresight_usd=0.0,
+            data_artifact=artifact,
+            local_timezone=CAISO_TZ,
+        )
+    finally:
+        get_settings.cache_clear()
+
+    assert calls == [start + timedelta(minutes=10 * index) for index in range(6)]
+    assert result.manifest.parameters["delivery_interval_sec"] == 600
+    assert result.report["price_resolution"] == "hourly LMP repeated over 600s products"
 
 
 def test_replay_is_deterministic_for_identical_inputs():

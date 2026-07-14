@@ -101,7 +101,10 @@ def test_alembic_reconciles_tables_created_ahead_of_revision(tmp_path):
         snapshot_columns = {
             row[1] for row in connection.execute("PRAGMA table_info(vpp_stat_snapshots)").fetchall()
         }
-    assert revision == ("0010",)
+        evaluation_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info(evaluation_runs)").fetchall()
+        }
+    assert revision == ("0011",)
     assert {"release_id", "release_content_sha256"} <= vpp_columns
     assert {
         "release_id",
@@ -111,4 +114,6 @@ def test_alembic_reconciles_tables_created_ahead_of_revision(tmp_path):
         "llm_cost_usd",
         "gateway_rejections",
         "fallback_count",
+        "deployment_mode",
     } <= snapshot_columns
+    assert {"claimed_at", "lease_expires_at"} <= evaluation_columns

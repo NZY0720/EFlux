@@ -29,6 +29,7 @@ MODEL_VERSION = "online-rls-v1"
 TARGETS = ("price_real", "price_p2p", "ghi", "temp_air", "wind_speed")
 WEATHER_TARGETS = ("ghi", "temp_air", "wind_speed")
 HISTORY_MAXLEN = 1500
+OUTCOME_OBSERVATION_TOLERANCE = HORIZON_TIMEDELTAS["5m"] / 2
 
 ForecastOutcome = dict[str, Any]
 OutcomeCreatedCallback = Callable[[list[ForecastOutcome]], Awaitable[None] | None]
@@ -255,12 +256,25 @@ class ForecastService:
     def _settle_outcomes(self, market: str, sim_ts: datetime, realized: float) -> None:
         settled: list[ForecastOutcome] = []
         pending: list[ForecastOutcome] = []
+        observations = self.models[market].observations
         for row in self._pending_outcomes:
-            if row["market"] == market and row["target_ts"] <= sim_ts:
-                row = {**row, "realized": realized}
-                settled.append(row)
-            else:
+            if row["market"] != market or row["target_ts"] > sim_ts:
                 pending.append(row)
+                continue
+
+            target_ts = row["target_ts"]
+            nearest = min(
+                observations,
+                key=lambda observation: abs(observation[0] - target_ts),
+                default=None,
+            )
+            if nearest is not None and abs(nearest[0] - target_ts) <= OUTCOME_OBSERVATION_TOLERANCE:
+                settled.append({**row, "realized": nearest[1]})
+            elif sim_ts <= target_ts + OUTCOME_OBSERVATION_TOLERANCE:
+                # A slightly late observation may still resolve this target.
+                pending.append(row)
+            # Once the tolerance window has passed, leave the durable outcome
+            # unresolved rather than assigning an unrelated current observation.
         self._pending_outcomes = pending
         self._dispatch(self.on_outcomes_settled, settled)
 

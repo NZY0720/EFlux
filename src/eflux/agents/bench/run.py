@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 from eflux.agents.bench.metrics import EpisodeMetrics, format_leaderboard
 from eflux.agents.bench.scenarios import candidates, counter_roster, test_slot_params
 from eflux.bridge.bus import InMemoryBus
+from eflux.config import get_settings
 from eflux.data.electricity_market import synthetic_quote
 from eflux.forecasting.service import ForecastService
 from eflux.simulator.runner import Simulator
@@ -69,8 +70,13 @@ def run_episode(
     market_price_path: Sequence[Decimal] | None = None,
     market_price_source: str = "paired-world fixed grid",
 ) -> tuple[Simulator, object]:
-    """One episode: counter-roster + the candidate in the test slot, stepped n_ticks
-    through the exact gate path the live loop uses."""
+    """Run ``n_ticks`` fixed price/action windows through the live gate path.
+
+    A benchmark window may contain multiple delivery products (the default is a
+    ten-minute tick over five-minute products). Every constituent product is
+    processed, while a supplied price path remains indexed at benchmark-tick
+    resolution.
+    """
     sim = Simulator(bus=InMemoryBus(), sim_epoch=BENCH_EPOCH)
     if market_mode not in {"p2p", "realprice", "hybrid"}:
         raise ValueError(f"unsupported benchmark market_mode {market_mode!r}")
@@ -113,6 +119,12 @@ def run_episode(
         raise CandidateEpisodeError("candidate construction failed") from exc
 
     sim_ts = sim.clock.now_sim()
+    product_h = get_settings().delivery_interval_sec / 3600.0
+    products_per_tick = round(tick_h / product_h)
+    if products_per_tick < 1 or not math.isclose(
+        tick_h, products_per_tick * product_h, rel_tol=0.0, abs_tol=1e-12
+    ):
+        raise ValueError("tick_h must be a positive whole multiple of the delivery interval")
     if market_price_path is not None and len(market_price_path) < n_ticks:
         raise ValueError("market_price_path must contain at least n_ticks values")
     for tick_index in range(n_ticks):
@@ -124,12 +136,13 @@ def run_episode(
                 now=sim_ts,
                 transaction_fee=Decimal("2"),
             )
-        _observe_and_refresh_forecast(sim, sim_ts)
-        sim_ts = sim.run_interval_once(sim_ts)
-        if sim.decision_failures_by_vpp.get(test_vpp.vpp_id, 0):
-            detail = sim.decision_errors_by_vpp.get(test_vpp.vpp_id)
-            suffix = "" if not detail else f": {detail}"
-            raise CandidateEpisodeError(f"candidate execution failed{suffix}")
+        for _ in range(products_per_tick):
+            _observe_and_refresh_forecast(sim, sim_ts)
+            sim_ts = sim.run_interval_once(sim_ts)
+            if sim.decision_failures_by_vpp.get(test_vpp.vpp_id, 0):
+                detail = sim.decision_errors_by_vpp.get(test_vpp.vpp_id)
+                suffix = "" if not detail else f": {detail}"
+                raise CandidateEpisodeError(f"candidate execution failed{suffix}")
     return sim, test_vpp
 
 

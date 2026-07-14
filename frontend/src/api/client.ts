@@ -371,11 +371,6 @@ export async function fetchChatter(limit = 40): Promise<ChatMessage[]> {
   return data;
 }
 
-export async function setMarketSpeed(speed: number): Promise<{ speed: number; is_realtime: boolean }> {
-  const { data } = await api.post("/market/speed", { speed });
-  return data;
-}
-
 // --- Forecasts ---
 
 export async function fetchLatestForecast(): Promise<LatestForecastResponse> {

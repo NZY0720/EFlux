@@ -140,6 +140,20 @@ def test_demand_beta_sees_resting_book_deficit():
     assert orders[0].qty_kwh == Decimal("2.5000")
 
 
+def test_partial_fill_next_decision_quotes_only_uncontracted_residual():
+    agent = TruthfulAgent(price_ref=Decimal("50.0"))
+    ctx = _make_ctx(pv_kw=0.0, load_kw=3.0)
+    ctx.state.pending_net_kwh = -7.5
+    ctx.contracted_net_kwh = -2.0  # already-filled buy energy
+    ctx.open_orders_net_kwh = -3.0  # unfilled remainder still resting
+
+    orders = _balance_orders(agent.decide(ctx))
+
+    assert len(orders) == 1
+    assert orders[0].side == "buy"
+    assert orders[0].qty_kwh == Decimal("2.5000")
+
+
 def test_battery_band_sells_stored_energy_at_night():
     """Nighttime liquidity regression: with PV=0 every VPP is a buyer and the
     market dries up. A battery above soc_high must offer stored energy at its

@@ -43,3 +43,19 @@ async def test_forecast_service_persists_and_settles_outcomes(db_session):
     history = await history_from_outcomes(limit=10, target="price_real")
     assert history[0]["forecasts"]["price_real"]["12h"] == pytest.approx(twelve_hour.predicted)
     assert history[0]["realized"]["price_real"] == pytest.approx(55.0)
+
+
+def test_forecast_gap_leaves_overdue_targets_unresolved():
+    settled: list[dict] = []
+    service = ForecastService(on_outcomes_settled=settled.extend)
+    start = datetime(2026, 6, 1, tzinfo=UTC)
+    service.observe(start, price_real=50.0)
+    service.refresh(start)
+
+    service.observe(start + timedelta(hours=13), price_real=99.0)
+
+    assert settled == []
+    assert not any(
+        row["market"] == "price_real" and row["origin_ts"] == start
+        for row in service._pending_outcomes
+    )

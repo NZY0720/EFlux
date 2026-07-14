@@ -678,14 +678,38 @@ async def _selected_packs(session: AsyncSession, config: dict[str, Any]) -> list
 
 
 async def _live_evidence(
-    session: AsyncSession, release: AgentRelease, config: dict[str, Any]
+    session: AsyncSession,
+    release: AgentRelease,
+    config: dict[str, Any],
+    *,
+    deployment_mode: str = "live",
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    query = select(VppStatSnapshot).where(
+    managed_def_id = config.get("managed_def_id")
+    if managed_def_id is None:
+        raise ValueError("managed_def_id is required for deployment-bound evidence")
+    conditions = (
         VppStatSnapshot.release_id == release.id,
         VppStatSnapshot.release_content_sha256 == release.content_sha256,
+        VppStatSnapshot.managed_def_id == int(managed_def_id),
+        VppStatSnapshot.owner_id == release.owner_id,
+        VppStatSnapshot.deployment_mode == deployment_mode,
     )
-    if config.get("managed_def_id") is not None:
-        query = query.where(VppStatSnapshot.managed_def_id == int(config["managed_def_id"]))
+    session_id = config.get("market_session_id")
+    if session_id is None:
+        session_id = (
+            await session.execute(
+                select(VppStatSnapshot.session_id)
+                .where(*conditions)
+                .order_by(VppStatSnapshot.wall_ts.desc(), VppStatSnapshot.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+    if session_id is None:
+        raise ValueError(f"deployment has no hash-bound {deployment_mode} snapshots")
+    query = select(VppStatSnapshot).where(
+        *conditions,
+        VppStatSnapshot.session_id == int(session_id),
+    )
     snapshots = list(
         (
             await session.execute(query.order_by(VppStatSnapshot.sim_ts, VppStatSnapshot.id))
@@ -717,6 +741,9 @@ async def _live_evidence(
         "runtime_start": first.sim_ts.isoformat(),
         "runtime_end": last.sim_ts.isoformat(),
         "release_version": release.version,
+        "market_session_id": int(session_id),
+        "owner_id": release.owner_id,
+        "deployment_mode": deployment_mode,
         "snapshot_ids": [row.id for row in snapshots],
         "managed_definition_ids": sorted(
             {row.managed_def_id for row in snapshots if row.managed_def_id is not None}
@@ -743,10 +770,17 @@ async def execute_release_evaluation(
         packs = await _selected_packs(session, config) if kind == "p2p_tournament" else []
         if kind in {"forward_shadow", "verified_live"}:
             try:
-                metrics, evidence = await _live_evidence(session, release, config)
+                metrics, evidence = await _live_evidence(
+                    session,
+                    release,
+                    config,
+                    deployment_mode="live" if kind == "verified_live" else "shadow",
+                )
             except Exception as exc:
                 evaluation.status = "failed"
                 evaluation.error = f"{type(exc).__name__}: {exc}"[:4000]
+                evaluation.claimed_at = None
+                evaluation.lease_expires_at = None
                 evaluation.finished_at = datetime.now(UTC)
                 await session.commit()
                 raise
@@ -802,6 +836,8 @@ async def execute_release_evaluation(
             evaluation.metrics = metrics
             evaluation.evidence = evidence
             evaluation.evidence_sha256 = evidence_sha256
+            evaluation.claimed_at = None
+            evaluation.lease_expires_at = None
             evaluation.finished_at = datetime.now(UTC)
             badges = set(release.badges)
             if kind == "deterministic_replay":
@@ -825,6 +861,8 @@ async def execute_release_evaluation(
                 .values(
                     status="failed",
                     error=f"{type(exc).__name__}: {exc}"[:4000],
+                    claimed_at=None,
+                    lease_expires_at=None,
                     finished_at=datetime.now(UTC),
                 )
             )

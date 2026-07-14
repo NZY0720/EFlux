@@ -11,31 +11,40 @@ interface MarketModeValue {
 
 const Ctx = createContext<MarketModeValue>({ mode: "p2p", ready: false });
 
-/**
- * Fetches the backend market mode once on init. One market runs per launch
- * (chosen by which .command was started), so this never changes mid-session —
- * the dashboards and NavBar badge read it to render the right "story".
- */
+const RETRY_DELAYS = [2000, 5000, 10_000, 30_000];
+
 export function MarketModeProvider({ children }: { children: React.ReactNode }) {
   const [mode, setMode] = useState<MarketMode>("p2p");
   const [ready, setReady] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    fetchMeta()
-      .then((m) => {
-        if (!cancelled && (m.market_mode === "p2p" || m.market_mode === "realprice")) {
-          setMode(m.market_mode);
+    let retry = 0;
+    let timer: number | undefined;
+    const load = async () => {
+      let nextMode: MarketMode | null = null;
+      try {
+        const meta = await fetchMeta();
+        if (meta.market_mode === "p2p" || meta.market_mode === "realprice") {
+          nextMode = meta.market_mode;
         }
-      })
-      .catch(() => {
-        /* backend not ready — keep the p2p default */
-      })
-      .finally(() => {
-        if (!cancelled) setReady(true);
-      });
+      } catch {
+        /* backend may still be starting */
+      }
+      if (cancelled) return;
+      setReady(true);
+      if (nextMode) {
+        setMode(nextMode);
+        return;
+      }
+      const delay = RETRY_DELAYS[Math.min(retry, RETRY_DELAYS.length - 1)];
+      retry += 1;
+      timer = window.setTimeout(load, delay);
+    };
+    void load();
     return () => {
       cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, []);
 

@@ -336,7 +336,6 @@ def _battery_pf_by_day(
     energy = float(battery["energy_mwh"])
     eta = float(battery["round_trip_efficiency"])
     cycle_cost = float(battery.get("cycle_cost_per_mwh", 0.0))
-    sqrt_eta = math.sqrt(eta)
     k = max(1, min(12, round(energy / power)))
     grouped: dict[date, list[float]] = defaultdict(list)
     for point in prices:
@@ -348,10 +347,17 @@ def _battery_pf_by_day(
         priciest = sorted(day_prices, reverse=True)[:k]
         value = 0.0
         for charge_price, discharge_price in zip(cheapest, priciest, strict=True):
-            adjusted_discharge = discharge_price * sqrt_eta
-            adjusted_charge = charge_price / sqrt_eta
-            if adjusted_discharge > adjusted_charge:
-                value += power * (adjusted_discharge - adjusted_charge) - cycle_cost * power
+            # ``power_mw`` is the terminal inverter limit, matching replay's
+            # Battery.max_power_kw. One terminal MWh charged yields ``eta``
+            # terminal MWh on discharge, so neither direction exceeds ``power``.
+            terminal_charge = power
+            terminal_discharge = power * eta
+            if discharge_price * terminal_discharge > charge_price * terminal_charge:
+                value += (
+                    discharge_price * terminal_discharge
+                    - charge_price * terminal_charge
+                    - cycle_cost * power
+                )
         result[day] = value
     return result
 
@@ -571,10 +577,11 @@ def run_proveout_execution(
         {"timestamp": point.timestamp.astimezone(UTC).isoformat(), "lmp": point.price}
         for point in prices
     ]
+    interval_sec = get_settings().delivery_interval_sec
     data_artifact = DataArtifact(
         name="CAISO historical LMP",
         source=f"CAISO OASIS DAM via local-cache:{get_settings().external_market_node}",
-        resolution="1h repeated over 5m delivery products",
+        resolution=f"1h repeated over {interval_sec}s delivery products",
         sha256=content_sha256(price_payload),
         rows=len(prices),
         start=prices[0].timestamp,

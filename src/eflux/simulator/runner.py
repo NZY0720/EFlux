@@ -166,6 +166,9 @@ class SimulatorVPP:
     # Simulated time at which this VPP joined the live roster. Arena evidence
     # uses this rather than wall time, so speed changes do not alter eligibility.
     observed_since_sim: datetime | None = None
+    # Metering integrates the actual elapsed simulation time between physics
+    # samples. This is participant-local because VPPs can join while the market runs.
+    last_physics_sim_ts: datetime | None = None
 
 
 class Simulator:
@@ -194,6 +197,9 @@ class Simulator:
         self.meters = IntervalMeterBook()
         self._settled_intervals: set[str] = set()
         self.vpps: dict[int, SimulatorVPP] = {}
+        # Deactivated VPPs remain here until every filled delivery position has
+        # settled, but are excluded from decisions and new gateway risk.
+        self._pending_removal_vpp_ids: set[int] = set()
         # One Semaphore-gated LLM connection shared by every managed agent, retained so
         # the API can provision new managed agents at runtime. Set by the scenario loader
         # at startup (None until then).
@@ -427,6 +433,7 @@ class Simulator:
             wind=wind,
             rng=random.Random(seed),
             observed_since_sim=self.clock.now_sim(),
+            last_physics_sim_ts=self.clock.now_sim(),
         )
         self.vpps[vpp_id] = vpp
         self.gateway.register_participant(
@@ -441,7 +448,11 @@ class Simulator:
         """Managed (is_my_vpp) agents. With owner_id, scope to that user's provisioned
         agents; without it (internal tick-loop callers) every managed agent, house
         roster agents included."""
-        managed = [vpp for vpp in self.vpps.values() if vpp.is_my_vpp]
+        managed = [
+            vpp
+            for vpp in self.vpps.values()
+            if vpp.is_my_vpp and vpp.vpp_id not in self._pending_removal_vpp_ids
+        ]
         if owner_id is not None:
             managed = [vpp for vpp in managed if vpp.owner_id == owner_id]
         return managed
@@ -475,19 +486,95 @@ class Simulator:
         return vpp
 
     def remove_managed_vpp(self, managed_def_id: int) -> bool:
-        """Remove a provisioned managed VPP (by its stable DB id): cancel its resting orders and
-        drop it from the roster so the tick loop stops driving it. Returns False if not found.
-        Call under self._lock to stay race-free with the tick loop and external submits."""
-        target = next((v for v in self.vpps.values() if v.managed_def_id == managed_def_id), None)
+        """Deactivate a managed VPP while retaining any unsettled filled positions."""
+
+        target = next(
+            (
+                v
+                for v in self.vpps.values()
+                if v.managed_def_id == managed_def_id
+                and v.vpp_id not in self._pending_removal_vpp_ids
+            ),
+            None,
+        )
         if target is None:
+            return False
+        return self.request_vpp_removal(target.vpp_id)
+
+    def request_vpp_removal(self, vpp_id: int) -> bool:
+        """Cancel exposure now and remove only after the final contract settles.
+
+        Call under ``self._lock`` in live API paths. The participant stays in both
+        runtime maps while pending so physics, fuel, and imbalance settlement still run.
+        """
+
+        if vpp_id not in self.vpps or vpp_id not in self.gateway.participants:
             return False
         now_sim = self.clock.now_sim()
         now_wall = datetime.now(UTC)
-        self.gateway.cancel_all(target.vpp_id, sim_ts=now_sim, wall_ts=now_wall)
-        self.gateway.participants.pop(target.vpp_id, None)
-        self.vpps.pop(target.vpp_id, None)
-        log.info("Removed managed VPP id=%s (def=%s)", target.vpp_id, managed_def_id)
+        self.gateway.deactivate_participant(vpp_id, sim_ts=now_sim, wall_ts=now_wall)
+        self._pending_removal_vpp_ids.add(vpp_id)
+        self._sweep_pending_removals()
         return True
+
+    def has_unsettled_contracts(self, vpp_id: int) -> bool:
+        runtime = self.gateway.participants.get(vpp_id)
+        if runtime is None:
+            return False
+        return any(
+            iid not in self._settled_intervals
+            and (position.contracted_buy_kwh > 1e-12 or position.contracted_sell_kwh > 1e-12)
+            for iid, position in runtime.positions.items()
+        )
+
+    def _sweep_pending_removals(self) -> None:
+        for vpp_id in tuple(self._pending_removal_vpp_ids):
+            if self.has_unsettled_contracts(vpp_id):
+                continue
+            vpp = self.vpps.pop(vpp_id, None)
+            self.gateway.participants.pop(vpp_id, None)
+            self._pending_removal_vpp_ids.discard(vpp_id)
+            if vpp is not None:
+                log.info("Removed VPP id=%s after final settlement", vpp_id)
+
+    def replace_managed_vpp(
+        self, managed_def_id: int, replacement: SimulatorVPP
+    ) -> SimulatorVPP:
+        """Install a freshly provisioned managed agent under its prior economic id."""
+
+        original = next(
+            (
+                vpp
+                for vpp in self.vpps.values()
+                if vpp is not replacement and vpp.managed_def_id == managed_def_id
+            ),
+            None,
+        )
+        if original is None:
+            return replacement
+        if self.has_unsettled_contracts(original.vpp_id):
+            raise ValueError("managed VPP has unsettled contracted intervals")
+
+        now_sim = self.clock.now_sim()
+        now_wall = datetime.now(UTC)
+        self.gateway.cancel_all(original.vpp_id, sim_ts=now_sim, wall_ts=now_wall)
+        temporary_id = replacement.vpp_id
+        replacement_runtime = self.gateway.participants.pop(temporary_id)
+        self.vpps.pop(temporary_id)
+        self.gateway.participants.pop(original.vpp_id)
+        self.vpps.pop(original.vpp_id)
+
+        replacement.vpp_id = original.vpp_id
+        replacement_runtime.participant_id = original.vpp_id
+        self.vpps[replacement.vpp_id] = replacement
+        self.gateway.participants[replacement.vpp_id] = replacement_runtime
+        replacement.state.pnl = self.gateway.ledger.balance(replacement.vpp_id)
+        log.info(
+            "Replaced managed VPP def=%s under stable participant id=%s",
+            managed_def_id,
+            replacement.vpp_id,
+        )
+        return replacement
 
     def _maybe_chat(self, _tick_no: int) -> None:
         """Wall-clock-gated agent chat, independent of accelerated market speed."""
@@ -499,7 +586,12 @@ class Simulator:
             return
         if self._chat_task is not None and not self._chat_task.done():
             return
-        eligible = [v for v in self.vpps.values() if _agent_chat_client(v.agent) is not None]
+        eligible = [
+            v
+            for v in self.vpps.values()
+            if v.vpp_id not in self._pending_removal_vpp_ids
+            and _agent_chat_client(v.agent) is not None
+        ]
         if not eligible:
             return
         vpp = eligible[self._chat_rr % len(eligible)]
@@ -1794,7 +1886,6 @@ class Simulator:
                 products = self._ensure_products(sim_ts)
                 self.gateway.expire_orders(sim_ts=sim_ts, wall_ts=wall_ts)
                 self.gateway.close_due(sim_ts=sim_ts, wall_ts=wall_ts)
-                self._settle_due_intervals(sim_ts)
                 current = delivery_interval_containing(
                     sim_ts,
                     market=self.market_mode,
@@ -1809,6 +1900,9 @@ class Simulator:
                             vpp.name,
                             vpp.vpp_id,
                         )
+                # A delayed/accelerated tick can straddle a delivery boundary.
+                # Meter the elapsed slice first, then settle every now-complete interval.
+                self._settle_due_intervals(sim_ts)
                 if self.decision_scheduler.is_due(sim_ts):
                     self._run_decision_round(sim_ts, products)
 
@@ -1996,6 +2090,7 @@ class Simulator:
                     "release_id": vpp.release_id,
                     "release_content_sha256": vpp.release_content_sha256,
                     "owner_id": vpp.owner_id,
+                    "deployment_mode": vpp.deployment_mode,
                     "strategy": vpp.strategy,
                     "category": agent_category(vpp),
                     "is_llm": is_llm_vpp(vpp),
@@ -2157,7 +2252,18 @@ class Simulator:
         import_price = min(ceiling, max(floor, quote.import_price))
         if import_price < export_price:
             import_price = export_price
-        depth = self.gateway.limits.qty_max_kwh
+        participant_count = sum(
+            not runtime.is_system and runtime.trading_enabled
+            for runtime in self.gateway.participants.values()
+        )
+        depth = (
+            self.gateway.limits.qty_max_kwh
+            * Decimal(max(1, participant_count))
+            * Decimal(
+                self.gateway.limits.max_open_orders
+                + self.gateway.limits.max_new_orders_per_decision
+            )
+        )
         requests = tuple(
             OrderRequest(
                 side=side,
@@ -2168,6 +2274,7 @@ class Simulator:
                 time_in_force=TimeInForce.GOOD_TIL_GATE,
             )
             for product in products
+            if product.is_trading_open(sim_ts)
             for side, price in (("buy", export_price), ("sell", import_price))
         )
         execution = self.gateway.execute_decision(
@@ -2187,13 +2294,32 @@ class Simulator:
         self, vpp: SimulatorVPP, sim_ts: datetime, interval: DeliveryInterval
     ) -> None:
         self._refresh_der_state(vpp, sim_ts, interval)
-        self.meters.integrate(
-            participant_id=vpp.vpp_id,
-            interval=interval,
-            renewable_power_kw=vpp.state.pv_kw + vpp.state.wind_kw,
-            uncontrolled_load_power_kw=vpp.state.load_kw,
-            duration_sec=self.clock.tick_sim_sec,
-        )
+        previous = vpp.last_physics_sim_ts
+        vpp.last_physics_sim_ts = sim_ts
+        if previous is None or sim_ts <= previous:
+            return
+
+        cursor = previous
+        interval_sec = get_settings().delivery_interval_sec
+        while cursor < sim_ts:
+            metered_interval = delivery_interval_containing(
+                cursor,
+                market=self.market_mode,
+                interval_sec=interval_sec,
+            )
+            segment_end = min(sim_ts, metered_interval.end)
+            duration_sec = (segment_end - cursor).total_seconds()
+            if duration_sec <= 0.0:
+                break
+            self.engine.register(metered_interval)
+            self.meters.integrate(
+                participant_id=vpp.vpp_id,
+                interval=metered_interval,
+                renewable_power_kw=vpp.state.pv_kw + vpp.state.wind_kw,
+                uncontrolled_load_power_kw=vpp.state.load_kw,
+                duration_sec=duration_sec,
+            )
+            cursor = segment_end
 
     @staticmethod
     def _refresh_der_state(vpp: SimulatorVPP, sim_ts: datetime, interval: DeliveryInterval) -> None:
@@ -2207,7 +2333,12 @@ class Simulator:
         vpp.state.pending_net_kwh = vpp.state.net_kw * interval.duration_h
 
     def run_interval_once(self, sim_ts: datetime) -> datetime:
-        """Deterministic synchronous V1 interval step for benchmark/evaluation."""
+        """Process the next delivery interval and return its decision timestamp.
+
+        ``delivery_horizon`` starts with the interval after ``sim_ts``. Returning
+        that product's start lets the next call discover the immediately following
+        product; returning its end would skip one complete delivery interval.
+        """
 
         wall_ts = sim_ts.astimezone(UTC)
         products = self._ensure_products(sim_ts)
@@ -2228,7 +2359,7 @@ class Simulator:
                 duration_sec=primary.duration_sec,
             )
         self._settle_due_intervals(primary.end)
-        return primary.end
+        return primary.start
 
     def _run_decision_round(self, sim_ts: datetime, products: tuple[DeliveryInterval, ...]) -> None:
         self._refresh_realprice_grid(sim_ts, products)
@@ -2243,8 +2374,13 @@ class Simulator:
         )
         market.recent_trades = self._recent_market_trades()
         market.peer_reflections = self._peer_reflections()
+        active_vpps = {
+            vpp_id: vpp
+            for vpp_id, vpp in self.vpps.items()
+            if vpp_id not in self._pending_removal_vpp_ids
+        }
         contexts: dict[int, AgentContext] = {}
-        for vpp in self.vpps.values():
+        for vpp in active_vpps.values():
             projected = vpp.state.net_kw * primary.duration_h
             for product in products:
                 net_kwh = vpp.state.net_kw * product.duration_h
@@ -2258,6 +2394,15 @@ class Simulator:
                     # Existing backed orders retain their last accepted projection;
                     # the gateway must never silently shrink beneath reservations.
                     log.debug("projection update retained for backed product", exc_info=True)
+            runtime = self.gateway.participants[vpp.vpp_id]
+            dispatchable_projection = next(
+                (
+                    item
+                    for item in runtime.dispatchable_reservations.project()
+                    if item.interval_id == primary.interval_id
+                ),
+                None,
+            )
             contexts[vpp.vpp_id] = AgentContext(
                 vpp_id=vpp.vpp_id,
                 params=vpp.params,
@@ -2271,12 +2416,18 @@ class Simulator:
                 delivery_intervals=products,
                 decision_interval_sec=get_settings().agent_decision_interval_sec,
                 projected_net_kwh=projected,
-                contracted_net_kwh=self.gateway.participants[vpp.vpp_id]
-                .position(primary)
-                .contracted_net_injection_kwh,
-                dispatchable_power_kw=self.gateway.participants[
-                    vpp.vpp_id
-                ].current_dispatchable_power_kw,
+                contracted_net_kwh=runtime.position(primary).contracted_net_injection_kwh,
+                dispatchable_power_kw=runtime.current_dispatchable_power_kw,
+                contracted_dispatchable_kwh=(
+                    0.0
+                    if dispatchable_projection is None
+                    else dispatchable_projection.committed_terminal_kwh
+                ),
+                resting_dispatchable_kwh=(
+                    0.0
+                    if dispatchable_projection is None
+                    else dispatchable_projection.resting_terminal_kwh
+                ),
                 open_orders_net_kwh=self._open_balance_net(vpp.vpp_id, primary.interval_id),
                 open_orders=self._open_order_views(vpp.vpp_id, sim_ts),
                 risk_rejections_total=float(self.risk_rejections_by_vpp.get(vpp.vpp_id, 0)),
@@ -2301,7 +2452,7 @@ class Simulator:
 
         decision_round = self.decision_scheduler.collect(
             sim_ts=sim_ts,
-            participant_ids=self.vpps,
+            participant_ids=active_vpps,
             build_context=lambda pid: contexts[pid],
             decide=decide,
             snapshot_id=primary.interval_id,
@@ -2550,6 +2701,7 @@ class Simulator:
                         Decimal(str(vpp.params.value_of_lost_load_per_mwh)),
                     ),
                     occurred_at=sim_ts,
+                    imbalance_settlement_enabled=self.imbalance_settlement_enabled,
                 )
                 position = self.gateway.participants[vpp.vpp_id].positions[iid]
                 self._append_audit(
@@ -2592,9 +2744,14 @@ class Simulator:
                 vpp.state.pnl = self.gateway.ledger.balance(vpp.vpp_id)
             self._audit_new_ledger_entries()
             self._settled_intervals.add(iid)
+        self._sweep_pending_removals()
 
     def _settlement_prices(self, interval: DeliveryInterval) -> SettlementPrices:
         raw = self.engine.last_price(interval.interval_id)
+        if raw is None:
+            reference = getattr(self._external_market_quote, "raw_lmp", None)
+            if isinstance(reference, Decimal) and reference.is_finite():
+                raw = reference
         if raw is None:
             raw = self.engine.latest_price
         if raw is None:

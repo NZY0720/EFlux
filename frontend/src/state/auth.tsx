@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 import {
@@ -13,6 +13,7 @@ interface AuthCtx {
   token: string | null;
   email: string | null;
   userId: number | null;
+  restoring: boolean;
   setSession: (s: { session_token: string; user_id: number; email: string }) => void;
   logout: () => void;
 }
@@ -27,6 +28,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [token, setTokState] = useState<string | null>(() => getToken());
   const [email, setEmail] = useState<string | null>(null);
   const [userId, setUserId] = useState<number | null>(null);
+  const [restoring, setRestoring] = useState(true);
+  const sessionEpochRef = useRef(0);
 
   useEffect(() => {
     if (email) localStorage.setItem(EMAIL_KEY, email);
@@ -39,6 +42,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [userId]);
 
   const setSession: AuthCtx["setSession"] = (s) => {
+    sessionEpochRef.current += 1;
     // The server has set the HttpOnly cookie; do not persist this transitional
     // response token in browser storage.
     setStoredToken(null);
@@ -48,19 +52,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = useCallback(() => {
+    sessionEpochRef.current += 1;
     setTokState(null);
     setEmail(null);
     setUserId(null);
     // Keep a migrated localStorage token available for this request, then remove
     // it whether server logout succeeds or the browser is offline.
-    void endSession().finally(() => setStoredToken(null));
+    void endSession().finally(() => setStoredToken(null)).catch(() => {});
   }, []);
 
   useEffect(() => {
     let cancelled = false;
+    const epoch = sessionEpochRef.current;
     void getCurrentUser()
       .then((user) => {
-        if (cancelled) return;
+        if (cancelled || sessionEpochRef.current !== epoch) return;
         setEmail(user.email);
         setUserId(user.id);
         if (!getToken()) setTokState(COOKIE_SESSION);
@@ -68,6 +74,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .catch(() => {
         // An unauthenticated boot is normal; the response interceptor handles
         // expired localStorage sessions.
+      })
+      .finally(() => {
+        if (!cancelled) setRestoring(false);
       });
     return () => {
       cancelled = true;
@@ -80,7 +89,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [logout]);
 
   return (
-    <Ctx.Provider value={{ token, email, userId, setSession, logout }}>{children}</Ctx.Provider>
+    <Ctx.Provider value={{ token, email, userId, restoring, setSession, logout }}>
+      {children}
+    </Ctx.Provider>
   );
 }
 

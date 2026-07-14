@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { fetchArena } from "../api/client";
 import type { ArenaPayload, MarketAgent } from "../api/types";
+import { useMarket } from "./marketStream";
 
 export interface PnlPoint {
   t: number; // wall-clock ms
@@ -27,10 +28,17 @@ const MAX_POINTS = 50_000;
  * Real-Time dashboard's strategy leaderboard and equity curves.
  */
 export function useStrategyPnl(intervalMs = 2000): StrategyPnl {
+  const { restartedAt } = useMarket();
   const [agents, setAgents] = useState<MarketAgent[]>([]);
   const [history, setHistory] = useState<Record<string, PnlPoint[]>>({});
   const [arena, setArena] = useState<Omit<ArenaPayload, "agents"> | null>(null);
   const histRef = useRef<Record<string, PnlPoint[]>>({});
+
+  useEffect(() => {
+    if (restartedAt === null) return;
+    histRef.current = {};
+    setHistory({});
+  }, [restartedAt]);
 
   useEffect(() => {
     let cancelled = false;
@@ -60,7 +68,7 @@ export function useStrategyPnl(intervalMs = 2000): StrategyPnl {
       cancelled = true;
       clearInterval(id);
     };
-  }, [intervalMs]);
+  }, [intervalMs, restartedAt]);
 
   return { agents, history, arena };
 }

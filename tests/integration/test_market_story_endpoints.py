@@ -172,40 +172,12 @@ async def test_reflections_feed_serializes_meta_control(db_session):
 
 
 @pytest.mark.asyncio
-async def test_speed_control_requires_auth_and_gates_external_orders(client):
+async def test_speed_mutation_is_removed_but_snapshot_still_reports_speed(client):
     r = await client.post("/market/speed", json={"speed": 10.0})
-    assert r.status_code == 401
-
-    headers = await _login(client)
-
-    r = await client.post("/market/speed", headers=headers, json={"speed": 2.5})
-    assert r.status_code == 422
-
-    r = await client.post("/vpps", headers=headers, json={"name": "speed-ui-vpp", "params": {}})
-    vpp_id = r.json()["id"]
-    products = (await client.get("/market/products")).json()
-    product_id = next(row["product_id"] for row in products if row["is_open"])
-    order = {
-        "vpp_id": vpp_id,
-        "side": "buy",
-        "price": "80",
-        "qty_kwh": "0.05",
-        "product_id": product_id,
-        "purpose": "battery",
-    }
-
-    r = await client.post("/market/speed", headers=headers, json={"speed": 10.0})
-    assert r.status_code == 200 and r.json()["speed"] == 10.0
-    r = await client.post("/orders", headers=headers, json=order)
-    assert r.status_code == 409, r.text
-
-    r = await client.post("/market/speed", headers=headers, json={"speed": 1.0})
-    assert r.status_code == 200 and r.json()["is_realtime"] is True
-    r = await client.post("/orders", headers=headers, json=order)
-    assert r.status_code == 200, r.text
+    assert r.status_code == 404
 
     snap = (await client.get("/market/snapshot")).json()
-    assert snap["speed"] == 1.0
+    assert snap["speed"] > 0
     # Balance KPI rides the snapshot: live aggregates from the 30-VPP roster.
     balance = snap["balance"]
     assert balance["gas_capacity_kw"] > 0

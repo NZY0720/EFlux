@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
+from eflux.agents.base import ExternalControlAgent
 from eflux.agents.decision import AgentDecision, OrderRequest
 from eflux.bridge.bus import InMemoryBus
 from eflux.market.delivery import OrderPurpose
@@ -166,3 +167,45 @@ def test_disabled_external_market_seeds_no_grid_liquidity(monkeypatch):
     snapshot = sim.engine.snapshot(products[0].interval_id, depth_levels=1)
     assert snapshot["best_bid"] is None
     assert snapshot["best_ask"] is None
+
+
+def test_grid_liquidity_covers_all_participants_in_one_decision_round(monkeypatch):
+    monkeypatch.setenv("EFLUX_MARKET_MODE", "realprice")
+    monkeypatch.setenv("EFLUX_EXTERNAL_MARKET_ENABLED", "true")
+    monkeypatch.setenv("EFLUX_REALPRICE_FALLBACK_TRADING_ENABLED", "true")
+    sim = Simulator(InMemoryBus(), sim_epoch=NOW)
+    participants = [
+        sim.add_builtin_vpp(
+            f"load-{index}",
+            VPPParams(
+                pv_kw_peak=0,
+                battery_kwh=0,
+                battery_kw_max=0,
+                load_kw_base=9000,
+            ),
+            ExternalControlAgent(),
+        )
+        for index in range(2)
+    ]
+    product = sim._ensure_products(NOW)[0]
+    for participant in participants:
+        sim.gateway.set_balance_projection(participant.vpp_id, product, -750.0)
+    sim._refresh_realprice_grid(NOW, (product,))
+
+    fills = [
+        _request(
+            participant.vpp_id,
+            "buy",
+            "100",
+            "750",
+            OrderPurpose.BALANCE,
+            sim.gateway,
+            product,
+        )
+        for participant in participants
+    ]
+
+    assert [sum((trade.qty for trade in fill.trades), Decimal("0")) for fill in fills] == [
+        Decimal("750"),
+        Decimal("750"),
+    ]

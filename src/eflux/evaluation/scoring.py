@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import queue
+import threading
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from statistics import median
@@ -13,6 +15,8 @@ from eflux.agents.bench.run import BENCH_EPOCH, measure_episode, run_episode
 from eflux.agents.bench.scenarios import test_slot_params
 from eflux.agents.decision import AgentDecision
 from eflux.bridge.bus import InMemoryBus
+from eflux.config import get_settings
+from eflux.evaluation.rules import OFFICIAL_DECIDE_DEADLINE_MS
 from eflux.simulator.agent_spec import validate_vpp_params
 from eflux.simulator.runner import Simulator
 from eflux.simulator.scenarios import provision_managed_vpp
@@ -45,8 +49,28 @@ class _GuardedSubmissionAgent(BaseAgent):
     def decide(self, ctx) -> AgentDecision:
         if self.agent is None or self.failure_reason is not None:
             return AgentDecision.hold("submission is unavailable")
+        result: queue.Queue[tuple[bool, object]] = queue.Queue(maxsize=1)
+
+        def invoke() -> None:
+            try:
+                result.put((True, self.agent.decide(ctx)))
+            except BaseException as exc:
+                result.put((False, exc))
+
+        # Python cannot safely kill a participant thread. On timeout it is left as
+        # a daemon, while the episode records a decision failure and returns promptly.
+        threading.Thread(target=invoke, name="official-decide", daemon=True).start()
         try:
-            decision = self.agent.decide(ctx)
+            ok, value = result.get(timeout=OFFICIAL_DECIDE_DEADLINE_MS / 1000)
+        except queue.Empty:
+            self.failure_reason = f"decision deadline exceeded ({OFFICIAL_DECIDE_DEADLINE_MS}ms)"
+            return AgentDecision.hold("submission decision timed out")
+        try:
+            if not ok:
+                assert isinstance(value, BaseException)
+                self.failure_reason = f"{type(value).__name__}: {value}"
+                return AgentDecision.hold("submission decision failed")
+            decision = value
             if not isinstance(decision, AgentDecision):
                 raise TypeError("agent returned data outside the AgentDecision protocol")
             return decision
@@ -74,11 +98,15 @@ def _episode_shape(seed_hours: float, window_sec: float) -> tuple[int, float]:
         raise ValueError("seed_hours must be positive")
     if window_sec <= 0:
         raise ValueError("window_sec must be positive")
-    # run_episode accepts a fixed cadence. Treat window_sec as the maximum action
-    # window: rounding up the tick count and distributing the (possible) short final
-    # interval evenly preserves the exact seed_hours duration without exceeding it.
-    n_ticks = max(1, math.ceil(seed_hours * 3600.0 / window_sec))
-    return n_ticks, seed_hours / n_ticks
+    # The synchronous harness settles whole delivery products. Use the largest
+    # whole-product action window that does not exceed ``window_sec``; when the
+    # requested window is shorter than one product, one product is the minimum
+    # representable episode step.
+    product_sec = get_settings().delivery_interval_sec
+    products_per_tick = max(1, int(window_sec // product_sec))
+    tick_sec = products_per_tick * product_sec
+    n_ticks = max(1, math.ceil(seed_hours * 3600.0 / tick_sec))
+    return n_ticks, tick_sec / 3600.0
 
 
 def _submission_endowment(payload: dict[str, Any]) -> VPPParams:

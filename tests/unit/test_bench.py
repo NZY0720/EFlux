@@ -7,11 +7,14 @@ language costs nothing) and emit zero invalid actions, while clearly beating ZI.
 from __future__ import annotations
 
 import math
+from decimal import Decimal
 
 import pytest
 
+from eflux.agents.base import ExternalControlAgent
 from eflux.agents.bench.metrics import EpisodeMetrics, format_leaderboard
-from eflux.agents.bench.run import run_benchmark
+from eflux.agents.bench.run import run_benchmark, run_episode
+from eflux.simulator.runner import Simulator
 
 
 def test_strategy_agent_is_competitive_with_truthful_and_clean():
@@ -51,7 +54,6 @@ def test_leaderboard_formats_all_candidates():
 
 
 def test_bench_episode_warms_forecast_service_and_can_opt_out():
-    from eflux.agents.bench.run import run_episode
     from eflux.agents.bench.scenarios import candidates
 
     make = candidates()["truthful"]
@@ -64,3 +66,25 @@ def test_bench_episode_warms_forecast_service_and_can_opt_out():
 
     off_sim, _ = run_episode(make, n_ticks=8, tick_h=1.0 / 6.0, forecasts_enabled=False)
     assert off_sim.forecast_service is None
+
+
+def test_bench_price_path_indexes_windows_while_processing_every_product(monkeypatch):
+    seen_prices = []
+    original = Simulator.run_interval_once
+
+    def recording_step(self, sim_ts):
+        seen_prices.append(self._external_market_quote.raw_lmp)
+        return original(self, sim_ts)
+
+    monkeypatch.setattr(Simulator, "run_interval_once", recording_step)
+    run_episode(
+        ExternalControlAgent,
+        n_ticks=2,
+        tick_h=10.0 / 60.0,
+        forecasts_enabled=False,
+        market_mode="realprice",
+        market_price_path=(Decimal("10"), Decimal("20")),
+        counter_roster_factory=list,
+    )
+
+    assert seen_prices == [Decimal("10"), Decimal("10"), Decimal("20"), Decimal("20")]

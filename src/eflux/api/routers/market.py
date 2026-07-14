@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from eflux.api.deps import AdminUser, CurrentUser, DbSession, SimulatorDep
+from eflux.api.deps import AdminUser, DbSession, SimulatorDep
 from eflux.data.electricity_market import ExternalMarketQuote
 from eflux.db.models import VPP
 from eflux.market.events import ExternalTradeEvent, TickEvent, TradeEvent
@@ -500,15 +500,6 @@ def market_chatter(sim: SimulatorDep, limit: int = 40) -> list[ChatMessageOut]:
     ]
 
 
-class SpeedUpdate(BaseModel):
-    speed: float
-
-
-class SpeedStatusOut(BaseModel):
-    speed: float
-    is_realtime: bool
-
-
 class PpoRenewStatusOut(BaseModel):
     state: str
     started_at: str | None
@@ -521,19 +512,6 @@ class PpoRenewStatusOut(BaseModel):
 
 class PpoRenewStartOut(PpoRenewStatusOut):
     status: str
-
-
-@router.post("/speed", response_model=SpeedStatusOut)
-async def set_market_speed(
-    payload: SpeedUpdate,
-    user: CurrentUser,
-    sim: SimulatorDep,
-) -> SpeedStatusOut:
-    try:
-        sim.clock.set_speed(payload.speed)
-    except ValueError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
-    return SpeedStatusOut(speed=sim.clock.speed, is_realtime=sim.clock.is_realtime)
 
 
 @router.post("/ppo/renew", response_model=PpoRenewStartOut)

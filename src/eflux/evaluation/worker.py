@@ -34,6 +34,11 @@ from eflux.evaluation.manifest import content_sha256
 from eflux.evaluation.proveout import ensure_cached_price_window, run_proveout_execution
 from eflux.evaluation.scoring import SeedScore, score_seed
 from eflux.evaluation.seeds import DEFAULT_ROUND, derive_seed, seed_labels
+from eflux.job_leases import (
+    lease_values,
+    maintain_job_lease,
+    requeue_expired_jobs,
+)
 
 log = logging.getLogger(__name__)
 MAX_SEED_ATTEMPTS = 3
@@ -63,6 +68,8 @@ async def claim_next_run(
     """
     factory = session_factory or get_sessionmaker()
     async with factory() as session:
+        now = datetime.now(UTC)
+        await requeue_expired_jobs(session, EvaluationRun, now=now)
         while True:
             run_id = (
                 await session.execute(
@@ -73,13 +80,13 @@ async def claim_next_run(
                 )
             ).scalar_one_or_none()
             if run_id is None:
-                await session.rollback()
+                await session.commit()
                 return None
 
             claimed = await session.execute(
                 update(EvaluationRun)
                 .where(EvaluationRun.id == run_id, EvaluationRun.status == "queued")
-                .values(status="running", started_at=datetime.now(UTC))
+                .values(status="running", started_at=now, **lease_values(now))
             )
             await session.commit()
             if claimed.rowcount == 1:
@@ -92,6 +99,8 @@ async def claim_next_proveout_run(
     """Optimistically claim the oldest private replay with the evaluation guard pattern."""
     factory = session_factory or get_sessionmaker()
     async with factory() as session:
+        now = datetime.now(UTC)
+        await requeue_expired_jobs(session, ProveOutRun, now=now)
         while True:
             run_id = (
                 await session.execute(
@@ -102,13 +111,13 @@ async def claim_next_proveout_run(
                 )
             ).scalar_one_or_none()
             if run_id is None:
-                await session.rollback()
+                await session.commit()
                 return None
 
             claimed = await session.execute(
                 update(ProveOutRun)
                 .where(ProveOutRun.id == run_id, ProveOutRun.status == "queued")
-                .values(status="running")
+                .values(status="running", **lease_values(now))
             )
             await session.commit()
             if claimed.rowcount == 1:
@@ -286,7 +295,14 @@ async def _fail_run(
         await session.execute(
             update(EvaluationRun)
             .where(EvaluationRun.id == run_id, EvaluationRun.status == "running")
-            .values(status="failed", score=None, summary=summary, finished_at=datetime.now(UTC))
+            .values(
+                status="failed",
+                score=None,
+                summary=summary,
+                claimed_at=None,
+                lease_expires_at=None,
+                finished_at=datetime.now(UTC),
+            )
         )
         await session.commit()
 
@@ -398,6 +414,8 @@ async def _finalize_scored_run(
                 summary=summary,
                 evidence=evidence,
                 evidence_sha256=content_sha256(evidence),
+                claimed_at=None,
+                lease_expires_at=None,
                 finished_at=datetime.now(UTC),
             )
         )
@@ -477,6 +495,8 @@ async def execute_proveout_run(
                 evidence=evidence,
                 evidence_sha256=content_sha256(evidence),
                 error=None,
+                claimed_at=None,
+                lease_expires_at=None,
                 finished_at=datetime.now(UTC),
             )
         )
@@ -510,6 +530,8 @@ async def _fail_proveout_run(
                 status="failed",
                 report=None,
                 error=reason[:4000],
+                claimed_at=None,
+                lease_expires_at=None,
                 finished_at=datetime.now(UTC),
             )
         )
@@ -525,7 +547,8 @@ async def run_worker(
         run_id = await claim_next_run(factory)
         if run_id is not None:
             try:
-                await execute_run(run_id, factory)
+                async with maintain_job_lease(factory, EvaluationRun, run_id):
+                    await execute_run(run_id, factory)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -538,7 +561,8 @@ async def run_worker(
         proveout_run_id = await claim_next_proveout_run(factory)
         if proveout_run_id is not None:
             try:
-                await execute_proveout_run(proveout_run_id, factory)
+                async with maintain_job_lease(factory, ProveOutRun, proveout_run_id):
+                    await execute_proveout_run(proveout_run_id, factory)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
